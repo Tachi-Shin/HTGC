@@ -1,0 +1,29 @@
+body {
+  font-family: system-ui;
+  background-color: #f4f5f7;
+  color: #17212b;
+  padding: 24px;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  gap: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background-color: #ffffff;
+}
+
+.status-label { font-size: 16px; }
