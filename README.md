@@ -4,6 +4,8 @@ HTMLとCSSで宣言した画面を、C11（IUP・GTK 4）またはDart（Flutter
 
 ## 使い方
 
+CLIオプションの一覧は `python3 HTGC --help` で確認できます。
+
 変換にはPython 3.10以上が必要です。変換器の追加パッケージはありません。macOS・Linuxでは、展開したディレクトリから実行します。
 
 ```sh
