@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Hyper Text GUI Compiler command-line interface."""
+
+import argparse
+from pathlib import Path
+import sys
+
+import backend_dart
+import backend_gtk
+import backend_iup
+from frontend import CompileError, load_program
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Hyper Text GUI Compiler — compile HTML/CSS to C (IUP/GTK 4) or Dart (Flutter).",
+        allow_abbrev=False,
+    )
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("-Clang", dest="target", action="store_const", const="c", help="generate C11 for IUP")
+    target.add_argument("-Gtk", dest="target", action="store_const", const="gtk.c", help="generate C11 for GTK 4")
+    target.add_argument("-Dart", dest="target", action="store_const", const="dart", help="generate Dart for Flutter")
+    parser.add_argument("html", type=Path, help="HTML entry point")
+    parser.add_argument("-o", "--output", type=Path, help="output file (default: input stem with target extension)")
+    parser.add_argument("--strict", action="store_true", help="treat backend warnings as errors")
+    args = parser.parse_args()
+    try:
+        program = load_program(args.html)
+        output = args.output or args.html.with_suffix("." + args.target)
+        if output.resolve() in program.inputs:
+            raise CompileError(f"{output}: 入力ファイルには上書きできません")
+        if args.target == "c":
+            code, warnings = backend_iup.generate(program)
+        elif args.target == "gtk.c":
+            code, warnings = backend_gtk.generate(program)
+        else:
+            code, warnings = backend_dart.generate(program), []
+        if warnings and args.strict:
+            raise CompileError("\n".join(warnings))
+        for warning in warnings:
+            print(f"HTGC: warning: {warning}", file=sys.stderr)
+        output.write_text(code, encoding="utf-8")
+    except (OSError, ValueError, RecursionError) as error:
+        parser.exit(1, f"HTGC: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

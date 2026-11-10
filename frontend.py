@@ -13,7 +13,7 @@ class CompileError(ValueError):
 
 
 BOX_TAGS = set("body main header footer nav section article div ul li aside figure figcaption address ol".split())
-TEXT_TAGS = set("h1 h2 h3 h4 h5 h6 p span strong small label code b".split())
+TEXT_TAGS = set("h1 h2 h3 h4 h5 h6 p span strong small label code b a".split())
 META_TAGS = {"html", "head", "title", "style"}
 VOID_TAGS = {"meta", "link"}
 SOURCE_TAGS = {"include"}
@@ -26,6 +26,7 @@ class Element:
     line: int
     source: Path
     children: list["Element | str"] = field(default_factory=list)
+    preserve_space: bool = False
 
 
 class Document(HTMLParser):
@@ -232,12 +233,13 @@ class View:
     children: list["View"]
     line: int
     source: Path
+    target: int | None = None
 
 
 INHERITED = {"color", "font-size", "font-weight", "text-align", "font-family"}
 
 
-def lower(node, ancestors, rules, inherited):
+def lower(node, ancestors, rules, inherited, route_for):
     chain = [*ancestors, node]
     style = dict(inherited)
     if node.tag in {"strong", "b"}:
@@ -254,9 +256,21 @@ def lower(node, ancestors, rules, inherited):
 
     content = re.sub(r"[\t\n\r\f ]+", " ", "".join(
         child for child in node.children if isinstance(child, str)
-    )).strip(" ")
+    ))
+    if not node.preserve_space:
+        content = content.strip(" ")
     elements = [child for child in node.children if isinstance(child, Element)]
-    if node.tag in TEXT_TAGS and (elements or style.get("display") == "flex"):
+    # Keep links inside paragraphs and headings clickable as separate widgets.
+    inline_links = node.tag in TEXT_TAGS - {"a"} and any(child.tag == "a" for child in elements)
+    if inline_links:
+        elements = [
+            child if isinstance(child, Element) else
+            Element("span", {}, node.line, node.source, [child], preserve_space=True)
+            for child in node.children if isinstance(child, Element) or child.strip()
+        ]
+        style.setdefault("display", "flex")
+        style.setdefault("align-items", "center")
+    if node.tag in TEXT_TAGS and not inline_links and (elements or style.get("display") == "flex"):
         raise CompileError(f"{node.source}:{node.line}: <{node.tag}> にはプレーンテキストを指定してください")
     if node.tag in BOX_TAGS and content:
         if elements:
@@ -268,17 +282,24 @@ def lower(node, ancestors, rules, inherited):
     text_style = {key: style[key] for key in INHERITED if key in style}
     children = []
     for child in elements:
-        view = lower(child, chain, rules, text_style)
+        view = lower(child, chain, rules, text_style, route_for)
         if view is not None:
             children.append(view)
-    return View(node.tag, style, content, children, node.line, node.source)
+    target = route_for(node) if node.tag == "a" and "href" in node.attrs else None
+    return View("div" if inline_links else node.tag, style, content, children, node.line, node.source, target)
 
 
 @dataclass
-class Program:
+class Page:
     title: str
     body: View | None
+
+
+@dataclass
+class Program(Page):
     inputs: set[Path]
+    pages: list[Page]
+    has_links: bool
 
 
 def local_path(node, attribute):
@@ -393,11 +414,10 @@ class SourceLoader:
         return None, None, title, self.expand(fragment, chain)
 
 
-def load_program(path):
-    loader = SourceLoader()
-    html, body, title, _ = loader.load(path.resolve())
+def load_page(path, loader, route_for):
+    html, body, title, _ = loader.load(path)
     if body is None:
-        raise CompileError(f"{path}: エントリーファイルには <body> が必要です")
+        raise CompileError(f"{path}: ページには <body> が必要です")
     rules = sorted(loader.rules, key=lambda rule: rule[0])
     inherited = {}
     if html:
@@ -408,4 +428,35 @@ def load_program(path):
             key: value for key, value in parse_declarations(html.attrs.get("style") or "").items()
             if key in INHERITED
         })
-    return Program(title or path.stem, lower(body, [html] if html else [], rules, inherited), loader.inputs)
+    return Page(title or path.stem, lower(body, [html] if html else [], rules, inherited, route_for))
+
+
+def load_program(path):
+    entry = path.resolve()
+    pending = [(entry, None)]
+    route_ids = {entry: 0}
+    pages = []
+    inputs = set()
+
+    has_links = False
+
+    def route_for(link):
+        nonlocal has_links
+        has_links = True
+        destination = local_path(link, "href")
+        if destination not in route_ids:
+            route_ids[destination] = len(pending)
+            pending.append((destination, link))
+        return route_ids[destination]
+
+    for source, link in pending:
+        loader = SourceLoader()
+        try:
+            pages.append(load_page(source, loader, route_for))
+        except CompileError as error:
+            if link is None:
+                raise
+            raise CompileError(f"{link.source}:{link.line}: href: {error}") from error
+        inputs.update(loader.inputs)
+
+    return Program(pages[0].title, pages[0].body, inputs, pages, has_links)
