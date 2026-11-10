@@ -8,23 +8,34 @@ import sys
 import backend_dart
 import backend_gtk
 import backend_iup
+import backend_web
 from frontend import CompileError, load_program
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Hyper Text GUI Compiler — compile HTML/CSS to C (IUP/GTK 4) or Dart (Flutter).",
+        description="Hyper Text GUI Compiler — generate C/Dart GUIs or bundle HTML/CSS/JavaScript with Chromium.",
         allow_abbrev=False,
     )
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("-Clang", dest="target", action="store_const", const="c", help="generate C11 for IUP")
     target.add_argument("-Gtk", dest="target", action="store_const", const="gtk.c", help="generate C11 for GTK 4")
+    target.add_argument("-Web", dest="target", action="store_const", const="web", help="package HTML/CSS/JavaScript with Chromium (Electron)")
     target.add_argument("-Dart", dest="target", action="store_const", const="dart", help="generate Dart for Flutter")
     parser.add_argument("html", type=Path, help="HTML entry point")
-    parser.add_argument("-o", "--output", type=Path, help="output file (default: input stem with target extension)")
-    parser.add_argument("--strict", action="store_true", help="treat backend warnings as errors")
+    parser.add_argument("-o", "--output", type=Path, help="output file or new -Web directory (default: input stem with target extension)")
+    parser.add_argument("--strict", action="store_true", help="treat native backend warnings as errors")
+    parser.add_argument("--root", type=Path, help="web root to bundle (-Web only, default: HTML directory)")
+    parser.add_argument("--build", action="store_true", help="build an executable with npm (-Web only)")
     args = parser.parse_args()
+    if args.target != "web" and (args.root is not None or args.build):
+        parser.error("--root と --build は -Web で使用してください")
     try:
+        if args.target == "web":
+            output = args.output or args.html.with_suffix(".web")
+            backend_web.generate(args.html, output, args.root, args.build)
+            print(f"HTGC: {output.resolve()}")
+            return
         program = load_program(args.html)
         output = args.output or args.html.with_suffix("." + args.target)
         if output.resolve() in program.inputs:
