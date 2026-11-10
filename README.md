@@ -1,5 +1,10 @@
 # Hyper Text GUI Compiler (HTGC)
 
+Dartのアプリ開発でGUI定義が面倒だったので自分用に作りました．
+CのGUI定義ライブラリにも対応しています．
+
+## 概要
+
 HTMLとCSSで宣言した画面を、C11（IUP・GTK 4）またはDart（Flutter）のGUIソースに変換します。生成したアプリは対象のGUIライブラリで描画します。
 
 ## 使い方
