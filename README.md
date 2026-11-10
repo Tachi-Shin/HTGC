@@ -7,6 +7,15 @@ CのGUI定義ライブラリにも対応しています．
 
 HTMLとCSSで宣言した画面を、C11（IUP・GTK 4）またはDart（Flutter）のGUIソースに変換します。生成したアプリは対象のGUIライブラリで描画します。
 
+JavaScriptやブラウザのレイアウト機能を使う既存サイトには、`-Web` でElectron/Chromiumを同梱したデスクトップアプリを生成できます。HTML・CSS・JavaScript・画像をそのまま取り込み、ブラウザエンジンで実行します。
+
+| 出力 | 実行方式 | 対応範囲 |
+| --- | --- | --- |
+| `-Clang` / `-Gtk` / `-Dart` | IUP / GTK 4 / Flutterのウィジェット | 下記の静的HTML/CSSの部分集合 |
+| `-Web` | Electron / Chromium | 同梱Chromiumが実行できるクライアント側HTML/CSS/JavaScript |
+
+`-Web` はJavaScriptをCやDartへ変換する方式ではありません。外部サーバーの処理や、あらゆるWebサイト・Web APIの互換性まで自動的に再現するものではありません。
+
 ## 使い方
 
 CLIオプションの一覧は `python3 HTGC --help` で確認できます。
@@ -21,6 +30,47 @@ chmod +x HTGC
 ```
 
 `HTGC` をPATHから起動できるようにすれば、`HTGC -Clang main.html` と呼び出せます。Windowsでは `py -3 HTGC -Clang example/main.html` と実行できます。 `-o` で出力先を指定できます。 `-Clang` はCを出力するためのオプション名です。
+
+### HTML / CSS / JavaScript → デスクトップアプリ
+
+アプリのビルドには **Node.js 22.12以上とnpm** が必要です。Pythonでプロジェクトを生成するだけならNode.jsは不要です。
+
+```sh
+git clone https://github.com/Tachi-Shin/Tachi-Shin.github.io.git ../portfolio-site
+
+python3 HTGC -Web ../portfolio-site/index.html \
+  --root ../portfolio-site -o ../portfolio-app --build
+```
+
+`--build` は生成後に `npm install` と `npm run build` を実行します。初回はネットワークからElectronとパッケージを取得します。生成プロジェクトにはElectron 45.2.3とElectron Packager 20.3.0を指定しています。
+
+Apple Silicon Macでは、完成後に次のコマンドで起動できます。
+
+```sh
+open ../portfolio-app/dist/HTGC-Web-darwin-arm64/HTGC-Web.app
+```
+
+ビルドしたOS・CPU向けのアプリが `dist/HTGC-Web-<platform>-<arch>/` に作られます。macOSでは `.app`、Windows・Linuxでは実行ファイルと同じフォルダのリソースをまとめて配布します。Chromiumを同梱するため、ネイティブ変換より配布サイズが大きくなります。アプリを使う側でPython・Node.jsをインストールする必要はありません。
+
+生成後に開発用起動や再ビルドもできます。
+
+```sh
+cd ../portfolio-app
+npm start
+npm run build
+```
+
+- `--root` は公開するサイトのルートです。省略時は入力HTMLのディレクトリを使います。サブディレクトリのページを入口にするときは、共有のCSS・画像が含まれるルートを指定してください。
+- リンク解析でファイルを選別せず、ルート全体をコピーします。JavaScriptで組み立てるパス、リンクされていないHTML、動的importやfetch用のファイルも取り込めます。ビルドが必要なReact/Vue等のプロジェクトでは、先にWeb用のビルドを行い、その出力ディレクトリを指定してください。
+- `.git`・`.hg`・`.svn`・`node_modules`・`__pycache__`・`.venv`・`venv`・`.DS_Store` は除外します。シンボリックリンクはエラーにします。ルートには配布するファイルを配置してください。
+- `-o` は新規ディレクトリです。省略時は入力名の拡張子を `.web` にしたパスです。既存の出力先を上書きしません。ビルドだけが失敗した場合は生成済みプロジェクトを残すので、そこで `npm install` / `npm run build` を再実行できます。
+- サイトは `htgc://app/` をルートとして読み込みます。相対パス、`/assets/...`、ディレクトリの `index.html`、クエリ、フラグメントに対応します。HTTP(S)等への外部リンクはシステムの既定ブラウザ等で開きます。
+- 生成する `package.json` の `name` は入力パスから作るアプリ識別子です。異なる入口のアプリでは保存領域を分離します。ソースの配置を変えて再生成したときも保存データを引き継ぎたい場合は、以前の `name` を維持してください。
+- JavaScriptのDOM操作、ES modules、Web Components、CSS Grid、メディアクエリ、アニメーション、Canvas、フォーム入力、localStorage等はChromiumが処理します。サイト内スクリプトからNode.js APIを使う設定にはしていません。
+- PHP・Flask・API・認証サーバー・フォームの受信処理などは同梱しません。外部APIは引き続き通信先とCORS設定が必要です。同梱ファイルへのPOST等は405を返します。
+- オリジンは元のHTTPSサイトと異なります。元サイトのCookie、ログイン状態、ドメイン限定APIやCSP等はそのまま引き継げません。HTGC独自の `<include>` 展開や `--strict` の警告検査は、以下のネイティブ変換用です。
+
+実サイトのビルドと起動を検証する手順・結果は [benchmarks/README.md](benchmarks/README.md) にあります。
 
 ### C / IUP
 
@@ -52,7 +102,7 @@ cd htgc_preview
 flutter run
 ```
 
-## ファイルの読み込み
+## ネイティブ変換：ファイルの読み込み
 
 ```html
 <!doctype html>
@@ -75,7 +125,7 @@ flutter run
 - `<include>` はHTGC独自の構文です。HTML断片はそのまま、完全なHTMLは `<body>` の中身をその位置に展開します。読み込んだファイルのCSSも共通のカスケードに入り、画面全体に適用されます。
 - ネストした参照は記述元のファイルからの相対パスで解決します。循環参照、欠落ファイル、リモートURLはエラーになります。入力はUTF-8です。
 
-## HTMLリンクでページを移動する
+## ネイティブ変換：HTMLリンクでページを移動する
 
 ```html
 <!-- main.html の body 内 -->
@@ -89,7 +139,7 @@ flutter run
 
 リンクはIUP・GTK 4・Flutterで押せるコントロールになります。 `href` には記述元のHTMLからの相対ファイルパスを使います。外部URL、クエリ、`#section` のようなページ内リンクは未対応です。リンクのラベルはプレーンテキストで指定します。
 
-## 対応範囲
+## ネイティブ変換の対応範囲
 
 - 静的なテキストとブロック、Flexの横・縦配置、子要素間の間隔。HTMLの終了タグは明示してください。テキストと要素が混在する箇所では、テキストを `<span>` などで囲みます。
 - タグ・クラス・ID・全称・子孫セレクタとカンマ区切り。詳細度、記述順、インライン指定、文字スタイルの継承に対応します。
@@ -102,6 +152,12 @@ flutter run
 ## 構成
 
 `frontend.py` がHTML・CSS・参照ファイルを読み、共通の `Program` と `View` を作ります。 `backend_iup.py`・`backend_gtk.py`・`backend_dart.py` が、それぞれのGUIライブラリ向けのソースを生成します。
+
+`backend_web.py` は独立した出力経路です。サイトを改変せずにコピーし、Electronの起動コード・ローカルファイル用プロトコル・npmビルド設定を生成します。
+
+```sh
+python3 -m unittest discover -s tests -v
+```
 
 ## 単体実行ファイルを作る
 

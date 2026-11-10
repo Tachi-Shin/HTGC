@@ -1,0 +1,11 @@
+{
+  "name": "htgc-benchmarks",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "portfolio": "node portfolio.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.0"
+  }
+}
