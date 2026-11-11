@@ -8,8 +8,8 @@ from native_events import emit_handler
 from js_dart import quote
 
 
-def generate(entry):
-    site = load_site(entry)
+def generate(entry, *, includes=()):
+    site = load_site(entry, includes=includes)
     imports = []
     bodies = []
     for name in ["js_core", "dom", "css", "flutter"]:

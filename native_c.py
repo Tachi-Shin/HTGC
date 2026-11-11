@@ -107,8 +107,8 @@ def emit_styles(index, rules):
     )
 
 
-def generate(entry, *, graphics=True):
-    site = load_site(entry, script_compiler=compile_script)
+def generate(entry, *, graphics=True, includes=()):
+    site = load_site(entry, script_compiler=compile_script, includes=includes)
     chunks = ["/* Generated C11. Edit the HTML/CSS/JavaScript inputs. */"]
     for name in ("js_c_core.inc", "dom_c.inc"):
         chunks.append((RUNTIME / name).read_text(encoding="utf-8"))
