@@ -205,6 +205,9 @@ static void apply_css(GtkWidget *widget, GHashTable *style, bool control, bool i
     g_string_append_printf(app.stylesheet, ".%s { font-family: sans-serif; ", name);
     g_free(name);
     if (control) g_string_append(app.stylesheet, "min-width: 0; min-height: 0; padding: 0; background: transparent; border: none; box-shadow: none; ");
+    if (GTK_IS_TEXT_VIEW(widget)) {
+        g_string_append(app.stylesheet, "border: 1px solid currentColor; border-radius: 4px; ");
+    }
     const char *properties[] = {"color", "font-weight", "border", "border-top", "border-right", "border-bottom", "border-left", "border-radius", "box-shadow", "outline"};
     for (size_t i = 0; i < G_N_ELEMENTS(properties); i++) {
         const char *value = style_get(style, properties[i]);
@@ -247,7 +250,14 @@ static GdkTexture *texture(const char *path)
             return NULL;
         }
         GdkPixbuf *oriented = gdk_pixbuf_apply_embedded_orientation(pixbuf);
-        GdkTexture *value = gdk_texture_new_for_pixbuf(oriented ? oriented : pixbuf);
+        GdkPixbuf *image = oriented ? oriented : pixbuf;
+        GBytes *pixels = gdk_pixbuf_read_pixel_bytes(image);
+        GdkMemoryFormat format = gdk_pixbuf_get_has_alpha(image)
+            ? GDK_MEMORY_R8G8B8A8 : GDK_MEMORY_R8G8B8;
+        GdkTexture *value = gdk_memory_texture_new(
+            gdk_pixbuf_get_width(image), gdk_pixbuf_get_height(image),
+            format, pixels, gdk_pixbuf_get_rowstride(image));
+        g_bytes_unref(pixels);
         g_clear_object(&oriented);
         g_object_unref(loader);
         g_hash_table_insert(app.textures, g_strdup(path), value);
@@ -413,6 +423,7 @@ static void follow_link(const char *href)
 static void clicked(GtkButton *button G_GNUC_UNUSED, gpointer data)
 {
     DomNode *node = data;
+    bool has_script_listener = js_map_get(node->events, "click").kind == JS_ARRAY;
     htgc_invoke(dom_attr(node, "onclick"), "");
     dom_dispatch(node, "click");
     if (app.dom.heap.error) g_warning("JavaScript event: %s", app.dom.heap.error);
@@ -433,7 +444,7 @@ static void clicked(GtkButton *button G_GNUC_UNUSED, gpointer data)
             }
         }
         g_ptr_array_unref(inputs);
-    } else queue_render();
+    } else if (has_script_listener) queue_render();
 }
 static void input_changed(DomNode *node, const char *value)
 {
@@ -505,10 +516,12 @@ static GtkWidget *render_flow(DomNode *node, GHashTable *style, GPtrArray *child
         GtkWidget *field = gtk_text_view_new();
         GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(field));
         const char *value = dom_attr(node, "value");
-        if (value) gtk_text_buffer_set_text(buffer, value, -1);
+        char *initial = value ? NULL : dom_text(node);
+        gtk_text_buffer_set_text(buffer, value ? value : initial, -1);
+        g_free(initial);
+        if (g_strcmp0(dom_attr(node, "wrap"), "off") != 0)
+            gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(field), GTK_WRAP_WORD_CHAR);
         g_signal_connect(buffer, "changed", G_CALLBACK(text_changed), node);
-        const char *rows = dom_attr(node, "rows");
-        gtk_widget_set_size_request(field, -1, (rows ? atoi(rows) : 2) * style_font(style) * 1.6);
         return field;
     }
     if (tag && !strcmp(tag, "meter")) {
@@ -644,6 +657,16 @@ static GtkWidget *render_node(DomNode *node, GHashTable *parent, double availabl
     width = fmin(width, style_length(style, "max-width", available, width));
     double height = style_length(style, "height", height_basis, -1);
     double minimum = style_length(style, "min-height", height_basis, 0);
+    if (g_strcmp0(node->tag, "textarea") == 0) {
+        if (height < 0) {
+            const char *rows = dom_attr(node, "rows");
+            char *end = NULL;
+            gint64 count = rows ? g_ascii_strtoll(rows, &end, 10) : 0;
+            if (count <= 0 || *end) count = 2;
+            height = MIN((double)G_MAXINT, count * fmax(1, style_font(style)) * 1.6);
+        }
+        height = fmax(height, minimum);
+    }
     double padding[4];
     const char *edges[] = {"top", "right", "bottom", "left"};
     for (size_t i = 0; i < 4; i++) {
