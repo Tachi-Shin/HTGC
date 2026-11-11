@@ -267,6 +267,8 @@ static GdkTexture *texture(const char *path)
 }
 typedef struct {
     cairo_surface_t *surface;
+    cairo_surface_t *raster;
+    int raster_width, raster_height, raster_scale;
     GdkRGBA tint;
     bool masked, cover;
     double radius;
@@ -282,9 +284,8 @@ static cairo_surface_t *picture_surface(GdkTexture *texture)
     g_hash_table_insert(app.surfaces, texture, surface);
     return surface;
 }
-static void draw_picture(GtkDrawingArea *area G_GNUC_UNUSED, cairo_t *cr, int width, int height, gpointer data)
+static void paint_picture(PicturePaint *picture, cairo_t *cr, int width, int height)
 {
-    PicturePaint *picture = data;
     double source_width = cairo_image_surface_get_width(picture->surface);
     double source_height = cairo_image_surface_get_height(picture->surface);
     double scale = picture->cover ? fmax(width / source_width, height / source_height)
@@ -310,6 +311,7 @@ static void draw_picture(GtkDrawingArea *area G_GNUC_UNUSED, cairo_t *cr, int wi
         cairo_paint(cr);
     }
 }
+
 static char *page_relative_path(const char *reference)
 {
     char *escaped = g_strndup(reference, strcspn(reference, "?#"));
@@ -325,6 +327,35 @@ static char *page_relative_path(const char *reference)
     g_free(directory);
     g_free(path);
     return relative;
+}
+
+static void picture_paint_free(gpointer data)
+{
+    PicturePaint *picture = data;
+    if (picture->raster) cairo_surface_destroy(picture->raster);
+    g_free(picture);
+}
+static void draw_picture(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data)
+{
+    PicturePaint *picture = data;
+    if (width <= 0 || height <= 0) return;
+    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(area));
+    if (width > G_MAXINT / scale || height > G_MAXINT / scale) return;
+    if (!picture->raster || width != picture->raster_width ||
+        height != picture->raster_height || scale != picture->raster_scale) {
+        if (picture->raster) cairo_surface_destroy(picture->raster);
+        picture->raster = cairo_image_surface_create(
+            CAIRO_FORMAT_ARGB32, width * scale, height * scale);
+        picture->raster_width = width;
+        picture->raster_height = height;
+        picture->raster_scale = scale;
+        cairo_surface_set_device_scale(picture->raster, scale, scale);
+        cairo_t *raster = cairo_create(picture->raster);
+        paint_picture(picture, raster, width, height);
+        cairo_destroy(raster);
+    }
+    cairo_set_source_surface(cr, picture->raster, 0, 0);
+    cairo_paint(cr);
 }
 static GtkWidget *picture(DomNode *node, GHashTable *style, double available, double height)
 {
@@ -356,7 +387,7 @@ static GtkWidget *picture(DomNode *node, GHashTable *style, double available, do
         gdk_rgba_parse(&paint->tint, color ? color : "black");
         gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widget), ceil(width));
         gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widget), ceil(height));
-        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widget), draw_picture, paint, g_free);
+        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widget), draw_picture, paint, picture_paint_free);
         gtk_widget_set_halign(widget, GTK_ALIGN_START);
     }
     return widget;
@@ -629,20 +660,67 @@ static double translate(const char *value, char axis, double basis)
     g_free(length);
     return result;
 }
+typedef struct {
+    GtkWidget parent;
+    double x, y;
+} HtgcAnimatedLayer;
+typedef GtkWidgetClass HtgcAnimatedLayerClass;
+
+G_DEFINE_TYPE(HtgcAnimatedLayer, htgc_animated_layer, GTK_TYPE_WIDGET)
+
+static void htgc_animated_layer_snapshot(GtkWidget *widget, GtkSnapshot *snapshot)
+{
+    HtgcAnimatedLayer *layer = (HtgcAnimatedLayer *)widget;
+    GtkWidget *child = gtk_widget_get_first_child(widget);
+    if (!child) return;
+    gtk_snapshot_save(snapshot);
+    gtk_snapshot_translate(snapshot, &GRAPHENE_POINT_INIT(layer->x, layer->y));
+    gtk_widget_snapshot_child(widget, child, snapshot);
+    gtk_snapshot_restore(snapshot);
+}
+static void htgc_animated_layer_dispose(GObject *object)
+{
+    GtkWidget *child = gtk_widget_get_first_child(GTK_WIDGET(object));
+    if (child) gtk_widget_unparent(child);
+    G_OBJECT_CLASS(htgc_animated_layer_parent_class)->dispose(object);
+}
+static void htgc_animated_layer_class_init(HtgcAnimatedLayerClass *klass)
+{
+    G_OBJECT_CLASS(klass)->dispose = htgc_animated_layer_dispose;
+    klass->snapshot = htgc_animated_layer_snapshot;
+    gtk_widget_class_set_layout_manager_type(klass, GTK_TYPE_BIN_LAYOUT);
+}
+static void htgc_animated_layer_init(HtgcAnimatedLayer *layer)
+{
+    gtk_widget_set_can_target(GTK_WIDGET(layer), FALSE);
+}
+
 typedef struct { GtkFixed *plane; double x, y, dx, dy, duration; } AnimatedTrack;
 static gboolean move_track(GtkWidget *widget, GdkFrameClock *clock, gpointer data)
 {
     AnimatedTrack *track = data;
     double time = fmax(0, gdk_frame_clock_get_frame_time(clock) - app.page_start);
     double progress = fmod(time, track->duration) / track->duration;
-    gtk_fixed_move(track->plane, widget, track->x + track->dx * progress, track->y + track->dy * progress);
+    double x = track->x + track->dx * progress;
+    double y = track->y + track->dy * progress;
+    if (track->plane) {
+        gtk_fixed_move(track->plane, widget, x, y);
+    } else {
+        HtgcAnimatedLayer *layer = (HtgcAnimatedLayer *)widget;
+        layer->x = x;
+        layer->y = y;
+        gtk_widget_queue_draw(widget);
+    }
     return G_SOURCE_CONTINUE;
 }
-static void animate_track(GtkFixed *plane, GtkWidget *widget, GHashTable *style,
-                          double left, double top, double width, double height)
+static void place_track(GtkFixed *plane, GtkWidget *widget, GHashTable *style,
+                        double left, double top, double width, double height, bool decorative)
 {
-    if (app.dom.reduced_motion) return;
-    GPtrArray *parts = split_css(style_get(style, "animation"), ' ');
+    const char *transform = style_get(style, "transform");
+    double x = translate(transform, 'X', width);
+    double y = translate(transform, 'Y', height);
+    AnimatedTrack *track = NULL;
+    GPtrArray *parts = split_css(app.dom.reduced_motion ? NULL : style_get(style, "animation"), ' ');
     if (parts->len == 4 && !strcmp(parts->pdata[2], "linear") && !strcmp(parts->pdata[3], "infinite")) {
         char *unit;
         double duration = g_ascii_strtod(parts->pdata[1], &unit);
@@ -652,16 +730,32 @@ static void animate_track(GtkFixed *plane, GtkWidget *widget, GHashTable *style,
         for (size_t i = 0; duration > 0 && i < site_animation_count; i++) {
             const SiteAnimation *animation = &site_animations[i];
             if (strcmp(animation->name, parts->pdata[0])) continue;
-            AnimatedTrack *track = g_new(AnimatedTrack, 1);
-            double x = translate(animation->from, 'X', width), y = translate(animation->from, 'Y', height);
-            *track = (AnimatedTrack){plane, left + x, top + y,
+            x = translate(animation->from, 'X', width);
+            y = translate(animation->from, 'Y', height);
+            track = g_new(AnimatedTrack, 1);
+            *track = (AnimatedTrack){plane, x, y,
                 translate(animation->to, 'X', width) - x,
                 translate(animation->to, 'Y', height) - y, duration};
-            gtk_widget_add_tick_callback(widget, move_track, track, g_free);
             break;
         }
     }
     g_ptr_array_unref(parts);
+    if (track && decorative) {
+        HtgcAnimatedLayer *layer = g_object_new(htgc_animated_layer_get_type(), NULL);
+        layer->x = x;
+        layer->y = y;
+        gtk_widget_set_parent(widget, GTK_WIDGET(layer));
+        track->plane = NULL;
+        widget = GTK_WIDGET(layer);
+        gtk_fixed_put(plane, widget, left, top);
+    } else {
+        gtk_fixed_put(plane, widget, left + x, top + y);
+        if (track) {
+            track->x += left;
+            track->y += top;
+        }
+    }
+    if (track) gtk_widget_add_tick_callback(widget, move_track, track, g_free);
 }
 static GtkWidget *render_node(DomNode *node, GHashTable *parent, double available, double height_basis, bool shrink)
 {
@@ -727,10 +821,10 @@ static GtkWidget *render_node(DomNode *node, GHashTable *parent, double availabl
             gtk_widget_measure(item, GTK_ORIENTATION_HORIZONTAL, -1, NULL, &natural_width, NULL, NULL);
             gtk_widget_measure(item, GTK_ORIENTATION_VERTICAL, natural_width, NULL, &natural_height, NULL, NULL);
             if (bottom >= 0 && !style_get(child_style, "top")) top = layer_height - bottom - natural_height;
-            const char *transform = style_get(child_style, "transform");
-            gtk_fixed_put(GTK_FIXED(underlay), item, left + translate(transform, 'X', natural_width), top + translate(transform, 'Y', natural_height));
-            animate_track(GTK_FIXED(underlay), item, child_style, left, top, natural_width, natural_height);
-            if (style_is(child_style, "pointer-events", "none")) gtk_widget_set_can_target(item, FALSE);
+            bool decorative = style_is(child_style, "pointer-events", "none") ||
+                (style_is(style, "pointer-events", "none") && !style_get(child_style, "pointer-events"));
+            place_track(GTK_FIXED(underlay), item, child_style, left, top, natural_width, natural_height, decorative);
+            if (decorative) gtk_widget_set_can_target(item, FALSE);
             g_hash_table_unref(child_style);
         }
         if (style_is(style, "place-items", "center")) gtk_widget_set_valign(content, GTK_ALIGN_CENTER);
