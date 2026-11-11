@@ -80,9 +80,18 @@ Xcodeのビルドログにデプロイターゲット `10.15` がサポート範
    end
    ```
 
+画像を使わないアプリは `flutter run -d macos` で起動できます。
+
+拡張変換で `lib/main.dart.assets/` が生成された場合は、ビルドした `.app` の `Contents/MacOS/` に画像ディレクトリをコピーしてから起動します。次はプロジェクト名が `htgc_preview` の例です。実際のアプリ名に置き換えてください。
+
 ```sh
-flutter run -d macos
+flutter build macos --debug
+app_bundle=build/macos/Build/Products/Debug/htgc_preview.app
+ditto lib/main.dart.assets "$app_bundle/Contents/MacOS/main.dart.assets"
+open "$app_bundle"
 ```
+
+すでに `flutter run -d macos` で `.app` が生成されている場合は、画像のコピーと起動から実行できます。画像のパスで `PathNotFoundException` が出た場合は、エラーに表示された `.app` の位置と、コピー先を照合してください。
 
 ### HTMLのイベントからC・Dart関数を呼び出す
 
