@@ -10,3 +10,5 @@ build
 dist
 /javascript/node_modules/
 /benchmarks/node_modules/
+
+.DS_Store
