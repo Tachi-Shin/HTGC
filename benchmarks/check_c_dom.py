@@ -30,7 +30,9 @@ def main():
     parser.add_argument("reference", type=Path)
     args = parser.parse_args()
     reference = json.loads(args.reference.read_text(encoding="utf-8"))
-    code, site = generate(args.site / "index.html", graphics=False)
+    code, site = generate(
+        args.site / "index.html", graphics=False, includes=("contact.html",)
+    )
     harness = Path(__file__).with_name("c_dom_probe.inc").read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "portfolio.c"

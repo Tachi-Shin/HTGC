@@ -310,6 +310,22 @@ static void draw_picture(GtkDrawingArea *area G_GNUC_UNUSED, cairo_t *cr, int wi
         cairo_paint(cr);
     }
 }
+static char *page_relative_path(const char *reference)
+{
+    char *escaped = g_strndup(reference, strcspn(reference, "?#"));
+    char *path = g_uri_unescape_string(escaped, NULL);
+    g_free(escaped);
+    if (!path || !*path) return path;
+    char *directory = g_path_get_dirname(app.page->path);
+    char *base = g_build_filename(G_DIR_SEPARATOR_S, directory, NULL);
+    char *absolute = g_canonicalize_filename(path, base);
+    char *relative = g_strdup(absolute + 1);
+    g_free(absolute);
+    g_free(base);
+    g_free(directory);
+    g_free(path);
+    return relative;
+}
 static GtkWidget *picture(DomNode *node, GHashTable *style, double available, double height)
 {
     const char *reference = dom_attr(node, "src");
@@ -320,7 +336,10 @@ static GtkWidget *picture(DomNode *node, GHashTable *style, double available, do
         if (end) mask_path = g_strndup(mask + 5, end - mask - 5);
         reference = mask_path;
     }
+    char *local_path = !mask_path && reference ? page_relative_path(reference) : NULL;
+    if (local_path) reference = local_path;
     GdkTexture *asset = texture(reference);
+    g_free(local_path);
     g_free(mask_path);
     GtkWidget *widget = gtk_drawing_area_new();
     if (asset) {
@@ -344,14 +363,8 @@ static GtkWidget *picture(DomNode *node, GHashTable *style, double available, do
 }
 static const SitePage *page_for_link(const char *href)
 {
-    char *path = g_strndup(href, strcspn(href, "?#"));
-    if (!*path) { g_free(path); return app.page; }
-    char *directory = g_path_get_dirname(app.page->path);
-    char *joined = *path == '/' ? g_strdup(path + 1) : g_build_filename(directory, path, NULL);
-    if (g_str_has_prefix(joined, "./")) memmove(joined, joined + 2, strlen(joined + 2) + 1);
-    const SitePage *page = site_page(joined);
-    g_free(joined);
-    g_free(directory);
+    char *path = page_relative_path(href);
+    const SitePage *page = !path ? NULL : *path ? site_page(path) : app.page;
     g_free(path);
     return page;
 }

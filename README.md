@@ -94,13 +94,13 @@ cc -std=c11 app.gtk.c handlers.c -o app $(pkg-config --cflags --libs gtk4 libxml
 
 静的変換の対象外となるHTML/CSS/JavaScriptを `-Dart` または `-Gtk` に渡すと、拡張変換を使います。HTMLを要素ツリー、CSSをスタイル規則、JavaScriptをDartまたはC11の関数や制御構造へ変換します。生成したアプリはFlutterまたはGTK 4で描画します。Electron、WebView、実行時のJavaScriptエンジンは不要です。
 
-入力HTMLと同じディレクトリ以下のHTMLページと画像を取り込みます。CSSとJavaScriptはローカル参照をたどります。Node.jsとAcornは変換時のJavaScript構文解析に使います。
+入口のHTMLから、リンク先のローカルHTML、参照されるCSS・JavaScript・画像をたどります。JavaScriptが実行時に作るリンクや画像参照には、入口HTMLのディレクトリを基準に `--include ファイル` を指定できます。複数ある場合はファイルごとに繰り返します。Node.jsとAcornは変換時のJavaScript構文解析に使います。
 
 ```sh
 python3 -m pip install -r requirements-native.txt
 npm --prefix javascript ci
 flutter create --platforms=linux,macos,windows --project-name htgc_portfolio ../htgc_portfolio
-python3 HTGC -Dart ../Tachi-Shin.github.io/index.html -o ../htgc_portfolio/lib/main.dart
+python3 HTGC -Dart ../Tachi-Shin.github.io/index.html --include contact.html -o ../htgc_portfolio/lib/main.dart
 cd ../htgc_portfolio
 flutter pub add html:0.15.6 flutter_svg:2.2.1 url_launcher:6.3.2 shared_preferences:2.5.3
 flutter run
@@ -109,7 +109,7 @@ flutter run
 GTK 4版の拡張変換にはGTK 4とlibxml2の開発パッケージが必要です。Pythonとnpmの依存を上記と同様に準備してから実行します。
 
 ```sh
-python3 HTGC -Gtk ../Tachi-Shin.github.io/index.html -o portfolio.gtk.c
+python3 HTGC -Gtk ../Tachi-Shin.github.io/index.html --include contact.html -o portfolio.gtk.c
 cc -std=c11 portfolio.gtk.c -o portfolio-gtk $(pkg-config --cflags --libs gtk4 libxml-2.0) -lm
 ./portfolio-gtk dark
 ```

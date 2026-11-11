@@ -23,20 +23,27 @@ def main():
     parser.add_argument("html", type=Path, help="HTML entry point")
     parser.add_argument("-o", "--output", type=Path, help="output file (default: input stem with target extension)")
     parser.add_argument("--strict", action="store_true", help="treat backend warnings as errors")
+    parser.add_argument("--include", action="append", type=Path, default=[],
+                        help="include an additional HTML page or image relative to the entry directory (GTK 4 and Dart)")
     args = parser.parse_args()
+    if args.include and args.target == "c":
+        parser.error("--include requires -Gtk or -Dart")
     try:
         output = args.output or args.html.with_suffix("." + args.target)
-        try:
-            program = load_program(args.html)
-        except CompileError:
-            if args.target not in ("dart", "gtk.c"):
-                raise
+        program = None
+        if not args.include:
+            try:
+                program = load_program(args.html)
+            except CompileError:
+                if args.target == "c":
+                    raise
+        if program is None:
             if args.target == "dart":
                 from native_dart import generate
             else:
                 from native_c import generate
 
-            code, site = generate(args.html)
+            code, site = generate(args.html, includes=args.include)
             if output.resolve() in site.inputs:
                 raise CompileError(f"{output}: 入力ファイルには上書きできません")
             if args.target == "gtk.c":

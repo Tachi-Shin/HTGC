@@ -10,7 +10,7 @@ npm --prefix javascript ci
 git clone https://github.com/Tachi-Shin/Tachi-Shin.github.io.git ../portfolio-site
 git -C ../portfolio-site checkout c264c62fa8ceddac553cfd8e9873d2d659d524b4
 flutter create --platforms=linux,macos,windows --project-name htgc_portfolio ../portfolio-app
-python3 HTGC -Dart ../portfolio-site/index.html -o ../portfolio-app/lib/main.dart
+python3 HTGC -Dart ../portfolio-site/index.html --include contact.html -o ../portfolio-app/lib/main.dart
 cp benchmarks/portfolio_test.dart ../portfolio-app/test/portfolio_test.dart
 cd ../portfolio-app
 flutter pub add html:0.15.6 flutter_svg:2.2.1 url_launcher:6.3.2 shared_preferences:2.5.3
@@ -52,7 +52,7 @@ Apple Silicon Macでは `flutter build macos --release` でビルドし、`open 
 HTGCのルートで実行します。上記のPython・npm依存に加え、Cコンパイラ、GTK 4とlibxml2の開発パッケージ、`pkg-config` が必要です。
 
 ```sh
-python3 HTGC -Gtk ../portfolio-site/index.html -o ../portfolio.gtk.c
+python3 HTGC -Gtk ../portfolio-site/index.html --include contact.html -o ../portfolio.gtk.c
 cc -std=c11 -Wall -Wextra -Werror ../portfolio.gtk.c -o ../portfolio-gtk \
   $(pkg-config --cflags --libs gtk4 libxml-2.0) -lm
 ../portfolio-gtk index.html dark

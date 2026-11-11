@@ -24,7 +24,8 @@ padding-right padding-top place-items pointer-events position right text-align t
 top transform transition white-space width will-change z-index
 """.split()
 )
-IGNORED_DIRECTORIES = {".git", "node_modules", ".venv", "venv", ".native-venv"}
+PAGE_SUFFIXES = {".html", ".htm"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
 
 
 @dataclass
@@ -37,7 +38,7 @@ class NativeSite:
     handlers: list[tuple]
 
 
-def load_site(entry, *, script_compiler=compile_script):
+def load_site(entry, *, script_compiler=compile_script, includes=()):
     try:
         import html5lib
         import tinycss2
@@ -75,6 +76,13 @@ def load_site(entry, *, script_compiler=compile_script):
         inputs.add(path.resolve())
         return path.read_text(encoding="utf-8")
 
+    def add_asset(path):
+        key = path.relative_to(root).as_posix()
+        if key not in assets:
+            assets[key] = base64.b64encode(path.read_bytes()).decode()
+            inputs.add(path)
+        return key
+
     def declarations(tokens, owner):
         result = {}
         for d in tinycss2.parse_declaration_list(
@@ -93,14 +101,12 @@ def load_site(entry, *, script_compiler=compile_script):
 
             def url_replace(m):
                 ref = m[1].strip().strip("\"'")
-                if urlsplit(ref).scheme or ref.startswith("#"):
+                if urlsplit(ref).scheme or ref.startswith(("#", "//")):
                     return m[0]
                 path = local(ref, owner)
                 if not path.is_file():
                     raise CompileError(f"{owner}: CSSリソースがありません: {ref}")
-                key = path.relative_to(root).as_posix()
-                inputs.add(path)
-                assets[key] = base64.b64encode(path.read_bytes()).decode()
+                key = add_asset(path)
                 return f'url("{key}")'
 
             value = re.sub(r"url\(([^)]+)\)", url_replace, value)
@@ -187,13 +193,25 @@ def load_site(entry, *, script_compiler=compile_script):
                 children.append(child.tail)
         return {"tag": element.tag, "attributes": element.attrib, "children": children}
 
-    paths = sorted(
-        p
-        for p in root.rglob("*.html")
-        if not IGNORED_DIRECTORIES.intersection(p.relative_to(root).parts)
-    )
-    if entry not in paths:
-        paths.insert(0, entry)
+    paths = [entry]
+    scheduled = {entry}
+
+    def add_page(path):
+        if path not in scheduled:
+            scheduled.add(path)
+            paths.append(path)
+
+    for include in includes:
+        path = (root / include).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise CompileError(f"--include: 入力ルート内のファイルを指定してください: {include}")
+        if path.suffix.lower() in PAGE_SUFFIXES:
+            add_page(path)
+        elif path.suffix.lower() in IMAGE_SUFFIXES:
+            add_asset(path)
+        else:
+            raise CompileError(f"--include: HTMLまたは画像を指定してください: {include}")
+
     for path in paths:
         tree = html5lib.parse(read(path), namespaceHTMLElements=False)
         styles = []
@@ -214,6 +232,21 @@ def load_site(entry, *, script_compiler=compile_script):
                     handler_ids[key] = len(handlers)
                     handlers.append(parse_handler(key[1], path, attribute))
                 el.attrib[attribute] = str(handler_ids[key])
+            reference = None
+            if el.tag in {"a", "area"}:
+                reference = el.attrib.get("href")
+            elif el.tag == "img":
+                reference = el.attrib.get("src")
+            elif el.tag == "link" and "icon" in el.attrib.get("rel", "").lower().split():
+                reference = el.attrib.get("href")
+            if reference:
+                url = urlsplit(reference)
+                if not url.scheme and not url.netloc and url.path:
+                    if el.tag in {"a", "area"}:
+                        if Path(unquote(url.path)).suffix.lower() in PAGE_SUFFIXES:
+                            add_page(local(reference, path))
+                    else:
+                        add_asset(local(reference, path))
             if el.tag == "link" and el.attrib.get("rel") == "stylesheet":
                 source = local(el.attrib["href"], path)
                 styles.extend(css(read(source), source))
@@ -244,19 +277,6 @@ def load_site(entry, *, script_compiler=compile_script):
             "styles": styles,
             "scripts": scripts,
         }
-    for path in root.rglob("*"):
-        if (
-            path.is_file()
-            and path.suffix.lower()
-            in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
-            and not IGNORED_DIRECTORIES.intersection(path.relative_to(root).parts)
-        ):
-            if not path.resolve().is_relative_to(root):
-                raise CompileError(f"{path}: 入力ルート外の画像は取り込めません")
-            inputs.add(path.resolve())
-            assets[path.relative_to(root).as_posix()] = base64.b64encode(
-                path.read_bytes()
-            ).decode()
     return NativeSite(
         entry.relative_to(root).as_posix(), pages, assets, compiled_scripts, inputs, handlers
     )
