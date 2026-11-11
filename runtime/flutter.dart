@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:io';
 import 'dart:ui' as ui;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -14,7 +14,9 @@ import 'css.dart';
 
 class NativeSiteApp extends StatefulWidget {
   final String entry;
-  final Map<String, dynamic> pages, assets;
+  final Map<String, dynamic> pages;
+  final Set<String> assets;
+  final Directory assetDirectory;
   final List<void Function(JScope)> scripts;
   final Map<String, String> storage;
   final void Function(Map<String, String>)? saveStorage;
@@ -26,6 +28,7 @@ class NativeSiteApp extends StatefulWidget {
       required this.entry,
       required this.pages,
       required this.assets,
+      required this.assetDirectory,
       required this.scripts,
       required this.storage,
       this.saveStorage,
@@ -43,7 +46,6 @@ class NativeSiteState extends State<NativeSiteApp>
   late String current;
   final ScrollController scroll = ScrollController();
   final Map<dom.Element, GlobalKey> nodeKeys = Map.identity();
-  final Map<String, Uint8List> imageBytes = {};
   final List<String> history = [];
   final formKey = GlobalKey<FormState>();
   late Ticker ticker;
@@ -350,22 +352,22 @@ class NativeSiteState extends State<NativeSiteApp>
     return Uri(path: current).resolve(reference).path;
   }
 
-  Uint8List bytes(String path) => imageBytes.putIfAbsent(
-      path, () => base64Decode(widget.assets[path] as String));
   Widget imageWidget(String reference, double? width, double? height,
       {Color? tint, BoxFit fit = BoxFit.contain}) {
     final path =
-        widget.assets.containsKey(reference) ? reference : assetPath(reference);
-    if (!widget.assets.containsKey(path))
+        widget.assets.contains(reference) ? reference : assetPath(reference);
+    if (!widget.assets.contains(path))
       return Image.network(reference, width: width, height: height, fit: fit);
+    final file = File.fromUri(
+        widget.assetDirectory.uri.resolveUri(Uri(path: path)));
     if (path.toLowerCase().endsWith('.svg'))
-      return SvgPicture.memory(bytes(path),
+      return SvgPicture.file(file,
           width: width,
           height: height,
           fit: fit,
           colorFilter:
               tint == null ? null : ColorFilter.mode(tint, BlendMode.srcIn));
-    return Image.memory(bytes(path),
+    return Image.file(file,
         width: width,
         height: height,
         fit: fit,

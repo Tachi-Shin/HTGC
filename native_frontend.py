@@ -1,6 +1,5 @@
 """HTML5/CSS parsing for the native Dart runtime, independent of browser engines."""
 
-import base64
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -32,7 +31,7 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
 class NativeSite:
     entry: str
     pages: dict
-    assets: dict
+    assets: dict[str, Path]
     scripts: list[str]
     inputs: set[Path]
     handlers: list[tuple]
@@ -78,9 +77,10 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
 
     def add_asset(path):
         key = path.relative_to(root).as_posix()
-        if key not in assets:
-            assets[key] = base64.b64encode(path.read_bytes()).decode()
-            inputs.add(path)
+        if not path.is_file():
+            raise CompileError(f"{path}: 画像ファイルがありません")
+        assets[key] = path
+        inputs.add(path)
         return key
 
     def declarations(tokens, owner):

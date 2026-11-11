@@ -96,6 +96,8 @@ cc -std=c11 app.gtk.c handlers.c -o app $(pkg-config --cflags --libs gtk4 libxml
 
 入口のHTMLから、リンク先のローカルHTML、参照されるCSS・JavaScript・画像をたどります。JavaScriptが実行時に作るリンクや画像参照には、入口HTMLのディレクトリを基準に `--include ファイル` を指定できます。複数ある場合はファイルごとに繰り返します。Node.jsとAcornは変換時のJavaScript構文解析に使います。
 
+画像がある場合、HTGCは画像を生成ソースの隣の `<出力ファイル名>.assets/` にコピーします。元の相対パスは維持されます。アプリを配布するときは、このディレクトリを実行ファイルと同じ場所に置いてください。たとえば `portfolio.gtk.c` の画像は `portfolio.gtk.c.assets/` に入ります。
+
 ```sh
 python3 -m pip install -r requirements-native.txt
 npm --prefix javascript ci
@@ -103,7 +105,9 @@ flutter create --platforms=linux,macos,windows --project-name htgc_portfolio ../
 python3 HTGC -Dart ../Tachi-Shin.github.io/index.html --include contact.html -o ../htgc_portfolio/lib/main.dart
 cd ../htgc_portfolio
 flutter pub add html:0.15.6 flutter_svg:2.2.1 url_launcher:6.3.2 shared_preferences:2.5.3
-flutter run
+flutter build linux --release
+cp -R lib/main.dart.assets build/linux/x64/release/bundle/
+./build/linux/x64/release/bundle/htgc_portfolio
 ```
 
 GTK 4版の拡張変換にはGTK 4とlibxml2の開発パッケージが必要です。Pythonとnpmの依存を上記と同様に準備してから実行します。

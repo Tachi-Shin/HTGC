@@ -6,6 +6,7 @@ typedef struct {
     GtkWidget *window, *scroller;
     GtkCssProvider *provider;
     GHashTable *storage, *textures, *surfaces;
+    char *asset_directory;
     GPtrArray *rendered_nodes;
     const SitePage *page;
     DomRuntime dom;
@@ -233,22 +234,17 @@ static GdkTexture *texture(const char *path)
     GdkTexture *cached = g_hash_table_lookup(app.textures, path);
     if (cached) return cached;
     for (size_t i = 0; i < site_asset_count; i++) {
-        if (strcmp(path, site_assets[i].path)) continue;
-        gsize count;
-        guchar *bytes = g_base64_decode(site_assets[i].data, &count);
-        GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
+        if (strcmp(path, site_assets[i])) continue;
+        char *filename = g_build_filename(app.asset_directory, path, NULL);
         GError *error = NULL;
-        bool decoded = gdk_pixbuf_loader_write(loader, bytes, count, &error);
-        g_free(bytes);
-        if (decoded) decoded = gdk_pixbuf_loader_close(loader, &error);
-        else gdk_pixbuf_loader_close(loader, NULL);
-        GdkPixbuf *pixbuf = decoded ? gdk_pixbuf_loader_get_pixbuf(loader) : NULL;
+        GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(filename, &error);
         if (!pixbuf) {
-            g_warning("Image %s: %s", path, error ? error->message : "empty image");
+            g_warning("Image %s: %s", filename, error ? error->message : "empty image");
             g_clear_error(&error);
-            g_object_unref(loader);
+            g_free(filename);
             return NULL;
         }
+        g_free(filename);
         GdkPixbuf *oriented = gdk_pixbuf_apply_embedded_orientation(pixbuf);
         GdkPixbuf *image = oriented ? oriented : pixbuf;
         GBytes *pixels = gdk_pixbuf_read_pixel_bytes(image);
@@ -259,7 +255,7 @@ static GdkTexture *texture(const char *path)
             format, pixels, gdk_pixbuf_get_rowstride(image));
         g_bytes_unref(pixels);
         g_clear_object(&oriented);
-        g_object_unref(loader);
+        g_object_unref(pixbuf);
         g_hash_table_insert(app.textures, g_strdup(path), value);
         return value;
     }
@@ -867,6 +863,15 @@ int main(int argc, char **argv)
 {
     const SitePage *page = site_page(site_entry);
     if (!page) { fprintf(stderr, "Embedded entry page is missing\\n"); return 2; }
+    char *executable = NULL;
+#ifdef __linux__
+    executable = g_file_read_link("/proc/self/exe", NULL);
+#endif
+    if (!executable) executable = g_find_program_in_path(argv[0]);
+    char *directory = g_path_get_dirname(executable ? executable : argv[0]);
+    app.asset_directory = g_build_filename(directory, site_asset_directory, NULL);
+    g_free(directory);
+    g_free(executable);
     app.rendered_nodes = g_ptr_array_new();
     app.storage = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     app.textures = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
@@ -888,5 +893,6 @@ int main(int argc, char **argv)
     g_hash_table_unref(app.storage);
     g_hash_table_unref(app.surfaces);
     g_hash_table_unref(app.textures);
+    g_free(app.asset_directory);
     return result;
 }
