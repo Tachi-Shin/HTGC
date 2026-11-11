@@ -52,9 +52,9 @@ cd htgc_preview
 flutter run
 ```
 
-### JavaScriptを含むサイトのDart変換
+### JavaScriptを含むサイトの変換
 
-静的変換の対象外となるHTML/CSS/JavaScriptを `-Dart` に渡すと、拡張変換を使います。HTMLを要素ツリー、CSSをスタイル規則、JavaScriptをDartの関数や制御構造へ変換します。Flutterのウィジェットと描画APIで表示します。Electron、WebView、実行時のJavaScriptエンジンは不要です。
+静的変換の対象外となるHTML/CSS/JavaScriptを `-Dart` または `-Gtk` に渡すと、拡張変換を使います。HTMLを要素ツリー、CSSをスタイル規則、JavaScriptをDartまたはC11の関数や制御構造へ変換します。生成したアプリはFlutterまたはGTK 4で描画します。Electron、WebView、実行時のJavaScriptエンジンは不要です。
 
 入力HTMLと同じディレクトリ以下のHTMLページと画像を取り込みます。CSSとJavaScriptはローカル参照をたどります。Node.jsとAcornは変換時のJavaScript構文解析に使います。
 
@@ -68,7 +68,15 @@ flutter pub add html:0.15.6 flutter_svg:2.2.1 url_launcher:6.3.2 shared_preferen
 flutter run
 ```
 
-実サイトのビルド、全4ページの操作テスト、対応範囲は [ベンチマーク手順](benchmarks/README.md) を参照してください。拡張変換の手順ではリポジトリの `python3 HTGC` を使用します。
+GTK 4版の拡張変換にはGTK 4とlibxml2の開発パッケージが必要です。Pythonとnpmの依存を上記と同様に準備してから実行します。
+
+```sh
+python3 HTGC -Gtk ../Tachi-Shin.github.io/index.html -o portfolio.gtk.c
+cc -std=c11 portfolio.gtk.c -o portfolio-gtk $(pkg-config --cflags --libs gtk4 libxml-2.0) -lm
+./portfolio-gtk index.html dark
+```
+
+GTK 4の拡張変換はCSS描画とCanvasに未対応の箇所があるため警告を出します。`--strict` を指定すると出力を中止します。IUPの `-Clang` は静的変換に対応しています。拡張変換の手順ではリポジトリの `python3 HTGC` を使用します。ビルドと照合手順は [ベンチマーク](benchmarks/README.md) を参照してください。
 
 ## 静的変換のファイルの読み込み
 
@@ -121,7 +129,7 @@ flutter run
 
 `frontend.py` がHTML・CSS・参照ファイルを読み、共通の `Program` と `View` を作ります。 `backend_iup.py`・`backend_gtk.py`・`backend_dart.py` が、それぞれのGUIライブラリ向けのソースを生成します。
 
-拡張Dart変換は `native_frontend.py` でHTML/CSSを読み、`js_dart.py` でJavaScriptの構文木からDartを生成します。`native_dart.py` がそれらを `runtime/` のDOM操作、CSSカスケード、Flutter描画のコードと合わせて出力します。
+拡張変換は `native_frontend.py` でHTML/CSSを読み、`js_dart.py` または `js_c.py` でJavaScriptの構文木から対象言語を生成します。`native_dart.py` と `native_c.py` はそれぞれの結果を `runtime/` のDOM操作、CSSカスケード、描画のコードと合わせて出力します。
 
 ## 単体実行ファイルを作る
 

@@ -37,6 +37,10 @@ void main() {
 
     await render();
     expect(state.current, 'index.html');
+    expect(
+      tester.getSize(element('header.site')).height,
+      closeTo(tester.getSize(element('nav')).height + 1, .01),
+    );
     expect(state.document.querySelectorAll('#news-list li'), hasLength(9));
     expect(find.byType(Image), findsNWidgets(12));
     final hero = tester.getRect(element('.hero'));

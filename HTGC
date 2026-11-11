@@ -29,13 +29,21 @@ def main():
         try:
             program = load_program(args.html)
         except CompileError:
-            if args.target != "dart":
+            if args.target not in ("dart", "gtk.c"):
                 raise
-            from native_dart import generate
+            if args.target == "dart":
+                from native_dart import generate
+            else:
+                from native_c import generate
 
             code, site = generate(args.html)
             if output.resolve() in site.inputs:
                 raise CompileError(f"{output}: 入力ファイルには上書きできません")
+            if args.target == "gtk.c":
+                message = "GTKの拡張変換では一部のCSS描画とCanvasが未対応です"
+                if args.strict:
+                    raise CompileError(message)
+                print(f"HTGC: warning: {message}", file=sys.stderr)
             output.write_text(code, encoding="utf-8")
             return
         if output.resolve() in program.inputs:

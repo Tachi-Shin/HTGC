@@ -9,3 +9,4 @@ __pycache__/
 build
 dist
 /javascript/node_modules/
+/benchmarks/node_modules/
