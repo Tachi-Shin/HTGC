@@ -56,9 +56,11 @@ void main() {
         of: element('.bg-track--left'),
         matching: find.byType(FractionalTranslation));
     final previous = tester.widget<FractionalTranslation>(track).translation;
+    final stylesheet = state.css;
     await tester.pump(const Duration(milliseconds: 100));
     expect(tester.widget<FractionalTranslation>(track).translation,
         isNot(previous));
+    expect(state.css, same(stylesheet));
     expect(state.document.querySelector('.hero__inner')!.classes,
         contains('is-visible'));
     expect(storage['theme'], 'auto');

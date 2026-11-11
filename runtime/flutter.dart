@@ -49,17 +49,15 @@ class NativeSiteState extends State<NativeSiteApp>
   final List<String> history = [];
   final formKey = GlobalKey<FormState>();
   late Ticker ticker;
-  double elapsed = 0;
+  final elapsed = ValueNotifier<double>(0);
   bool loading = false, queued = false, hasAnimation = false;
   dom.Document get document => runtime.document;
   @override
   void initState() {
     super.initState();
     ticker = createTicker((duration) {
-      elapsed = duration.inMicroseconds / 1000;
-      if (hasAnimation || runtime.frames.isNotEmpty) {
-        if (mounted) setState(() {});
-      }
+      elapsed.value = duration.inMicroseconds / 1000;
+      if (runtime.frames.isNotEmpty && mounted) setState(() {});
     });
     load(widget.entry);
     scroll.addListener(queue);
@@ -144,6 +142,7 @@ class NativeSiteState extends State<NativeSiteApp>
   @override
   void dispose() {
     ticker.dispose();
+    elapsed.dispose();
     scroll.dispose();
     super.dispose();
   }
@@ -169,7 +168,7 @@ class NativeSiteState extends State<NativeSiteApp>
           };
         }
       }
-      runtime.frame(elapsed, scrollY: scroll.hasClients ? scroll.offset : 0);
+      runtime.frame(elapsed.value, scrollY: scroll.hasClients ? scroll.offset : 0);
       if (hasAnimation || runtime.frames.isNotEmpty) {
         if (!ticker.isActive) ticker.start();
       } else if (ticker.isActive) {
@@ -367,10 +366,14 @@ class NativeSiteState extends State<NativeSiteApp>
           fit: fit,
           colorFilter:
               tint == null ? null : ColorFilter.mode(tint, BlendMode.srcIn));
+    final cacheHeight = width == null && height != null && height.isFinite && height > 0
+        ? (height * View.of(context).devicePixelRatio).ceil()
+        : null;
     return Image.file(file,
         width: width,
         height: height,
         fit: fit,
+        cacheHeight: cacheHeight,
         filterQuality: FilterQuality.medium);
   }
 
@@ -679,32 +682,48 @@ class NativeSiteState extends State<NativeSiteApp>
           child: content);
     }
     content = Padding(padding: margin, child: content);
-    var transform = s['transform'] ?? 'none';
+    final translation = transformTranslation(s['transform'] ?? 'none');
+    ((Offset, Offset), (Offset, Offset), double)? animation;
     if (!runtime.reducedMotion &&
         s['animation'] != null &&
         s['animation'] != 'none') {
-      hasAnimation = true;
       final fields = cssSplit(s['animation']!);
-      final frames = css.keyframes[fields.first];
-      final ms = fields.length > 1 ? css.length(fields[1]) ?? 1000 : 1000;
-      if (frames != null) {
+      final frames = fields.isEmpty ? null : css.keyframes[fields.first];
+      final ms = fields.length > 1 ? css.length(fields[1]) ?? 1000.0 : 1000.0;
+      if (frames != null && ms.isFinite && ms > 0) {
         final a =
             Map<String, dynamic>.from(frames['from'] ?? frames['0%'] ?? {});
         final b =
             Map<String, dynamic>.from(frames['to'] ?? frames['100%'] ?? {});
         if (a['transform'] != null && b['transform'] != null) {
-          transform = interpolateTransform(
-              a['transform'][0], b['transform'][0], (elapsed % ms) / ms);
+          animation = (transformTranslation(a['transform'][0]),
+              transformTranslation(b['transform'][0]), ms);
+          hasAnimation = true;
         }
       }
     }
-    final translation = transformTranslation(
-        transform, width ?? available, height ?? heightBasis);
-    if (translation.$1 != Offset.zero)
-      content = Transform.translate(offset: translation.$1, child: content);
-    if (translation.$2 != Offset.zero)
-      content =
-          FractionalTranslation(translation: translation.$2, child: content);
+    if (animation case (final start, final end, final duration)) {
+      content = AnimatedBuilder(
+        animation: elapsed,
+        child: RepaintBoundary(child: content),
+        builder: (context, child) {
+          final progress = (elapsed.value % duration) / duration;
+          return FractionalTranslation(
+            translation: Offset.lerp(start.$2, end.$2, progress)!,
+            child: Transform.translate(
+              offset: Offset.lerp(start.$1, end.$1, progress)!,
+              child: child,
+            ),
+          );
+        },
+      );
+    } else {
+      if (translation.$1 != Offset.zero)
+        content = Transform.translate(offset: translation.$1, child: content);
+      if (translation.$2 != Offset.zero)
+        content =
+            FractionalTranslation(translation: translation.$2, child: content);
+    }
     final opacity = (double.tryParse(s['opacity'] ?? '1') ?? 1).clamp(0.0, 1.0);
     final transition = RegExp(r'([\d.]+m?s)').firstMatch(s['transition'] ?? '');
     content = AnimatedOpacity(
@@ -795,7 +814,7 @@ class NativeSiteState extends State<NativeSiteApp>
         painter: NativeBackgroundPainter(css, layers), child: child);
   }
 
-  (Offset, Offset) transformTranslation(String text, double w, double h) {
+  (Offset, Offset) transformTranslation(String text) {
     double x = 0, y = 0, fx = 0, fy = 0;
     for (final m in RegExp(r'translate(X|Y)?\(([^)]+)\)').allMatches(text)) {
       final values = cssSplit(m[2]!, ',');
@@ -825,16 +844,6 @@ class NativeSiteState extends State<NativeSiteApp>
       }
     }
     return (Offset(x, y), Offset(fx, fy));
-  }
-
-  String interpolateTransform(String a, String b, double t) {
-    final numbers = RegExp(r'-?[\d.]+');
-    final end = numbers.allMatches(b).map((m) => double.parse(m[0]!)).toList();
-    var i = 0;
-    return a.replaceAllMapped(numbers, (m) {
-      final n = double.parse(m[0]!);
-      return '${n + ((i < end.length ? end[i++] : n) - n) * t}';
-    });
   }
 }
 
