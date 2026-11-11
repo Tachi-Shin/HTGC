@@ -5,6 +5,7 @@ import re
 
 from c_source import c_string
 from js_c import compile_script
+from native_events import emit_handler
 from native_frontend import load_site
 
 
@@ -172,6 +173,30 @@ static bool site_load(DomRuntime *runtime, const SitePage *page)
 """
     )
     if graphics:
+        handler_source = repr(site.handlers)
+        event_id, text_parameter = "htgc_event_id", "htgc_event_text"
+        while event_id in handler_source:
+            event_id += "_"
+        while text_parameter in handler_source:
+            text_parameter += "_"
+        calls = []
+        for index, handler in enumerate(site.handlers):
+            expression = emit_handler(handler, dart=False, text_parameter=text_parameter)
+            calls.extend([
+                f'    if (strcmp({event_id}, "{index}") == 0) {{',
+                f"        (void){expression};",
+                "        return;",
+                "    }",
+            ])
+        chunks.append("\n".join([
+            *(['#include "htgc_handlers.h"'] if site.handlers else []),
+            f"static void htgc_invoke(const char *{event_id}, const char *{text_parameter})",
+            "{",
+            f"    if (!{event_id}) return;",
+            f"    (void){text_parameter};",
+            *calls,
+            "}",
+        ]))
         animations = {}
         for page in site.pages.values():
             for rule in page["styles"]:
