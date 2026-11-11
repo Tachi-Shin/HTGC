@@ -52,6 +52,38 @@ cd htgc_preview
 flutter run
 ```
 
+#### macOSでビルドする場合
+
+macOS向けのFlutterプロジェクトで、HTGCが生成したDartを `lib/main.dart` に配置します。拡張変換の出力を使う場合は、プロジェクトのルートで次の依存パッケージを追加します。
+
+```sh
+flutter pub add html flutter_svg url_launcher shared_preferences
+```
+
+Xcodeのビルドログにデプロイターゲット `10.15` がサポート範囲外で、下限が `12.0` と表示される場合は、次の設定を確認します。すでに `12.0` 以上の設定はその値を使います。
+
+1. `macos/Runner.xcodeproj/project.pbxproj` の `MACOSX_DEPLOYMENT_TARGET = 10.15;` を `MACOSX_DEPLOYMENT_TARGET = 12.0;` に変更します。Debug・Profile・Releaseの各設定を確認してください。
+2. CocoaPodsを使っていて `macos/Podfile` がある場合は、`platform :osx, '12.0'` を指定します。Pods個別にも `12.0` 未満の警告が出る場合は、既存の `post_install` を次の形に調整します。他の処理を追加している場合はその処理も残してください。
+
+   ```ruby
+   post_install do |installer|
+     minimum = Gem::Version.new('12.0')
+     installer.pods_project.targets.each do |target|
+       flutter_additional_macos_build_settings(target)
+       target.build_configurations.each do |config|
+         version = config.build_settings['MACOSX_DEPLOYMENT_TARGET'].to_s
+         if version.match?(/\A\d+(?:\.\d+)*\z/) && Gem::Version.new(version) < minimum
+           config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = minimum.to_s
+         end
+       end
+     end
+   end
+   ```
+
+```sh
+flutter run -d macos
+```
+
 ### HTMLのイベントからC・Dart関数を呼び出す
 
 `-Gtk` と `-Dart` の拡張変換では、ボタンやリンクの `onclick` と、入力欄の `oninput` からアプリ側の関数を呼べます。
