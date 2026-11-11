@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:htgc_portfolio/main.dart';
@@ -16,7 +17,8 @@ void main() {
       key: key,
       entry: htgcSiteData['entry'],
       pages: Map<String, dynamic>.from(htgcSiteData['pages']),
-      assets: Map<String, dynamic>.from(htgcSiteData['assets']),
+      assets: Set<String>.from(htgcSiteData['assets']),
+      assetDirectory: Directory('lib/$htgcAssetDirectory'),
       scripts: htgcScripts,
       storage: storage,
       externalLink: external.add,

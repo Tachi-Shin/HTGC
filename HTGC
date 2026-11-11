@@ -3,6 +3,7 @@
 
 import argparse
 from pathlib import Path
+from shutil import copyfile
 import sys
 
 import backend_dart
@@ -43,7 +44,8 @@ def main():
             else:
                 from native_c import generate
 
-            code, site = generate(args.html, includes=args.include)
+            asset_name = output.name + ".assets"
+            code, site = generate(args.html, includes=args.include, asset_name=asset_name)
             if output.resolve() in site.inputs:
                 raise CompileError(f"{output}: 入力ファイルには上書きできません")
             if args.target == "gtk.c":
@@ -51,6 +53,22 @@ def main():
                 if args.strict:
                     raise CompileError(message)
                 print(f"HTGC: warning: {message}", file=sys.stderr)
+            asset_directory = output.parent.resolve() / asset_name
+            if site.assets and asset_directory.is_symlink():
+                raise CompileError(f"{asset_directory}: 画像の出力先にシンボリックリンクは使えません")
+            destinations = []
+            for name, source in site.assets.items():
+                destination = asset_directory / name
+                if not destination.resolve().is_relative_to(asset_directory):
+                    raise CompileError(f"{destination}: 画像の出力先ディレクトリ外です")
+                if destination.resolve() == source:
+                    continue
+                if destination.resolve() in site.inputs:
+                    raise CompileError(f"{destination}: 入力ファイルには上書きできません")
+                destinations.append((source, destination))
+            for source, destination in destinations:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                copyfile(source, destination)
             output.write_text(code, encoding="utf-8")
             return
         if output.resolve() in program.inputs:

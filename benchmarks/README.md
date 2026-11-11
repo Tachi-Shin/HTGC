@@ -21,6 +21,7 @@ Linux x64でリリース版をビルドして起動します。
 
 ```sh
 flutter build linux --release
+cp -R lib/main.dart.assets build/linux/x64/release/bundle/
 ./build/linux/x64/release/bundle/htgc_portfolio
 ```
 
@@ -30,7 +31,7 @@ Contactは元サイトのナビゲーションにリンクがありません。�
 ./build/linux/x64/release/bundle/htgc_portfolio contact.html
 ```
 
-Apple Silicon Macでは `flutter build macos --release` でビルドし、`open build/macos/Build/Products/Release/htgc_portfolio.app` で起動します。macOSとWindowsの実行確認は未実施です。
+Apple Silicon Macでは `flutter build macos --release` でビルドし、`lib/main.dart.assets/` を `build/macos/Build/Products/Release/htgc_portfolio.app/Contents/MacOS/` にコピーしてから、`open build/macos/Build/Products/Release/htgc_portfolio.app` で起動します。配布用の署名は画像をコピーしてから行います。macOSとWindowsの実行確認は未実施です。
 
 | 確認項目 | 結果 |
 | --- | --- |

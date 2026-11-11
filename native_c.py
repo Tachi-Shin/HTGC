@@ -107,7 +107,7 @@ def emit_styles(index, rules):
     )
 
 
-def generate(entry, *, graphics=True, includes=()):
+def generate(entry, *, graphics=True, includes=(), asset_name="htgc.assets"):
     site = load_site(entry, script_compiler=compile_script, includes=includes)
     chunks = ["/* Generated C11. Edit the HTML/CSS/JavaScript inputs. */"]
     for name in ("js_c_core.inc", "dom_c.inc"):
@@ -216,17 +216,13 @@ static bool site_load(DomRuntime *runtime, const SitePage *page)
         if not animations:
             chunks.append("    {NULL, NULL, NULL},")
         chunks.append("};")
-        chunks.append("typedef struct { const char *path, *data; } SiteAsset;")
+        chunks.append(f"static const char *site_asset_directory = {c_string(asset_name)};")
         chunks.append(f"static const size_t site_asset_count = {len(site.assets)};")
-        chunks.append("static const SiteAsset site_assets[] = {")
-        for name, data in site.assets.items():
-            chunks.append(f"    {{{c_string(name)},")
-            chunks.extend(
-                f"        {c_string(data[i:i+960])}" for i in range(0, len(data), 960)
-            )
-            chunks.append("    },")
+        chunks.append("static const char *const site_assets[] = {")
+        for name in site.assets:
+            chunks.append(f"    {c_string(name)},")
         if not site.assets:
-            chunks.append("    {NULL, NULL},")
+            chunks.append("    NULL,")
         chunks.append("};")
         chunks.append((RUNTIME / "gtk_site.inc").read_text(encoding="utf-8"))
     return "\n\n".join(chunks) + "\n", site
