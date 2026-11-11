@@ -47,7 +47,8 @@ def generate(entry):
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
   final pages = Map<String, dynamic>.from(htgcSiteData['pages']);
-  final String entry = arguments.isEmpty ? htgcSiteData['entry'] : arguments.first;
+  final paths = arguments.where((argument) => argument != '--reduced-motion');
+  final String entry = paths.isEmpty ? htgcSiteData['entry'] : paths.first;
   if (!pages.containsKey(entry)) {
     throw ArgumentError('Page is not compiled: $entry');
   }
@@ -60,6 +61,7 @@ Future<void> main(List<String> arguments) async {
     assets: Map<String, dynamic>.from(htgcSiteData['assets']),
     scripts: htgcScripts,
     storage: storage,
+    reducedMotion: arguments.contains('--reduced-motion') ? true : null,
     saveStorage: (values) {
       prefs.setString('htgc.localStorage', jsonEncode(values));
     },

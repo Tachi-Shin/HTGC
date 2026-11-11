@@ -19,6 +19,7 @@ class NativeSiteApp extends StatefulWidget {
   final Map<String, String> storage;
   final void Function(Map<String, String>)? saveStorage;
   final void Function(Uri)? externalLink;
+  final bool? reducedMotion;
   const NativeSiteApp(
       {super.key,
       required this.entry,
@@ -27,7 +28,8 @@ class NativeSiteApp extends StatefulWidget {
       required this.scripts,
       required this.storage,
       this.saveStorage,
-      this.externalLink});
+      this.externalLink,
+      this.reducedMotion});
   @override
   NativeSiteState createState() => NativeSiteState();
 }
@@ -84,7 +86,8 @@ class NativeSiteState extends State<NativeSiteApp>
         saveStorage: widget.saveStorage);
     final platform = WidgetsBinding.instance.platformDispatcher;
     runtime.dark = platform.platformBrightness == Brightness.dark;
-    runtime.reducedMotion = platform.accessibilityFeatures.disableAnimations;
+    runtime.reducedMotion =
+        widget.reducedMotion ?? platform.accessibilityFeatures.disableAnimations;
     final root = runtime.newScope();
     for (final int script in data['scripts']) {
       widget.scripts[script](JScope(root));
@@ -182,7 +185,7 @@ class NativeSiteState extends State<NativeSiteApp>
           runtime.viewportWidth = media.size.width;
           runtime.viewportHeight = media.size.height;
           runtime.dark = media.platformBrightness == Brightness.dark;
-          runtime.reducedMotion = media.disableAnimations;
+          runtime.reducedMotion = widget.reducedMotion ?? media.disableAnimations;
           css = NativeCss(
               runtime, List<dynamic>.from(widget.pages[current]['styles']));
           hasAnimation = false;
@@ -270,10 +273,9 @@ class NativeSiteState extends State<NativeSiteApp>
         width: css.length(tokens.first, font: font(s)) ?? 1, color: color);
   }
 
-  BoxDecoration decoration(Map<String, String> s, double width,
-      {bool mask = false}) {
+  Border borders(Map<String, String> s) {
     final base = borderSide(s['border'], s);
-    final border = Border(
+    return Border(
         top:
             s.containsKey('border-top') ? borderSide(s['border-top'], s) : base,
         right: s.containsKey('border-right')
@@ -285,6 +287,11 @@ class NativeSiteState extends State<NativeSiteApp>
         left: s.containsKey('border-left')
             ? borderSide(s['border-left'], s)
             : base);
+  }
+
+  BoxDecoration decoration(Map<String, String> s, double width,
+      {bool mask = false}) {
+    final border = borders(s);
     final shadows = <BoxShadow>[];
     for (final raw in cssSplit(s['box-shadow'] ?? '', ',')) {
       final p = cssSplit(raw);
@@ -390,7 +397,7 @@ class NativeSiteState extends State<NativeSiteApp>
       return const SizedBox.shrink();
     final f = font(s),
         margin = edges(s, 'margin', available),
-        padding = edges(s, 'padding', available);
+        padding = edges(s, 'padding', available).add(borders(s).dimensions) as EdgeInsets;
     final outerWidth = math.max(0.0, available - margin.horizontal);
     final maxWidth = css.length(s['max-width'], basis: outerWidth, font: f) ??
         double.infinity;
@@ -591,8 +598,8 @@ class NativeSiteState extends State<NativeSiteApp>
         pseudo.isEmpty &&
             ['before', 'after']
                 .any((p) => css.get(el, p).containsKey('content'))) {
-      final layers = <({int z, Widget child})>[];
-      layers.add((z: 0, child: content));
+      final layers = <({int z, int order, Widget child})>[];
+      layers.add((z: 0, order: 0, child: content));
       final containingHeight =
           height ?? (minHeight > 0 ? minHeight : heightBasis);
       Widget position(Widget child, Map<String, String> style) => Positioned(
@@ -601,10 +608,12 @@ class NativeSiteState extends State<NativeSiteApp>
           top: css.length(style['top'], basis: containingHeight, font: f),
           bottom: css.length(style['bottom'], basis: containingHeight, font: f),
           child: child);
-      for (final child in absolute) {
+      for (var index = 0; index < absolute.length; index++) {
+        final child = absolute[index];
         final st = css.get(child);
         layers.add((
           z: int.tryParse(st['z-index'] ?? '0') ?? 0,
+          order: index + 1,
           child:
               position(buildNode(child, containingHeight: containingHeight), st)
         ));
@@ -615,6 +624,7 @@ class NativeSiteState extends State<NativeSiteApp>
           if (st.containsKey('content'))
             layers.add((
               z: int.tryParse(st['z-index'] ?? '0') ?? 0,
+              order: p == 'before' ? -1 : absolute.length + 1,
               child: position(
                   box(el, st, width ?? available, height ?? heightBasis,
                       pseudo: p, shrink: true),
@@ -622,7 +632,10 @@ class NativeSiteState extends State<NativeSiteApp>
             ));
         }
       }
-      layers.sort((a, b) => a.z.compareTo(b.z));
+      layers.sort((a, b) {
+        final stacking = a.z.compareTo(b.z);
+        return stacking == 0 ? a.order.compareTo(b.order) : stacking;
+      });
       content = Stack(
           clipBehavior: Clip.none,
           children: layers.map((e) => e.child).toList());

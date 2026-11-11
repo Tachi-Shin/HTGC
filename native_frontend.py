@@ -35,14 +35,14 @@ class NativeSite:
     inputs: set[Path]
 
 
-def load_site(entry):
+def load_site(entry, *, script_compiler=compile_script):
     try:
         import html5lib
         import tinycss2
         from cssselect2.parser import parse as parse_selector
     except ImportError as error:
         raise CompileError(
-            "Dartの拡張変換には pip install -r requirements-native.txt が必要です"
+            "拡張変換には pip install -r requirements-native.txt が必要です"
         ) from error
     entry = Path(entry).resolve(strict=True)
     root = entry.parent
@@ -81,7 +81,7 @@ def load_site(entry):
             name = d.name if d.name.startswith("--") else d.lower_name
             if name not in SUPPORTED_PROPERTIES and not name.startswith("--"):
                 raise CompileError(
-                    f"{owner}:{d.source_line}: Dartの拡張変換では未対応のCSSプロパティ {name}"
+                    f"{owner}:{d.source_line}: 拡張変換では未対応のCSSプロパティ {name}"
                 )
             if name in result and result[name][1] and not d.important:
                 continue
@@ -196,7 +196,7 @@ def load_site(entry):
         scripts = []
         for el in tree.iter():
             if el.tag in ("include", "iframe", "object", "embed", "video", "audio"):
-                raise CompileError(f"{path}: Dartの拡張変換では未対応の要素 <{el.tag}>")
+                raise CompileError(f"{path}: 拡張変換では未対応の要素 <{el.tag}>")
             if any(name.startswith("on") for name in el.attrib):
                 raise CompileError(
                     f"{path}: インラインイベント属性は未対応です。addEventListener を使ってください"
@@ -219,7 +219,7 @@ def load_site(entry):
                     i = len(compiled_scripts)
                     script_ids[key] = i
                     compiled_scripts.append(
-                        compile_script(
+                        script_compiler(
                             code, source.relative_to(root), name=f"htgcScript{i}"
                         )
                     )
