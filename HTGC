@@ -25,8 +25,19 @@ def main():
     parser.add_argument("--strict", action="store_true", help="treat backend warnings as errors")
     args = parser.parse_args()
     try:
-        program = load_program(args.html)
         output = args.output or args.html.with_suffix("." + args.target)
+        try:
+            program = load_program(args.html)
+        except CompileError:
+            if args.target != "dart":
+                raise
+            from native_dart import generate
+
+            code, site = generate(args.html)
+            if output.resolve() in site.inputs:
+                raise CompileError(f"{output}: 入力ファイルには上書きできません")
+            output.write_text(code, encoding="utf-8")
+            return
         if output.resolve() in program.inputs:
             raise CompileError(f"{output}: 入力ファイルには上書きできません")
         if args.target == "c":
