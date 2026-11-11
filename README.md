@@ -52,6 +52,32 @@ cd htgc_preview
 flutter run
 ```
 
+### HTMLのイベントからC・Dart関数を呼び出す
+
+`-Gtk` と `-Dart` の拡張変換では、ボタンやリンクの `onclick` と、入力欄の `oninput` からアプリ側の関数を呼べます。
+
+```html
+<button type="button" onclick="ShowAlert()">ここをクリック</button>
+<input type="text" oninput="input(text)">
+```
+
+クリックでは引数なしで呼び出し、`input(text)` には変更後の文字列全体を渡します。`textarea` でも使えます。文字列引数は `this.value` や `event.target.value` とも書けます。呼び出し先には通常の関数名を指定し、同じ名前の引数の個数は揃えます。
+
+Flutterでは、生成したDartと同じディレクトリの `htgc_handlers.dart` に実装します。
+
+```dart
+void ShowAlert() => print('クリックされました');
+void input(String text) => print(text);
+```
+
+GTK 4では、別のCソースに `void ShowAlert(void)` と `void input(const char *text)` を定義して、生成したCと一緒にリンクします。文字列はUTF-8です。呼び出し後も保持する場合はコピーしてください。
+
+```sh
+HTGC -Gtk index.html -o app.gtk.c
+cc -std=c11 app.gtk.c handlers.c -o app $(pkg-config --cflags --libs gtk4 libxml-2.0) -lm
+./app
+```
+
 ### JavaScriptを含むサイトの変換
 
 静的変換の対象外となるHTML/CSS/JavaScriptを `-Dart` または `-Gtk` に渡すと、拡張変換を使います。HTMLを要素ツリー、CSSをスタイル規則、JavaScriptをDartまたはC11の関数や制御構造へ変換します。生成したアプリはFlutterまたはGTK 4で描画します。Electron、WebView、実行時のJavaScriptエンジンは不要です。

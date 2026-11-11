@@ -172,6 +172,34 @@ static bool site_load(DomRuntime *runtime, const SitePage *page)
 """
     )
     if graphics:
+        declarations = []
+        entries = []
+        for function, takes_text in sorted(site.handlers.items()):
+            parameter = "const char *text" if takes_text else "void"
+            declarations.append(f"extern void {function}({parameter});")
+            callbacks = f"NULL, {function}" if takes_text else f"{function}, NULL"
+            entries.append(f"    {{{c_string(function)}, {callbacks}}},")
+        chunks.append("\n".join([
+            *declarations,
+            "static const struct {",
+            "    const char *name;",
+            "    void (*call)(void);",
+            "    void (*call_with_text)(const char *);",
+            "} htgc_handlers[] = {",
+            *entries,
+            "    {NULL, NULL, NULL},",
+            "};",
+            "static void htgc_invoke(const char *name, const char *text)",
+            "{",
+            "    if (!name) return;",
+            "    for (size_t i = 0; htgc_handlers[i].name; i++) {",
+            "        if (strcmp(htgc_handlers[i].name, name) != 0) continue;",
+            "        if (htgc_handlers[i].call_with_text) htgc_handlers[i].call_with_text(text);",
+            "        else htgc_handlers[i].call();",
+            "        return;",
+            "    }",
+            "}",
+        ]))
         animations = {}
         for page in site.pages.values():
             for rule in page["styles"]:

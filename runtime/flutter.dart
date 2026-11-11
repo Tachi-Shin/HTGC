@@ -20,6 +20,7 @@ class NativeSiteApp extends StatefulWidget {
   final void Function(Map<String, String>)? saveStorage;
   final void Function(Uri)? externalLink;
   final bool? reducedMotion;
+  final Map<String, void Function(String)> handlers;
   const NativeSiteApp(
       {super.key,
       required this.entry,
@@ -29,7 +30,8 @@ class NativeSiteApp extends StatefulWidget {
       required this.storage,
       this.saveStorage,
       this.externalLink,
-      this.reducedMotion});
+      this.reducedMotion,
+      this.handlers = const {}});
   @override
   NativeSiteState createState() => NativeSiteState();
 }
@@ -473,6 +475,7 @@ class NativeSiteState extends State<NativeSiteApp>
           },
           onChanged: (value) {
             el.attributes['value'] = value;
+            widget.handlers[el.attributes['oninput']]?.call(value);
             runtime.wrap(el).dispatch('input');
           });
     } else if (s['display'] == 'grid' && s['grid-template-columns'] != null) {
@@ -725,6 +728,7 @@ class NativeSiteState extends State<NativeSiteApp>
         runtime.wrap(el).events.containsKey('click');
     if (click) {
       void activate() {
+        widget.handlers[el.attributes['onclick']]?.call('');
         if (el.localName == 'button' && el.attributes['type'] == 'submit') {
           formKey.currentState?.validate();
         } else {

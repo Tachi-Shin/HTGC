@@ -33,6 +33,7 @@ class NativeSite:
     assets: dict
     scripts: list[str]
     inputs: set[Path]
+    handlers: dict[str, bool]
 
 
 def load_site(entry, *, script_compiler=compile_script):
@@ -51,6 +52,7 @@ def load_site(entry, *, script_compiler=compile_script):
     compiled_scripts = []
     script_ids = {}
     assets = {}
+    handlers = {}
 
     def local(reference, owner):
         url = urlsplit(reference)
@@ -197,10 +199,23 @@ def load_site(entry, *, script_compiler=compile_script):
         for el in tree.iter():
             if el.tag in ("include", "iframe", "object", "embed", "video", "audio"):
                 raise CompileError(f"{path}: 拡張変換では未対応の要素 <{el.tag}>")
-            if any(name.startswith("on") for name in el.attrib):
-                raise CompileError(
-                    f"{path}: インラインイベント属性は未対応です。addEventListener を使ってください"
+            for attribute in list(el.attrib):
+                if not attribute.startswith("on"):
+                    continue
+                call = re.fullmatch(
+                    r"\s*([A-Za-z_][A-Za-z_0-9]*)\s*\(\s*(text|this\.value|event\.target\.value)?\s*\)\s*;?\s*",
+                    el.attrib[attribute],
                 )
+                if not call or not (
+                    (attribute == "onclick" and el.tag in {"button", "a"} and call[2] is None)
+                    or (attribute == "oninput" and el.tag in {"input", "textarea"})
+                ):
+                    raise CompileError(f"{path}: <{el.tag}> の {attribute} は未対応のイベント呼び出しです")
+                function, argument = call.groups()
+                takes_text = argument is not None
+                if handlers.setdefault(function, takes_text) != takes_text:
+                    raise CompileError(f"{path}: {function} の引数の個数が一致しません")
+                el.attrib[attribute] = function
             if el.tag == "link" and el.attrib.get("rel") == "stylesheet":
                 source = local(el.attrib["href"], path)
                 styles.extend(css(read(source), source))
@@ -245,5 +260,5 @@ def load_site(entry, *, script_compiler=compile_script):
                 path.read_bytes()
             ).decode()
     return NativeSite(
-        entry.relative_to(root).as_posix(), pages, assets, compiled_scripts, inputs
+        entry.relative_to(root).as_posix(), pages, assets, compiled_scripts, inputs, handlers
     )

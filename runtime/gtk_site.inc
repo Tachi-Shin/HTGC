@@ -413,6 +413,7 @@ static void follow_link(const char *href)
 static void clicked(GtkButton *button G_GNUC_UNUSED, gpointer data)
 {
     DomNode *node = data;
+    htgc_invoke(dom_attr(node, "onclick"), "");
     dom_dispatch(node, "click");
     if (app.dom.heap.error) g_warning("JavaScript event: %s", app.dom.heap.error);
     if (g_strcmp0(node->tag, "a") == 0 && dom_attr(node, "href")) follow_link(dom_attr(node, "href"));
@@ -434,16 +435,21 @@ static void clicked(GtkButton *button G_GNUC_UNUSED, gpointer data)
         g_ptr_array_unref(inputs);
     } else queue_render();
 }
+static void input_changed(DomNode *node, const char *value)
+{
+    dom_set_attr(node, "value", value);
+    htgc_invoke(dom_attr(node, "oninput"), value);
+    dom_dispatch(node, "input");
+}
 static void edit_changed(GtkEditable *editable, gpointer data)
 {
-    DomNode *node = data;
-    dom_set_attr(node, "value", js_own(g_strdup(gtk_editable_get_text(editable)), g_free));
+    input_changed(data, js_own(g_strdup(gtk_editable_get_text(editable)), g_free));
 }
 static void text_changed(GtkTextBuffer *buffer, gpointer data)
 {
     GtkTextIter start, end;
     gtk_text_buffer_get_bounds(buffer, &start, &end);
-    dom_set_attr(data, "value", js_own(gtk_text_buffer_get_text(buffer, &start, &end, FALSE), g_free));
+    input_changed(data, js_own(gtk_text_buffer_get_text(buffer, &start, &end, FALSE), g_free));
 }
 static bool is_inline(DomNode *node)
 {
