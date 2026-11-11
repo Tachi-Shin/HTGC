@@ -11,7 +11,7 @@ HTMLとCSSで宣言した画面を、C11（IUP・GTK 4）またはDart（Flutter
 
 CLIオプションの一覧は `python3 HTGC --help` で確認できます。
 
-変換にはPython 3.10以上が必要です。変換器の追加パッケージはありません。macOS・Linuxでは、展開したディレクトリから実行します。
+変換にはPython 3.10以上が必要です。下記の静的変換にはPythonの追加パッケージは不要です。macOS・Linuxでは、展開したディレクトリから実行します。
 
 ```sh
 chmod +x HTGC
@@ -52,7 +52,25 @@ cd htgc_preview
 flutter run
 ```
 
-## ファイルの読み込み
+### JavaScriptを含むサイトのDart変換
+
+静的変換の対象外となるHTML/CSS/JavaScriptを `-Dart` に渡すと、拡張変換を使います。HTMLを要素ツリー、CSSをスタイル規則、JavaScriptをDartの関数や制御構造へ変換します。Flutterのウィジェットと描画APIで表示します。Electron、WebView、実行時のJavaScriptエンジンは不要です。
+
+入力HTMLと同じディレクトリ以下のHTMLページと画像を取り込みます。CSSとJavaScriptはローカル参照をたどります。Node.jsとAcornは変換時のJavaScript構文解析に使います。
+
+```sh
+python3 -m pip install -r requirements-native.txt
+npm --prefix javascript ci
+flutter create --platforms=linux,macos,windows --project-name htgc_portfolio ../htgc_portfolio
+python3 HTGC -Dart ../Tachi-Shin.github.io/index.html -o ../htgc_portfolio/lib/main.dart
+cd ../htgc_portfolio
+flutter pub add html:0.15.6 flutter_svg:2.2.1 url_launcher:6.3.2 shared_preferences:2.5.3
+flutter run
+```
+
+実サイトのビルド、全4ページの操作テスト、対応範囲は [ベンチマーク手順](benchmarks/README.md) を参照してください。拡張変換の手順ではリポジトリの `python3 HTGC` を使用します。
+
+## 静的変換のファイルの読み込み
 
 ```html
 <!doctype html>
@@ -75,7 +93,7 @@ flutter run
 - `<include>` はHTGC独自の構文です。HTML断片はそのまま、完全なHTMLは `<body>` の中身をその位置に展開します。読み込んだファイルのCSSも共通のカスケードに入り、画面全体に適用されます。
 - ネストした参照は記述元のファイルからの相対パスで解決します。循環参照、欠落ファイル、リモートURLはエラーになります。入力はUTF-8です。
 
-## HTMLリンクでページを移動する
+## 静的変換のHTMLリンクでページを移動する
 
 ```html
 <!-- main.html の body 内 -->
@@ -89,7 +107,7 @@ flutter run
 
 リンクはIUP・GTK 4・Flutterで押せるコントロールになります。 `href` には記述元のHTMLからの相対ファイルパスを使います。外部URL、クエリ、`#section` のようなページ内リンクは未対応です。リンクのラベルはプレーンテキストで指定します。
 
-## 対応範囲
+## 静的変換の対応範囲
 
 - 静的なテキストとブロック、Flexの横・縦配置、子要素間の間隔。HTMLの終了タグは明示してください。テキストと要素が混在する箇所では、テキストを `<span>` などで囲みます。
 - タグ・クラス・ID・全称・子孫セレクタとカンマ区切り。詳細度、記述順、インライン指定、文字スタイルの継承に対応します。
@@ -102,6 +120,8 @@ flutter run
 ## 構成
 
 `frontend.py` がHTML・CSS・参照ファイルを読み、共通の `Program` と `View` を作ります。 `backend_iup.py`・`backend_gtk.py`・`backend_dart.py` が、それぞれのGUIライブラリ向けのソースを生成します。
+
+拡張Dart変換は `native_frontend.py` でHTML/CSSを読み、`js_dart.py` でJavaScriptの構文木からDartを生成します。`native_dart.py` がそれらを `runtime/` のDOM操作、CSSカスケード、Flutter描画のコードと合わせて出力します。
 
 ## 単体実行ファイルを作る
 
