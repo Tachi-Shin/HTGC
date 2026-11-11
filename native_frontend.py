@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlsplit
 
 from frontend import CompileError
 from js_dart import compile_script
+from native_events import parse_handler
 
 SUPPORTED_PROPERTIES = set(
     """
@@ -33,7 +34,7 @@ class NativeSite:
     assets: dict
     scripts: list[str]
     inputs: set[Path]
-    handlers: dict[str, bool]
+    handlers: list[tuple]
 
 
 def load_site(entry, *, script_compiler=compile_script):
@@ -52,7 +53,8 @@ def load_site(entry, *, script_compiler=compile_script):
     compiled_scripts = []
     script_ids = {}
     assets = {}
-    handlers = {}
+    handlers = []
+    handler_ids = {}
 
     def local(reference, owner):
         url = urlsplit(reference)
@@ -202,20 +204,16 @@ def load_site(entry, *, script_compiler=compile_script):
             for attribute in list(el.attrib):
                 if not attribute.startswith("on"):
                     continue
-                call = re.fullmatch(
-                    r"\s*([A-Za-z_][A-Za-z_0-9]*)\s*\(\s*(text|this\.value|event\.target\.value)?\s*\)\s*;?\s*",
-                    el.attrib[attribute],
-                )
-                if not call or not (
-                    (attribute == "onclick" and el.tag in {"button", "a"} and call[2] is None)
+                if not (
+                    (attribute == "onclick" and el.tag in {"button", "a"})
                     or (attribute == "oninput" and el.tag in {"input", "textarea"})
                 ):
                     raise CompileError(f"{path}: <{el.tag}> の {attribute} は未対応のイベント呼び出しです")
-                function, argument = call.groups()
-                takes_text = argument is not None
-                if handlers.setdefault(function, takes_text) != takes_text:
-                    raise CompileError(f"{path}: {function} の引数の個数が一致しません")
-                el.attrib[attribute] = function
+                key = (attribute, el.attrib[attribute])
+                if key not in handler_ids:
+                    handler_ids[key] = len(handlers)
+                    handlers.append(parse_handler(key[1], path, attribute))
+                el.attrib[attribute] = str(handler_ids[key])
             if el.tag == "link" and el.attrib.get("rel") == "stylesheet":
                 source = local(el.attrib["href"], path)
                 styles.extend(css(read(source), source))

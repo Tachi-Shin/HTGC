@@ -5,6 +5,7 @@ import re
 
 from c_source import c_string
 from js_c import compile_script
+from native_events import emit_handler
 from native_frontend import load_site
 
 
@@ -172,32 +173,28 @@ static bool site_load(DomRuntime *runtime, const SitePage *page)
 """
     )
     if graphics:
-        declarations = []
-        entries = []
-        for function, takes_text in sorted(site.handlers.items()):
-            parameter = "const char *text" if takes_text else "void"
-            declarations.append(f"extern void {function}({parameter});")
-            callbacks = f"NULL, {function}" if takes_text else f"{function}, NULL"
-            entries.append(f"    {{{c_string(function)}, {callbacks}}},")
+        handler_source = repr(site.handlers)
+        event_id, text_parameter = "htgc_event_id", "htgc_event_text"
+        while event_id in handler_source:
+            event_id += "_"
+        while text_parameter in handler_source:
+            text_parameter += "_"
+        calls = []
+        for index, handler in enumerate(site.handlers):
+            expression = emit_handler(handler, dart=False, text_parameter=text_parameter)
+            calls.extend([
+                f'    if (strcmp({event_id}, "{index}") == 0) {{',
+                f"        (void){expression};",
+                "        return;",
+                "    }",
+            ])
         chunks.append("\n".join([
-            *declarations,
-            "static const struct {",
-            "    const char *name;",
-            "    void (*call)(void);",
-            "    void (*call_with_text)(const char *);",
-            "} htgc_handlers[] = {",
-            *entries,
-            "    {NULL, NULL, NULL},",
-            "};",
-            "static void htgc_invoke(const char *name, const char *text)",
+            *(['#include "htgc_handlers.h"'] if site.handlers else []),
+            f"static void htgc_invoke(const char *{event_id}, const char *{text_parameter})",
             "{",
-            "    if (!name) return;",
-            "    for (size_t i = 0; htgc_handlers[i].name; i++) {",
-            "        if (strcmp(htgc_handlers[i].name, name) != 0) continue;",
-            "        if (htgc_handlers[i].call_with_text) htgc_handlers[i].call_with_text(text);",
-            "        else htgc_handlers[i].call();",
-            "        return;",
-            "    }",
+            f"    if (!{event_id}) return;",
+            f"    (void){text_parameter};",
+            *calls,
             "}",
         ]))
         animations = {}

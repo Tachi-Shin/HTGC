@@ -57,20 +57,32 @@ flutter run
 `-Gtk` と `-Dart` の拡張変換では、ボタンやリンクの `onclick` と、入力欄の `oninput` からアプリ側の関数を呼べます。
 
 ```html
-<button type="button" onclick="ShowAlert()">ここをクリック</button>
-<input type="text" oninput="input(text)">
+<button type="button" onclick="openMessage('確認', 3, true)">ここをクリック</button>
+<input type="text" oninput="saveDraft('title', text, 42)">
 ```
 
-クリックでは引数なしで呼び出し、`input(text)` には変更後の文字列全体を渡します。`textarea` でも使えます。文字列引数は `this.value` や `event.target.value` とも書けます。呼び出し先には通常の関数名を指定し、同じ名前の引数の個数は揃えます。
+関数名と引数の個数はHTMLで指定します。引数には文字列、数値、真偽値、`null`、アプリ側の変数や関数の戻り値を渡せます。`input` と `textarea` の `oninput` では、`text`、`this.value`、`event.target.value` が変更後の文字列全体を表します。関数の型はCまたはDartのコンパイラが検査します。変換時は拡張変換のPython依存とNode.js・Acornが必要です。
 
 Flutterでは、生成したDartと同じディレクトリの `htgc_handlers.dart` に実装します。
 
 ```dart
-void ShowAlert() => print('クリックされました');
-void input(String text) => print(text);
+void openMessage(String title, int count, bool enabled) {
+  print('$title: $count ($enabled)');
+}
+
+void saveDraft(String field, String value, int id) {
+  print('$id: $field = $value');
+}
 ```
 
-GTK 4では、別のCソースに `void ShowAlert(void)` と `void input(const char *text)` を定義して、生成したCと一緒にリンクします。文字列はUTF-8です。呼び出し後も保持する場合はコピーしてください。
+GTK 4では、生成Cと同じディレクトリに `htgc_handlers.h` を置き、次のようにアプリ側の型を宣言します。定義を置いた `handlers.c` を生成Cと一緒にリンクします。入力文字列はUTF-8です。呼び出し後も保持する場合はコピーしてください。
+
+```c
+#include <stdbool.h>
+
+void openMessage(const char *title, int count, bool enabled);
+void saveDraft(const char *field, const char *value, int id);
+```
 
 ```sh
 HTGC -Gtk index.html -o app.gtk.c

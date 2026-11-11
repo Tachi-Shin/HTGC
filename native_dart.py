@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 from native_frontend import load_site
+from native_events import emit_handler
 from js_dart import quote
 
 
@@ -46,9 +47,9 @@ def generate(entry):
         + "];\n"
     )
     source += "\nfinal htgcHandlers = <String, void Function(String)>{\n"
-    for function, takes_text in sorted(site.handlers.items()):
-        argument = "text" if takes_text else ""
-        source += f"  '{function}': ({'text' if takes_text else '_'}) => handlers.{function}({argument}),\n"
+    for index, handler in enumerate(site.handlers):
+        expression = emit_handler(handler, dart=True, text_parameter="text")
+        source += f"  '{index}': (text) => {expression},\n"
     source += "};\n"
     source += """
 Future<void> main(List<String> arguments) async {
