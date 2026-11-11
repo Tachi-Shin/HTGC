@@ -73,7 +73,7 @@ GTK 4版の拡張変換にはGTK 4とlibxml2の開発パッケージが必要で
 ```sh
 python3 HTGC -Gtk ../Tachi-Shin.github.io/index.html -o portfolio.gtk.c
 cc -std=c11 portfolio.gtk.c -o portfolio-gtk $(pkg-config --cflags --libs gtk4 libxml-2.0) -lm
-./portfolio-gtk index.html dark
+./portfolio-gtk dark
 ```
 
 GTK 4の拡張変換はCSS描画とCanvasに未対応の箇所があるため警告を出します。`--strict` を指定すると出力を中止します。IUPの `-Clang` は静的変換に対応しています。拡張変換の手順ではリポジトリの `python3 HTGC` を使用します。ビルドと照合手順は [ベンチマーク](benchmarks/README.md) を参照してください。
@@ -170,3 +170,18 @@ Copy-Item HTGC build/htgc_entry.py
 ```
 
 配布するファイルは、macOS・Linuxでは `dist/HTGC`、Windowsでは `dist/HTGC.exe` です。生成されたCやDartをアプリとしてビルドするには、出力先に対応するGUIライブラリとビルド環境が別途必要です。
+
+
+### 生成GTKアプリの配布
+
+拡張GTK変換では、ルートHTMLを変換時に一度だけ読み込みます。実行時のアプリは埋め込み済みの全ページ、CSS、JavaScript変換結果を使い、HTML・CSS・JavaScriptを開きません。
+
+```sh
+HTGC -Gtk path/to/index.html -o build/portfolio.gtk.c
+cc -std=c11 -Wall -Wextra build/portfolio.gtk.c -o build/portfolio-gtk \
+  $(pkg-config --cflags --libs gtk4 libxml-2.0) -lm
+cd build
+./portfolio-gtk dark
+```
+
+配布ディレクトリには生成された実行ファイルと画像ファイルだけを置きます。起動時の引数はテーマ指定だけです。

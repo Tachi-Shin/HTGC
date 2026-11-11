@@ -823,14 +823,14 @@ static void activate(GtkApplication *application, gpointer user_data)
 }
 int main(int argc, char **argv)
 {
-    const SitePage *page = site_page(argc > 1 ? argv[1] : site_entry);
-    if (!page) { fprintf(stderr, "Page not found\n"); return 2; }
+    const SitePage *page = site_page(site_entry);
+    if (!page) { fprintf(stderr, "Embedded entry page is missing\\n"); return 2; }
     app.rendered_nodes = g_ptr_array_new();
     app.storage = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     app.textures = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
     app.surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)cairo_surface_destroy);
-    if (argc > 2 && (!strcmp(argv[2], "light") || !strcmp(argv[2], "dark") || !strcmp(argv[2], "auto"))) {
-        g_hash_table_insert(app.storage, g_strdup("theme"), g_strdup(argv[2]));
+    if (argc > 1 && (!strcmp(argv[1], "light") || !strcmp(argv[1], "dark") || !strcmp(argv[1], "auto"))) {
+        g_hash_table_insert(app.storage, g_strdup("theme"), g_strdup(argv[1]));
     }
     GtkApplication *application = gtk_application_new(NULL, G_APPLICATION_NON_UNIQUE);
     g_signal_connect(application, "activate", G_CALLBACK(activate), (gpointer)page);
