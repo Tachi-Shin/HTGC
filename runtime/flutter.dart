@@ -162,7 +162,7 @@ class NativeSiteState extends State<NativeSiteApp>
   }
 
   bool isHidden(dom.Element el, Map<String, String> style) =>
-      el.attributes.containsKey('hidden') ||
+      el.localName == 'template' || el.attributes.containsKey('hidden') ||
       (el.localName == 'dialog' &&
           (identical(el, modalElement) || !el.attributes.containsKey('open'))) ||
       style['display'] == 'none';
