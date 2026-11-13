@@ -38,9 +38,14 @@ class NativeCss {
   final Map<String, Set<dom.Element>> _selectors = {};
   final Map<String, Map<String, dynamic>> keyframes = {};
   NativeCss(this.runtime, this.rules) {
+    final layers = <String, int>{};
     for (final r in rules) {
-      if (r['keyframes'] != null)
-        keyframes[r['keyframes']] = Map<String, dynamic>.from(r['frames']);
+      final String? name = r['keyframes'];
+      final int layer = r['layer'] ?? 0;
+      if (name != null && layer >= (layers[name] ?? layer)) {
+        layers[name] = layer;
+        keyframes[name] = Map<String, dynamic>.from(r['frames']);
+      }
     }
   }
   static const inherited = {
@@ -88,8 +93,11 @@ class NativeCss {
       if (p != null) selector = selector.substring(0, p.start);
       if (!conditions(r['conditions'], el) || !matches(el, selector)) continue;
       final spec = List<int>.from(r['specificity']);
+      final int layer = r['layer'] ?? 0;
       for (final e in (r['declarations'] as Map).entries) {
-        apply(e.key, e.value[0], [e.value[1] == true ? 1 : 0, 0, ...spec, order]);
+        final important = e.value[1] == true;
+        apply(e.key, e.value[0],
+            [important ? 1 : 0, 0, important ? -layer : layer, ...spec, order]);
       }
     }
     if (pseudo.isEmpty) {
@@ -108,7 +116,7 @@ class NativeCss {
         final value = match == null ? raw : raw.substring(0, match.start).trim();
         if (value.isEmpty) continue;
         apply(name.startsWith('--') ? name : name.toLowerCase(), value,
-            [match == null ? 0 : 1, 1, 0, 0, 0, ++order]);
+            [match == null ? 0 : 1, 1, 0, 0, 0, 0, ++order]);
       }
     }
     String substitute(String value) {
@@ -187,7 +195,7 @@ class NativeCss {
     }
     if (['span', 'a', 'strong', 'b', 'small', 'code', 'label', 'em', 'i', 'br']
         .contains(tag)) s['display'] = 'inline';
-    if (['head', 'script', 'style', 'title', 'meta', 'link', 'noscript']
+    if (['head', 'script', 'style', 'title', 'meta', 'link', 'noscript', 'template']
         .contains(tag)) s['display'] = 'none';
     if (tag == 'body') s['margin'] = '8px';
     if (tag == 'a') {

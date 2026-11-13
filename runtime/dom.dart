@@ -10,6 +10,7 @@ class JDomRuntime {
   final void Function(String)? onNavigate;
   final void Function(Map<String, String>)? saveStorage;
   final Map<dom.Node, JDomNode> _nodes = Map.identity();
+  final _templates = Expando<dom.DocumentFragment>();
   final Map<String, JClass> customElements = {};
   final List<JObserver> observers = [];
   final List<dynamic> frames = [];
@@ -22,6 +23,7 @@ class JDomRuntime {
       this.onNavigate,
       this.saveStorage})
       : storage = storage ?? {} {
+    prepareTemplates(document);
     final names = <String>{};
     for (final element in document.querySelectorAll('details[open]')) {
       final name = element.attributes['name'];
@@ -35,6 +37,35 @@ class JDomRuntime {
   JDomNode wrap(dom.Node node) =>
       _nodes.putIfAbsent(node, () => JDomNode(this, node));
   void changed() => onMutation?.call();
+
+  dom.DocumentFragment templateContent(dom.Element template) =>
+      _templates[template] ??= dom.DocumentFragment();
+
+  void prepareTemplates(dom.Node root) {
+    if (root is dom.Element && root.localName == 'template') {
+      final content = templateContent(root);
+      content.nodes.addAll(List<dom.Node>.of(root.nodes));
+      root = content;
+    }
+    for (final child in root.nodes) {
+      prepareTemplates(child);
+    }
+  }
+
+  dom.Node cloneNode(dom.Node original, bool deep, {bool forHtml = false}) {
+    final copy = original.clone(false);
+    if (!deep) return copy;
+    var source = original;
+    var destination = copy;
+    if (original is dom.Element && original.localName == 'template') {
+      source = templateContent(original);
+      if (!forHtml) destination = templateContent(copy as dom.Element);
+    }
+    for (final child in source.nodes) {
+      destination.nodes.add(cloneNode(child, true, forHtml: forHtml));
+    }
+    return copy;
+  }
   void setDetailsOpen(dom.Element element, bool open, {String value = ''}) {
     final wasOpen = element.attributes.containsKey('open');
     if (open) {
@@ -282,7 +313,22 @@ class JDomNode extends JObject {
       case 'textContent':
         return node.text ?? '';
       case 'innerHTML':
-        return el?.innerHtml ?? '';
+        if (el == null) return '';
+        if (el.localName == 'template') {
+          final content = runtime.templateContent(el);
+          return (runtime.cloneNode(content, true, forHtml: true)
+                  as dom.DocumentFragment).outerHtml;
+        }
+        if (el.querySelector('template') != null) {
+          return (runtime.cloneNode(el, true, forHtml: true) as dom.Element)
+              .innerHtml;
+        }
+        return el.innerHtml;
+      case 'content':
+        if (el?.localName == 'template') {
+          return runtime.wrap(runtime.templateContent(el!));
+        }
+        return jUndefined;
       case 'className':
         return el?.attributes['class'] ?? '';
       case 'id':
@@ -358,6 +404,9 @@ class JDomNode extends JObject {
         return jNative((a) => runtime.wrap(dom.Text(jString(a[0]))));
       case 'createDocumentFragment':
         return jNative((a) => runtime.wrap(dom.DocumentFragment()));
+      case 'cloneNode':
+        return jNative((a) =>
+            runtime.wrap(runtime.cloneNode(node, jTruthy(jArg(a, 0)))));
       case 'getAttribute':
         return jNative((a) => el!.attributes[jString(a[0])]);
       case 'setAttribute':
@@ -456,12 +505,15 @@ class JDomNode extends JObject {
       case 'innerHTML':
         final fragment =
             html.parseFragment(jString(value), container: el!.localName!);
-        node.nodes.clear();
+        runtime.prepareTemplates(fragment);
+        final destination =
+            el.localName == 'template' ? runtime.templateContent(el) : node;
+        destination.nodes.clear();
         for (final child in List<dom.Node>.from(fragment.nodes)) {
-          node.nodes.add(child);
-          runtime.insertDetails(child, parsed: true);
+          destination.nodes.add(child);
+          if (el.localName != 'template') runtime.insertDetails(child, parsed: true);
         }
-        runtime.upgrade(node);
+        if (el.localName != 'template') runtime.upgrade(node);
         break;
       case 'className':
         el!.attributes['class'] = jString(value);

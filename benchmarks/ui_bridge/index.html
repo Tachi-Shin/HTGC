@@ -4,7 +4,25 @@
   <meta charset="utf-8">
   <title>HTGC UI bridge</title>
   <style>
-    @import url("theme.css");
+    @layer reset, theme, app;
+    @import url("theme.css") layer(theme);
+    @layer app.components {
+      #layer-test {
+        color: red;
+        padding-left: 3px !important;
+      }
+    }
+    @layer app {
+      .layer-test {
+        color: blue;
+        padding-left: 4px !important;
+        padding-right: 6px;
+      }
+    }
+    @layer reset {
+      .layer-test { color: green; padding-left: 2px !important; }
+    }
+    .layer-test { padding-right: 10px; padding-left: 1px !important; }
     article { padding: 12px; }
     #rule-wins, #inline-wins { color: blue !important; }
     #rule-wins { padding-left: 2px; padding: 5px; padding-left: 9px; }
@@ -22,6 +40,14 @@
   <p id="inline-wins" style="color: red !IMPORTANT; color: green">インライン</p>
   <p id="exception"></p>
   <p id="toggles" hidden></p>
+  <p id="layer-test" class="layer-test" hidden></p>
+  <p id="module-log" data-runs="" hidden></p>
+  <template id="memo-template">
+    <article id="template-content" hidden>テンプレートの本文</article>
+    <template><span>入れ子</span></template>
+    <script>throw 'template scripts are inert';</script>
+  </template>
+  <div id="template-result" hidden></div>
   <details id="first" name="options">
     <summary>最初の項目</summary>
     <p>最初の本文</p>
@@ -72,6 +98,19 @@
     document.getElementById('first').addEventListener('toggle', event => {
       toggles.textContent += event.oldState + ':' + event.newState + ';';
     });
+    const template = document.getElementById('memo-template');
+    const host = document.getElementById('template-result');
+    host.setAttribute('data-inert', document.getElementById('template-content') === null);
+    host.setAttribute('data-nested', template.cloneNode(true).content.querySelector('template').content.textContent.trim());
+    host.appendChild(template.content.cloneNode(true));
   </script>
+  <script type="module" src="./module_state.js"></script>
+  <script type="module">
+    import increment, { count, readCycle } from './module_facade.js';
+    import * as state from './module_state.js';
+    const log = document.getElementById('module-log');
+    log.textContent = count + ':' + increment() + ':' + state.count + ':' + readCycle();
+  </script>
+  <script type="module" src="./module_state.js"></script>
 </body>
 </html>

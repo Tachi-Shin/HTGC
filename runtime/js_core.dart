@@ -19,6 +19,7 @@ class JShortCircuit {
 }
 
 const jShortCircuit = JShortCircuit();
+const _jUninitialized = Object();
 bool jNullish(dynamic value) => value == null || identical(value, jUndefined);
 dynamic jEndChain(dynamic value) =>
     identical(value, jShortCircuit) ? jUndefined : value;
@@ -31,13 +32,26 @@ class JScope {
   final JScope? parent;
   final Map<String, dynamic> _values = {};
   final Set<String> _constants = {};
+  final Map<String, dynamic Function()> _imports = {};
+  JModuleGraph? _modules;
   JScope([this.parent]);
+  JModuleGraph modules(Map<String, JModuleDefinition> definitions) =>
+      parent?.modules(definitions) ?? (_modules ??= JModuleGraph(this, definitions));
+
+  void reserve(String name) {
+    _values[name] = _jUninitialized;
+  }
+
+  void importBinding(String name, dynamic Function() read) {
+    _imports[name] = read;
+  }
+
   void declareVar(String name) {
     _values.putIfAbsent(name, () => jUndefined);
   }
 
   dynamic define(String name, dynamic value, {bool constant = false}) {
-    if (_values.containsKey(name))
+    if (_values.containsKey(name) && !identical(_values[name], _jUninitialized))
       throw StateError('Identifier already declared: $name');
     _values[name] = value;
     if (constant) _constants.add(name);
@@ -45,7 +59,15 @@ class JScope {
   }
 
   dynamic get(String name) {
-    if (_values.containsKey(name)) return _values[name];
+    if (_values.containsKey(name)) {
+      final value = _values[name];
+      if (identical(value, _jUninitialized)) {
+        throw StateError('JavaScript ReferenceError: $name is not initialized');
+      }
+      return value;
+    }
+    final read = _imports[name];
+    if (read != null) return read();
     if (parent != null) return parent!.get(name);
     if (name == 'undefined') return jUndefined;
     if (name == 'NaN') return double.nan;
@@ -55,10 +77,14 @@ class JScope {
 
   dynamic put(String name, dynamic value) {
     if (_values.containsKey(name)) {
+      if (identical(_values[name], _jUninitialized)) {
+        throw StateError('JavaScript ReferenceError: $name is not initialized');
+      }
       if (_constants.contains(name))
         throw StateError('Assignment to constant: $name');
       return _values[name] = value;
     }
+    if (_imports.containsKey(name)) throw StateError('Assignment to import: $name');
     if (parent != null) return parent!.put(name, value);
     throw StateError('Assignment to undeclared name: $name');
   }
@@ -72,6 +98,84 @@ class JObject {
       ? properties[name]
       : prototype?.get(name) ?? jUndefined;
   dynamic set(String name, dynamic value) => properties[name] = value;
+}
+
+typedef JModuleBinding = (String, String?);
+
+class JModuleDefinition {
+  final List<String> dependencies;
+  final Map<String, JModuleBinding> imports, exports;
+  final void Function(JScope) initialize, execute;
+  const JModuleDefinition(
+      this.dependencies, this.imports, this.exports, this.initialize, this.execute);
+}
+
+class JModuleNamespace extends JObject {
+  final JModuleGraph graph;
+  final Map<String, JModuleBinding> exports;
+  JModuleNamespace(this.graph, this.exports);
+
+  @override
+  dynamic get(String name) {
+    final binding = exports[name];
+    return binding == null ? jUndefined : graph.read(binding);
+  }
+
+  @override
+  dynamic set(String name, dynamic value) =>
+      throw StateError('Assignment to module namespace: $name');
+}
+
+class JModuleGraph {
+  final JScope globals;
+  final Map<String, JModuleDefinition> definitions;
+  final _scopes = <String, JScope>{};
+  final _namespaces = <String, JModuleNamespace>{};
+  final _started = <String>{};
+  final _errors = <String, (Object, StackTrace)>{};
+
+  JModuleGraph(this.globals, this.definitions);
+
+  dynamic read(JModuleBinding binding) {
+    final (module, name) = binding;
+    if (name != null) return _scopes[module]!.get(name);
+    return _namespaces.putIfAbsent(
+        module, () => JModuleNamespace(this, definitions[module]!.exports));
+  }
+
+  void _link(String module) {
+    if (_scopes.containsKey(module)) return;
+    final definition = definitions[module]!;
+    final scope = _scopes[module] = JScope(globals);
+    for (final entry in definition.imports.entries) {
+      scope.importBinding(entry.key, () => read(entry.value));
+    }
+    definition.initialize(scope);
+    for (final dependency in definition.dependencies) {
+      _link(dependency);
+    }
+  }
+
+  void evaluate(String module) {
+    _link(module);
+    _evaluate(module);
+  }
+
+  void _evaluate(String module) {
+    final failure = _errors[module];
+    if (failure != null) Error.throwWithStackTrace(failure.$1, failure.$2);
+    if (!_started.add(module)) return;
+    final definition = definitions[module]!;
+    try {
+      for (final dependency in definition.dependencies) {
+        _evaluate(dependency);
+      }
+      definition.execute(_scopes[module]!);
+    } catch (error, stack) {
+      _errors[module] = (error, stack);
+      rethrow;
+    }
+  }
 }
 
 class JFunction extends JObject {

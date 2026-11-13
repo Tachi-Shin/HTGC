@@ -6,7 +6,7 @@ import 'package:htgc_portfolio/ui_bridge.dart';
 import 'package:htgc_portfolio/htgc_handlers.dart' as handlers;
 
 void main() {
-  testWidgets('HTML disclosure, author cascade and JavaScript exceptions',
+  testWidgets('HTML disclosure and templates, author cascade and JavaScript',
       (tester) async {
     final key = GlobalKey<NativeSiteState>();
     await tester.pumpWidget(
@@ -38,6 +38,18 @@ void main() {
         'red');
     expect(state.document.querySelector('#exception')!.text,
         '捕捉・終了・束縛なし・既定・次へ');
+    final layer = state.css.get(state.document.querySelector('#layer-test')!);
+    expect(layer['color'], 'blue');
+    expect(layer['padding-left'], '2px');
+    expect(layer['padding-right'], '10px');
+    final moduleLog = state.document.querySelector('#module-log')!;
+    expect(moduleLog.text, '1:2:2:2');
+    expect(moduleLog.attributes['data-runs'], '1');
+    final host = state.document.querySelector('#template-result')!;
+    expect(host.attributes['data-inert'], 'true');
+    expect(host.attributes['data-nested'], '入れ子');
+    expect(host.querySelector('#template-content')!.text, 'テンプレートの本文');
+    expect(state.document.querySelectorAll('#template-content'), hasLength(1));
 
     expect(firstBody, findsNothing);
     expect(secondBody, findsNothing);
