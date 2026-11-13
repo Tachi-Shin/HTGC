@@ -140,7 +140,7 @@ class NativeCss {
             [match == null ? 0 : 1, 1, 0, 0, 0, 0, ++order]);
       }
     }
-    for (final entry in candidates?.entries ?? const []) {
+    for (final entry in candidates?.entries ?? const Iterable.empty()) {
       final ordered = entry.value.values.toList()
         ..sort((a, b) => compare(b.$2, a.$2));
       // If an important layer rolls back, all weaker important layers are
