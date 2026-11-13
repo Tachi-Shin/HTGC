@@ -52,6 +52,34 @@ cd htgc_preview
 flutter run
 ```
 
+#### JITデバッグとホットリロード
+
+Flutterのネイティブアプリをデバッグモードで起動すると、Dart VMがDartコードをJITコンパイルします。実行中のコードを差し替えるホットリロードでは、入力値や画面の状態が保持されます。プロファイルとリリースはAOTコンパイルを使います。[Flutterのビルドモード](https://docs.flutter.dev/testing/build-modes) · [ホットリロード](https://docs.flutter.dev/tools/hot-reload)
+
+1. Flutterプロジェクトのルートで、入口HTMLを `lib/main.dart` に変換します。拡張変換の出力を使う場合は、最初に依存パッケージを追加します。
+
+   ```sh
+   flutter pub add html flutter_svg url_launcher shared_preferences
+   HTGC -Dart path/to/index.html -o lib/main.dart
+   ```
+
+2. デバッグセッションを起動したままにします。macOSで画像を使う場合は、生成された画像フォルダを絶対パスで渡せます。`HTGC_ASSET_DIR` はデバッグモードでだけ参照されます。macOSの初回ビルドでターゲットの警告が出る場合は、次節の設定も確認してください。LinuxやWindowsで試す場合は `-d macos` を対象デバイスに変更します。
+
+   ```sh
+   flutter run -d macos --debug --dart-define="HTGC_ASSET_DIR=$PWD/lib/main.dart.assets"
+   ```
+
+3. 編集するファイルに応じて操作します。
+
+   | 編集した箇所 | 実行中の `flutter run` での操作 |
+   | --- | --- |
+   | `lib/htgc_handlers.dart` の既存関数の本体 | 保存して小文字の `r` を押します。HTMLの再変換は不要です。 |
+   | HTML・CSS・JS、イベント属性、画像 | 別の端末で上記の `HTGC -Dart … -o lib/main.dart` を再実行し、成功したら大文字の `R` を押します。 |
+   | Dartのトップレベル変数の初期値や `main()` | 大文字の `R` を押します。 |
+   | ネイティブのプラグインやXcodeの設定 | `q` で終了し、`flutter run` を再実行します。 |
+
+拡張変換した画面データとイベントの対応表は、アプリの初期化時に読み込まれます。`R` のホットリスタートで初期化をやり直すため、編集途中の入力値などは初期状態に戻ります。プラグインやネイティブ設定を変更していない限り、毎回 `flutter build macos` を実行する必要はありません。HTML・CSS・JSの監視と再変換は、上記の手順では手動です。
+
 #### macOSでビルドする場合
 
 macOS向けのFlutterプロジェクトで、HTGCが生成したDartを `lib/main.dart` に配置します。拡張変換の出力を使う場合は、プロジェクトのルートで次の依存パッケージを追加します。
@@ -80,7 +108,7 @@ Xcodeのビルドログにデプロイターゲット `10.15` がサポート範
    end
    ```
 
-画像を使わないアプリは `flutter run -d macos` で起動できます。
+ホットリロードを使う場合は、前節の `flutter run` で起動します。
 
 拡張変換で `lib/main.dart.assets/` が生成された場合は、ビルドした `.app` の `Contents/MacOS/` に画像ディレクトリをコピーしてから起動します。次はプロジェクト名が `htgc_preview` の例です。実際のアプリ名に置き換えてください。
 
@@ -115,6 +143,54 @@ void saveDraft(String field, String value, int id) {
   print('$id: $field = $value');
 }
 ```
+
+#### Dartの処理から画面を更新する
+
+イベント属性の引数に `event.ui` を加えると、そのページを操作する `HtgcUi` がDartに渡ります。文字入力の `text` と一緒に指定できます。
+
+```html
+<article>
+  <textarea id="memo">下書き</textarea>
+  <button id="save" type="button" onclick="saveMemo(event.ui)">保存</button>
+  <p id="status" hidden></p>
+</article>
+<dialog id="saved-dialog">
+  <p>保存しました</p>
+  <button type="button" onclick="dismissSaved(event.ui)">閉じる</button>
+</dialog>
+```
+
+```dart
+import 'dart:io';
+
+import 'main.dart' show HtgcUi;
+
+Future<void> saveMemo(HtgcUi ui) async {
+  final memo = ui.getValue('memo');
+  if (memo == null) return;
+  ui.setDisabled('save', true);
+  ui.setText('status', '保存中…');
+  ui.setVisible('status', true);
+  try {
+    await File('memo.txt').writeAsString(memo);
+  } on FileSystemException {
+    ui.setText('status', '保存できませんでした');
+    return;
+  } finally {
+    ui.setDisabled('save', false);
+  }
+  ui.setText('status', '保存しました');
+  await ui.showModal('saved-dialog');
+}
+
+void dismissSaved(HtgcUi ui) {
+  ui.closeModal('saved-dialog');
+}
+```
+
+`main.dart` は実際の生成ファイル名に置き換えてください。各操作はHTMLの `id` で対象を指定します。`setText` は子要素も含めてテキストに置き換えるため、記事の構造を保ちたいときは見出しや本文の `id` を指定します。`setValue` は入力欄の表示と値を更新し、`oninput` は発火させません。`setVisible` は `hidden` 属性を操作し、`setDisabled` はボタンとテキスト入力欄の操作を制御します。
+
+`showModal` は閉じている `dialog` をFlutterのモーダルとして表示し、閉じると完了します。1画面につき同時に1つ開けます。`await` 中に別ページへ移動した場合、元の `ui` での操作は失敗を返します。`getValue` は対象がなければ `null`、その他の操作は `false` を返します。
 
 GTK 4では、生成Cと同じディレクトリに `htgc_handlers.h` を置き、次のようにアプリ側の型を宣言します。定義を置いた `handlers.c` を生成Cと一緒にリンクします。入力文字列はUTF-8です。呼び出し後も保持する場合はコピーしてください。
 
@@ -197,6 +273,16 @@ GTK 4の拡張変換はCSS描画とCanvasに未対応の箇所があるため警
 リンク先のHTMLには `<body>` を指定します。最初のページだけをコンパイルすると、リンクからたどれるページも同じ出力に含まれます。各ページのCSSはそのページに適用されます。
 
 リンクはIUP・GTK 4・Flutterで押せるコントロールになります。 `href` には記述元のHTMLからの相対ファイルパスを使います。外部URL、クエリ、`#section` のようなページ内リンクは未対応です。リンクのラベルはプレーンテキストで指定します。
+
+## Web標準の対応範囲
+
+| 仕様 | 現在の対応と未検証の範囲 |
+| --- | --- |
+| [WHATWG HTML](https://html.spec.whatwg.org/) | 拡張変換はhtml5libでHTMLを解析し、要素ツリーを生成します。Flutter側ではフォームの一部や `dialog` のモーダル表示を実装しています。メディア要素、埋め込み文書、Workerなど、ブラウザの動作には未実装の範囲があります。 |
+| [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | CSSの構文解析と、レイアウト・装飾の一部に対応しています。ローカルの `@import` はスタイルシートの先頭で使えます。条件付きインポート、カスケードレイヤー、ページ媒体、詳細な組版などには未実装の範囲があります。 |
+| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartまたはCに変換します。Dartでは `do … while` を含みます。モジュール、非同期関数、ジェネレーター、組み込みオブジェクトなどには未実装の範囲があります。HTML側のDartハンドラーではDartの `async` を使えます。 |
+
+全仕様への準拠は未達です。HTML・CSSの準拠検証には [Web Platform Tests](https://web-platform-tests.org/)、ECMAScriptには [Test262](https://github.com/tc39/test262) を参照します。現行の [ポートフォリオベンチマーク](benchmarks/README.md) は特定サイトの表示と操作を確認するものです。
 
 ## 静的変換の対応範囲
 

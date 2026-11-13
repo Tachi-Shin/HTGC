@@ -49,6 +49,8 @@ def parse_handler(source, path, attribute):
                 return ("literal", -operand[1] if node["operator"] == "-" else operand[1])
         if kind == "CallExpression":
             return call(node)
+        if member_path(node) == "event.ui":
+            return ("ui",)
         if attribute == "oninput" and member_path(node) in {"text", "this.value", "event.target.value"}:
             return ("text",)
         if kind == "Identifier":
@@ -71,6 +73,10 @@ def emit_handler(expression, *, dart, text_parameter):
     prefix = "handlers." if dart else ""
     if kind == "text":
         return text_parameter
+    if kind == "ui":
+        if not dart:
+            raise CompileError("event.ui は -Dart のイベント属性で使えます")
+        return "htgcPage"
     if kind == "value":
         return prefix + parts[0]
     if kind == "call":

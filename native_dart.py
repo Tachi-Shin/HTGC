@@ -26,6 +26,7 @@ def generate(entry, *, includes=(), asset_name="htgc.assets"):
 
         bodies.append(re.sub(r"^import .*;\n", collect, source, flags=re.M))
     imports.append("import 'package:shared_preferences/shared_preferences.dart';\n")
+    imports.append("import 'package:flutter/foundation.dart' show kDebugMode;\n")
     if site.handlers:
         imports.append("import 'htgc_handlers.dart' as handlers;\n")
     data = {"entry": site.entry, "pages": site.pages, "assets": list(site.assets)}
@@ -46,10 +47,10 @@ def generate(entry, *, includes=(), asset_name="htgc.assets"):
         + ",".join(f"htgcScript{i}" for i in range(len(site.scripts)))
         + "];\n"
     )
-    source += "\nfinal htgcHandlers = <String, void Function(String)>{\n"
+    source += "\nfinal htgcHandlers = <String, void Function(String, HtgcUi)>{\n"
     for index, handler in enumerate(site.handlers):
         expression = emit_handler(handler, dart=True, text_parameter="text")
-        source += f"  '{index}': (text) => {expression},\n"
+        source += f"  '{index}': (text, htgcPage) => {expression},\n"
     source += "};\n"
     source += f"const htgcAssetDirectory = {quote(asset_name)};\n"
     source += """
@@ -64,18 +65,21 @@ Future<void> main(List<String> arguments) async {
   final prefs = await SharedPreferences.getInstance();
   final saved = jsonDecode(prefs.getString('htgc.localStorage') ?? '{}');
   final storage = Map<String, String>.from(saved);
+  const debugAssetPath = String.fromEnvironment('HTGC_ASSET_DIR');
   runApp(NativeSiteApp(
     entry: entry,
     pages: pages,
     assets: Set<String>.from(htgcSiteData['assets']),
-    assetDirectory: Directory.fromUri(
-      File(Platform.resolvedExecutable).parent.uri.resolveUri(
-        Uri(path: htgcAssetDirectory),
-      ),
-    ),
+    assetDirectory: kDebugMode && debugAssetPath.isNotEmpty
+        ? Directory(debugAssetPath)
+        : Directory.fromUri(
+            File(Platform.resolvedExecutable).parent.uri.resolveUri(
+              Uri(path: htgcAssetDirectory),
+            ),
+          ),
     scripts: htgcScripts,
     storage: storage,
-    handlers: htgcHandlers,
+    pageHandlers: htgcHandlers,
     reducedMotion: arguments.contains('--reduced-motion') ? true : null,
     saveStorage: (values) {
       prefs.setString('htgc.localStorage', jsonEncode(values));

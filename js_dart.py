@@ -295,6 +295,8 @@ class Compiler:
             return (
                 "while (jTruthy(" + self.expr(n["test"]) + ")) " + self.stmt(n["body"])
             )
+        if t == "DoWhileStatement":
+            return f'do {{\n{self.stmt(n["body"])}\n}} while (jTruthy({self.expr(n["test"])}));'
         if t in ("BreakStatement", "ContinueStatement"):
             if n.get("label"):
                 self.fail(n)

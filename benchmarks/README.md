@@ -1,5 +1,19 @@
 # ポートフォリオのC・Dart変換ベンチマーク
 
+## DartとHTMLのイベント連携
+
+HTGCリポジトリのルートから実行します。`../portfolio-app` は下記の手順で依存パッケージを追加したFlutterプロジェクトです。
+
+```sh
+python3 HTGC -Dart benchmarks/ui_bridge/index.html -o ../portfolio-app/lib/ui_bridge.dart
+cp benchmarks/ui_bridge/htgc_handlers.dart ../portfolio-app/lib/
+cp benchmarks/ui_bridge_test.dart ../portfolio-app/test/
+cd ../portfolio-app
+flutter test test/ui_bridge_test.dart
+```
+
+このテストは、文字入力がDartへ渡り、非同期処理の結果が入力欄とダイアログに反映されることを確認します。元のページを離れた後に、古いハンドラーから別ページを書き換えられないことも検証します。
+
 対象は [Tachi-Shin/Tachi-Shin.github.io](https://github.com/Tachi-Shin/Tachi-Shin.github.io) のコミット `c264c62fa8ceddac553cfd8e9873d2d659d524b4` です。
 
 HTGCのルートで実行します。Python 3.10以上、Node.js/npm、Flutterと対象OSのFlutterデスクトップ開発環境を用意してください。Flutter 3.47.9 / Dart 3.13.7で検証しました。
