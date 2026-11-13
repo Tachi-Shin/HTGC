@@ -500,7 +500,8 @@ class NativeSiteState extends State<NativeSiteApp>
     if (isHidden(el, s) || s.containsKey('clip'))
       return const TextSpan(text: '');
     if (el.localName == 'br') return const TextSpan(text: '\n');
-    if (['a', 'button', 'img', 'input', 'textarea', 'meter'].contains(el.localName) ||
+    if (['a', 'button', 'details', 'summary', 'img', 'input', 'textarea', 'meter']
+            .contains(el.localName) ||
         s['display'] != 'inline')
       return WidgetSpan(child: buildNode(el, shrink: true));
     return TextSpan(
@@ -594,8 +595,21 @@ class NativeSiteState extends State<NativeSiteApp>
         .toList();
     final flow = <dom.Node>[];
     final absolute = <dom.Element>[];
+    final details = pseudo.isEmpty && el.localName == 'details';
+    final summary = details ? runtime.firstSummary(el) : null;
+    final open = details && el.attributes.containsKey('open');
+    final parent = el.parent;
+    final isSummary = pseudo.isEmpty &&
+        parent != null &&
+        parent.localName == 'details' &&
+        identical(runtime.firstSummary(parent), el);
     if (pseudo.isEmpty) {
+      if (isSummary) {
+        flow.add(dom.Text(parent.attributes.containsKey('open') ? '▾ ' : '▸ '));
+      }
+      if (summary != null) flow.add(summary);
       for (final child in children) {
+        if (identical(child, summary) || (details && !open)) continue;
         if (child is dom.Element && css.get(child)['position'] == 'absolute')
           absolute.add(child);
         else
@@ -766,6 +780,22 @@ class NativeSiteState extends State<NativeSiteApp>
             ]
           ]);
     }
+    if (details && summary == null) {
+      content = Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Semantics(
+            expanded: open,
+            child: TextButton(
+              onPressed: () => runtime.setDetailsOpen(el, !open),
+              child: const Text('Details'),
+            ),
+          ),
+          if (open) content,
+        ],
+      );
+    }
     if (s['display'] == 'grid' && s['place-items'] == 'center')
       content = Center(child: content);
     content = Padding(padding: padding, child: content);
@@ -918,6 +948,7 @@ class NativeSiteState extends State<NativeSiteApp>
     if (pseudo.isNotEmpty) return content;
     final click = el.localName == 'a' ||
         el.localName == 'button' ||
+        isSummary ||
         runtime.wrap(el).events.containsKey('click');
     if (click) {
       final enabled = el.localName != 'button' ||
@@ -943,7 +974,8 @@ class NativeSiteState extends State<NativeSiteApp>
         },
         child: Semantics(
           label: el.attributes['aria-label'],
-          button: el.localName == 'button',
+          button: el.localName == 'button' || isSummary,
+          expanded: isSummary ? parent.attributes.containsKey('open') : null,
           enabled: el.localName == 'button' ? enabled : null,
           link: el.localName == 'a',
           child: GestureDetector(

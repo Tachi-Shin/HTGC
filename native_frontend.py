@@ -110,6 +110,8 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                 return f'url("{key}")'
 
             value = re.sub(r"url\(([^)]+)\)", url_replace, value)
+            # A later longhand must stay after any intervening shorthand.
+            result.pop(name, None)
             result[name] = [value, d.important]
         return result
 
