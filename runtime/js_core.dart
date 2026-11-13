@@ -7,6 +7,13 @@ class JUndefined {
 
 const jUndefined = JUndefined();
 
+class JThrown implements Exception {
+  final dynamic value;
+  JThrown(this.value);
+  @override
+  String toString() => 'Uncaught JavaScript exception: ${jString(value)}';
+}
+
 class JShortCircuit {
   const JShortCircuit();
 }
@@ -25,6 +32,10 @@ class JScope {
   final Map<String, dynamic> _values = {};
   final Set<String> _constants = {};
   JScope([this.parent]);
+  void declareVar(String name) {
+    _values.putIfAbsent(name, () => jUndefined);
+  }
+
   dynamic define(String name, dynamic value, {bool constant = false}) {
     if (_values.containsKey(name))
       throw StateError('Identifier already declared: $name');
