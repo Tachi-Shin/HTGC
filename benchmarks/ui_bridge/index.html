@@ -18,11 +18,19 @@
         padding-left: 4px !important;
         padding-right: 6px;
       }
+      #layer-rollback { color: red; color: revert-layer; }
+      #important-rollback { color: red; }
+      #inline-rollback { color: blue !important; }
     }
     @layer reset {
       .layer-test { color: green; padding-left: 2px !important; }
+      #layer-rollback { color: green; }
+      #important-rollback { color: revert-layer !important; }
     }
     .layer-test { padding-right: 10px; padding-left: 1px !important; }
+    #important-rollback { color: red; }
+    #inline-rollback { color: red; }
+    #layer-fallback { color: revert-layer; }
     article { padding: 12px; }
     #rule-wins, #inline-wins { color: blue !important; }
     #rule-wins { padding-left: 2px; padding: 5px; padding-left: 9px; }
@@ -41,6 +49,12 @@
   <p id="exception"></p>
   <p id="toggles" hidden></p>
   <p id="layer-test" class="layer-test" hidden></p>
+  <div style="color: green" hidden>
+    <span id="layer-rollback"></span>
+    <span id="important-rollback"></span>
+    <span id="inline-rollback" style="color: revert-layer !important"></span>
+    <span id="layer-fallback"></span>
+  </div>
   <p id="module-log" data-runs="" hidden></p>
   <template id="memo-template">
     <article id="template-content" hidden>テンプレートの本文</article>

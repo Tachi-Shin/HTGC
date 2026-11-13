@@ -279,7 +279,7 @@ GTK 4の拡張変換はCSS描画とCanvasに未対応の箇所があるため警
 | 仕様 | 現在の対応と未検証の範囲 |
 | --- | --- |
 | [WHATWG HTML](https://html.spec.whatwg.org/) | Flutterではフォームの一部、`dialog`、`details` のほか、`template.content` から断片を複製して挿入できます。テンプレートのShadow DOM構文、メディア要素、埋め込み文書、Workerは未対応です。 |
-| [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | Flutterの拡張変換は、名前付き・匿名・入れ子の `@layer`、レイヤー順序の宣言、ローカル `@import … layer()` と `!important` の優先順位に対応します。条件付きレイヤー宣言、`revert-layer`、ページ媒体、詳細な組版は未対応です。 |
+| [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | Flutterの拡張変換は、名前付き・匿名・入れ子の `@layer`、レイヤー順序の宣言、ローカル `@import … layer()`、著者スタイルの `!important` と `revert-layer` に対応します。条件付きレイヤー宣言、ページ媒体、詳細な組版は未対応です。 |
 | [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartまたはCに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。動的 `import()`、import map、トップレベル `await`、非同期関数、ジェネレーター、組み込みオブジェクトには未実装の範囲があります。 |
 
 Flutterモジュールの指定子には `./logic.js`、`../shared.js`、`/shared.js` のようにパスを記述します。`/` は入口HTMLのディレクトリを表します。依存モジュールは変換時に収録され、同じ文書内では各モジュールを1回評価します。

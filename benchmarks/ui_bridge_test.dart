@@ -42,6 +42,12 @@ void main() {
     expect(layer['color'], 'blue');
     expect(layer['padding-left'], '2px');
     expect(layer['padding-right'], '10px');
+    for (final id in ['layer-rollback', 'important-rollback', 'layer-fallback']) {
+      expect(state.css.get(state.document.getElementById(id)!)['color'],
+          'green', reason: id);
+    }
+    expect(state.css.get(state.document.getElementById('inline-rollback')!)['color'],
+        'blue');
     final moduleLog = state.document.querySelector('#module-log')!;
     expect(moduleLog.text, '1:2:2:2');
     expect(moduleLog.attributes['data-runs'], '1');
