@@ -113,8 +113,9 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
             result[name] = [value, d.important]
         return result
 
-    def css(source, owner, conditions=None):
+    def css(source, owner, conditions=None, imports=()):
         result = []
+        allow_import = not conditions
         for rule in tinycss2.parse_stylesheet(
             source, skip_comments=True, skip_whitespace=True
         ):
@@ -123,6 +124,31 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
             if rule.type == "at-rule":
                 label = rule.lower_at_keyword
                 condition = tinycss2.serialize(rule.prelude).strip()
+                if label == "import":
+                    tokens = [
+                        t for t in rule.prelude if t.type not in ("whitespace", "comment")
+                    ]
+                    if not allow_import or rule.content is not None or len(tokens) != 1:
+                        raise CompileError(
+                            f"{owner}:{rule.source_line}: 先頭のローカル CSS @import を指定してください"
+                        )
+                    token = tokens[0]
+                    if token.type == "function" and token.lower_name == "url":
+                        arguments = [
+                            t for t in token.arguments if t.type not in ("whitespace", "comment")
+                        ]
+                        if len(arguments) == 1 and arguments[0].type == "string":
+                            token = arguments[0]
+                    if token.type not in ("url", "string") or not token.value:
+                        raise CompileError(
+                            f"{owner}:{rule.source_line}: 不正な CSS @import のパス"
+                        )
+                    path = local(token.value, owner)
+                    if path == owner or path in imports:
+                        continue
+                    result.extend(css(read(path), path, imports=(*imports, owner)))
+                    continue
+                allow_import = False
                 if label in ("media", "container") and rule.content is not None:
                     result.extend(
                         css(
@@ -145,6 +171,7 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                         f"{owner}:{rule.source_line}: 未対応のCSS @{label}"
                     )
                 continue
+            allow_import = False
             selector_text = tinycss2.serialize(rule.prelude).strip()
             try:
                 selectors = list(parse_selector(selector_text))

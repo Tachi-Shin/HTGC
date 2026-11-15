@@ -12,6 +12,77 @@ import 'js_core.dart';
 import 'dom.dart';
 import 'css.dart';
 
+/// Access to the document that raised an HTML event.
+class HtgcUi {
+  HtgcUi._(this._state, this._page);
+
+  final NativeSiteState _state;
+  final JDomRuntime _page;
+
+  bool get active => _state.mounted && identical(_state.runtime, _page);
+
+  dom.Element? _element(String id) =>
+      active ? _page.document.getElementById(id) : null;
+
+  bool setText(String id, String value) {
+    final element = _element(id);
+    if (element == null) return false;
+    _page.wrap(element).set('textContent', value);
+    return true;
+  }
+
+  String? getValue(String id) {
+    final element = _element(id);
+    return element != null && _state.isTextField(element)
+        ? _state.fieldValue(element)
+        : null;
+  }
+
+  bool setValue(String id, String value) {
+    final element = _element(id);
+    if (element == null || !_state.isTextField(element)) return false;
+    _state.updateField(element, value);
+    return true;
+  }
+
+  bool setVisible(String id, bool visible) {
+    final element = _element(id);
+    if (element == null) return false;
+    if (visible) {
+      element.attributes.remove('hidden');
+    } else {
+      element.attributes['hidden'] = '';
+    }
+    _page.changed();
+    return true;
+  }
+
+  bool setDisabled(String id, bool disabled) {
+    final element = _element(id);
+    if (element == null ||
+        (!_state.isTextField(element) && element.localName != 'button')) {
+      return false;
+    }
+    if (disabled) {
+      element.attributes['disabled'] = '';
+    } else {
+      element.attributes.remove('disabled');
+    }
+    _page.changed();
+    return true;
+  }
+
+  Future<bool> showModal(String id) {
+    final element = _element(id);
+    if (element == null || element.localName != 'dialog') {
+      return Future.value(false);
+    }
+    return _state.showModal(element);
+  }
+
+  bool closeModal(String id) => active && _state.closeModal(id);
+}
+
 class NativeSiteApp extends StatefulWidget {
   final String entry;
   final Map<String, dynamic> pages;
@@ -23,6 +94,7 @@ class NativeSiteApp extends StatefulWidget {
   final void Function(Uri)? externalLink;
   final bool? reducedMotion;
   final Map<String, void Function(String)> handlers;
+  final Map<String, void Function(String, HtgcUi)> pageHandlers;
   const NativeSiteApp(
       {super.key,
       required this.entry,
@@ -34,7 +106,8 @@ class NativeSiteApp extends StatefulWidget {
       this.saveStorage,
       this.externalLink,
       this.reducedMotion,
-      this.handlers = const {}});
+      this.handlers = const {},
+      this.pageHandlers = const {}});
   @override
   NativeSiteState createState() => NativeSiteState();
 }
@@ -48,10 +121,101 @@ class NativeSiteState extends State<NativeSiteApp>
   final Map<dom.Element, GlobalKey> nodeKeys = Map.identity();
   final List<String> history = [];
   final formKey = GlobalKey<FormState>();
+  final navigatorKey = GlobalKey<NavigatorState>();
+  final fieldKeys = Expando<GlobalKey<FormFieldState<String>>>();
+  final modalRevision = ValueNotifier<int>(0);
+  DialogRoute<void>? modalRoute;
+  dom.Element? modalElement;
   late Ticker ticker;
   final elapsed = ValueNotifier<double>(0);
   bool loading = false, queued = false, hasAnimation = false;
   dom.Document get document => runtime.document;
+
+  bool isTextField(dom.Element el) =>
+      el.localName == 'textarea' ||
+      (el.localName == 'input' && el.attributes['type'] != 'hidden');
+
+  String fieldValue(dom.Element el) =>
+      el.attributes['value'] ?? (el.localName == 'textarea' ? el.text : '');
+
+  void updateField(dom.Element el, String value) {
+    final page = runtime;
+    el.attributes['value'] = value;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(runtime, page) && fieldValue(el) == value) {
+        final field = fieldKeys[el]?.currentState;
+        if (field != null && field.value != value) field.didChange(value);
+      }
+    });
+    queue();
+  }
+
+  void invokeHandler(dom.Element el, String attribute, String value) {
+    final id = el.attributes[attribute];
+    if (id == null) return;
+    final handler = widget.pageHandlers[id];
+    if (handler != null) {
+      handler(value, HtgcUi._(this, runtime));
+    } else {
+      widget.handlers[id]?.call(value);
+    }
+  }
+
+  bool isHidden(dom.Element el, Map<String, String> style) =>
+      el.attributes.containsKey('hidden') ||
+      (el.localName == 'dialog' &&
+          (identical(el, modalElement) || !el.attributes.containsKey('open'))) ||
+      style['display'] == 'none';
+
+  Future<bool> showModal(dom.Element element) async {
+    final navigator = navigatorKey.currentState;
+    if (navigator == null || modalRoute != null ||
+        element.attributes.containsKey('open') ||
+        element.attributes.containsKey('hidden')) return false;
+    final page = runtime;
+    final route = DialogRoute<void>(
+      context: navigator.context,
+      barrierDismissible: false,
+      builder: (context) => Dialog(
+        child: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: ValueListenableBuilder<int>(
+              valueListenable: modalRevision,
+              builder: (context, revision, child) => identical(runtime, page) &&
+                      !element.attributes.containsKey('hidden') &&
+                      css.get(element)['display'] != 'none'
+                  ? buildNode(element, modal: true)
+                  : const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      ),
+    );
+    modalElement = element;
+    modalRoute = route;
+    element.attributes['open'] = '';
+    queue();
+    try {
+      await navigator.push(route);
+      await route.completed;
+      return true;
+    } finally {
+      element.attributes.remove('open');
+      if (identical(modalRoute, route)) {
+        modalElement = null;
+        modalRoute = null;
+      }
+      queue();
+    }
+  }
+
+  bool closeModal(String id) {
+    final route = modalRoute;
+    if (route == null || modalElement?.id != id || !route.isCurrent) return false;
+    route.navigator?.pop();
+    return true;
+  }
   @override
   void initState() {
     super.initState();
@@ -74,6 +238,8 @@ class NativeSiteState extends State<NativeSiteApp>
   }
 
   void load(String path) {
+    final route = modalRoute;
+    if (route != null && route.isActive) route.navigator?.removeRoute(route);
     loading = true;
     current = path;
     nodeKeys.clear();
@@ -102,7 +268,10 @@ class NativeSiteState extends State<NativeSiteApp>
     queued = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       queued = false;
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        modalRevision.value++;
+      }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
@@ -143,6 +312,7 @@ class NativeSiteState extends State<NativeSiteApp>
   void dispose() {
     ticker.dispose();
     elapsed.dispose();
+    modalRevision.dispose();
     scroll.dispose();
     super.dispose();
   }
@@ -180,6 +350,7 @@ class NativeSiteState extends State<NativeSiteApp>
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+        navigatorKey: navigatorKey,
         debugShowCheckedModeBanner: false,
         title: widget.pages[current]['title'],
         theme: ThemeData(useMaterial3: false),
@@ -195,7 +366,7 @@ class NativeSiteState extends State<NativeSiteApp>
           final body = document.body!;
           final style = css.get(body);
           final children = body.nodes
-              .where((n) => n is dom.Element && css.get(n)['display'] != 'none')
+              .where((n) => n is dom.Element && !isHidden(n, css.get(n)))
               .cast<dom.Element>()
               .toList();
           final fixed = <dom.Element>[];
@@ -326,10 +497,10 @@ class NativeSiteState extends State<NativeSiteApp>
       return TextSpan(text: n.text.replaceAll(RegExp(r'\s+'), ' '));
     final el = n as dom.Element;
     final s = css.get(el);
-    if (s['display'] == 'none' || s.containsKey('clip'))
+    if (isHidden(el, s) || s.containsKey('clip'))
       return const TextSpan(text: '');
     if (el.localName == 'br') return const TextSpan(text: '\n');
-    if (['a', 'img', 'input', 'meter'].contains(el.localName) ||
+    if (['a', 'button', 'img', 'input', 'textarea', 'meter'].contains(el.localName) ||
         s['display'] != 'inline')
       return WidgetSpan(child: buildNode(el, shrink: true));
     return TextSpan(
@@ -378,9 +549,9 @@ class NativeSiteState extends State<NativeSiteApp>
   }
 
   Widget buildNode(dom.Element el,
-      {bool shrink = false, double? containingHeight}) {
+      {bool shrink = false, double? containingHeight, bool modal = false}) {
     final s = css.get(el);
-    if (s['display'] == 'none') return const SizedBox.shrink();
+    if (!modal && isHidden(el, s)) return const SizedBox.shrink();
     final key = nodeKeys.putIfAbsent(el, () => GlobalKey());
     return KeyedSubtree(
         key: key,
@@ -459,8 +630,9 @@ class NativeSiteState extends State<NativeSiteApp>
     } else if (['input', 'textarea'].contains(el.localName)) {
       if (el.attributes['type'] == 'hidden') return const SizedBox.shrink();
       content = TextFormField(
-          key: ValueKey(el),
-          initialValue: el.attributes['value'],
+          key: fieldKeys[el] ??= GlobalKey<FormFieldState<String>>(),
+          initialValue: fieldValue(el),
+          enabled: !el.attributes.containsKey('disabled'),
           style: textStyle(s),
           maxLines: el.localName == 'textarea'
               ? int.tryParse(el.attributes['rows'] ?? '6') ?? 6
@@ -480,7 +652,7 @@ class NativeSiteState extends State<NativeSiteApp>
           },
           onChanged: (value) {
             el.attributes['value'] = value;
-            widget.handlers[el.attributes['oninput']]?.call(value);
+            invokeHandler(el, 'oninput', value);
             runtime.wrap(el).dispatch('input');
           });
     } else if (s['display'] == 'grid' && s['grid-template-columns'] != null) {
@@ -748,8 +920,11 @@ class NativeSiteState extends State<NativeSiteApp>
         el.localName == 'button' ||
         runtime.wrap(el).events.containsKey('click');
     if (click) {
+      final enabled = el.localName != 'button' ||
+          !el.attributes.containsKey('disabled');
       void activate() {
-        widget.handlers[el.attributes['onclick']]?.call('');
+        if (!enabled) return;
+        invokeHandler(el, 'onclick', '');
         if (el.localName == 'button' && el.attributes['type'] == 'submit') {
           formKey.currentState?.validate();
         } else {
@@ -758,6 +933,7 @@ class NativeSiteState extends State<NativeSiteApp>
       }
 
       content = FocusableActionDetector(
+        enabled: enabled,
         onFocusChange: (focused) => setFocus(el, focused),
         actions: {
           ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) {
@@ -768,10 +944,11 @@ class NativeSiteState extends State<NativeSiteApp>
         child: Semantics(
           label: el.attributes['aria-label'],
           button: el.localName == 'button',
+          enabled: el.localName == 'button' ? enabled : null,
           link: el.localName == 'a',
           child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: activate,
+              onTap: enabled ? activate : null,
               child: content),
         ),
       );
