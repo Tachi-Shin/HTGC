@@ -16,6 +16,22 @@ flutter test test/ui_bridge_test.dart
 
 同じテストで、`details` の排他的な開閉、スタイルシートとインライン宣言の `!important`、例外の捕捉、`switch` のフォールスルーも検証します。
 
+標準機能のケースでは、`template.content` が挿入前のDOM検索から除外されること、入れ子を含めて複製できること、`@layer` と `!important` の優先順位、静的モジュールの循環参照、エクスポート値の更新と二重評価の防止も確認します。
+
+## WPTのカスケードレイヤー試験
+
+HTGCのルートから実行します。`../portfolio-app` は上記と同じFlutterプロジェクトです。
+
+```sh
+curl -fL https://raw.githubusercontent.com/web-platform-tests/wpt/5e0f80519f244367a7a5dea3f0ea3f712cf8a124/css/css-cascade/layer-basic.html -o ../layer-basic.html
+python3 benchmarks/wpt_layers.py ../layer-basic.html ../portfolio-app/lib/wpt_layers.dart
+cp benchmarks/wpt_layers_test.dart ../portfolio-app/test/
+cd ../portfolio-app
+flutter test test/wpt_layers_test.dart
+```
+
+WPTの `layer-basic.html` からスタイル34件を取り出し、生成したFlutterアプリで各ケースの2要素の計算色が緑になることを確認します。WPTのブラウザ用ハーネスと動的にスタイルを挿入する処理は、同じ宣言を持つ生成ページとFlutterのアサーションに置き換えています。
+
 ## Test262 の例外処理テスト
 
 HTGCのルートから実行します。Python 3.10以上、Node.js/npm、Dart SDKが必要です。
@@ -75,7 +91,7 @@ Apple Silicon Macでは `flutter build macos --release` でビルドし、`lib/m
 | Contact | 3つの入力欄と必須・メール形式の検証 |
 | レイアウト | 画像帯の高さ、ヒーロー中央揃え、Gridの列、幅390pxの表示 |
 
-拡張変換はこのベンチマークが使う構文とDOM操作を対象に実装しています。CSSボックスの細部、フォントと改行、フォーカス表示、フィルター、アニメーションにはブラウザとの差があります。JavaScriptのモジュール間のimport/export、async/generator、インラインイベント属性、任意のブラウザAPIは未対応です。
+CSSボックスの細部、フォントと改行、フォーカス表示、フィルター、アニメーションにはブラウザとの差があります。JavaScriptの非同期関数やジェネレーター、多くのブラウザAPIには未実装の範囲があります。
 
 元サイトの粒子描画は、初期化を試みる時点で関数がまだ定義されていないため自動開始しません。Contactの送信には元サイトと同じく別途受信サービスが必要です。テストはフォームの検証まで行います。
 

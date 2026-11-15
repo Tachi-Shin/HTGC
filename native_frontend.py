@@ -37,7 +37,8 @@ class NativeSite:
     handlers: list[tuple]
 
 
-def load_site(entry, *, script_compiler=compile_script, includes=()):
+def load_site(entry, *, script_compiler=compile_script, includes=(),
+              cascade_layers=False, module_compiler=None):
     try:
         import html5lib
         import tinycss2
@@ -115,13 +116,39 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
             result[name] = [value, d.important]
         return result
 
-    def css(source, owner, conditions=None, imports=()):
+    def layer_names(tokens):
+        groups = [[]]
+        for token in tokens:
+            if token.type in ("whitespace", "comment"):
+                continue
+            if token.type == "literal" and token.value == ",":
+                groups.append([])
+            else:
+                groups[-1].append(token)
+        for group in groups:
+            if not group or len(group) % 2 == 0 or any(
+                (token.type != "ident" if i % 2 == 0 else
+                 token.type != "literal" or token.value != ".")
+                for i, token in enumerate(group)
+            ):
+                return []
+        return [tuple(token.value for token in group[::2]) for group in groups]
+
+    def add_layer(layers, path):
+        for depth in range(1, len(path) + 1):
+            layers.setdefault(path[:depth], None)
+        return path
+
+    def css(source, owner, layers, *, conditions=(), imports=(), layer=(),
+            top_level=True):
         result = []
-        allow_import = not conditions
+        allow_import = top_level
         for rule in tinycss2.parse_stylesheet(
             source, skip_comments=True, skip_whitespace=True
         ):
             if rule.type == "error":
+                if cascade_layers:
+                    continue
                 raise CompileError(f"{owner}:{rule.source_line}: {rule.message}")
             if rule.type == "at-rule":
                 label = rule.lower_at_keyword
@@ -130,7 +157,7 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                     tokens = [
                         t for t in rule.prelude if t.type not in ("whitespace", "comment")
                     ]
-                    if not allow_import or rule.content is not None or len(tokens) != 1:
+                    if not allow_import or rule.content is not None or not tokens:
                         raise CompileError(
                             f"{owner}:{rule.source_line}: 先頭のローカル CSS @import を指定してください"
                         )
@@ -145,10 +172,47 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                         raise CompileError(
                             f"{owner}:{rule.source_line}: 不正な CSS @import のパス"
                         )
+                    imported_layer = layer
+                    if len(tokens) == 2 and cascade_layers:
+                        modifier = tokens[1]
+                        if modifier.type == "ident" and modifier.lower_value == "layer":
+                            parts = (len(layers),)
+                        elif modifier.type == "function" and modifier.lower_name == "layer":
+                            names = layer_names(modifier.arguments)
+                            if len(names) != 1:
+                                raise CompileError(f"{owner}:{rule.source_line}: layer() に指定できる名前は1件です")
+                            parts = names[0]
+                        else:
+                            raise CompileError(f"{owner}:{rule.source_line}: 未対応の条件付きCSS @import")
+                        imported_layer = add_layer(layers, layer + parts)
+                    elif len(tokens) != 1:
+                        raise CompileError(f"{owner}:{rule.source_line}: 未対応のCSS @import 修飾子")
                     path = local(token.value, owner)
                     if path == owner or path in imports:
                         continue
-                    result.extend(css(read(path), path, imports=(*imports, owner)))
+                    result.extend(css(read(path), path, layers,
+                                      imports=(*imports, owner), layer=imported_layer))
+                    continue
+                if label == "layer" and cascade_layers:
+                    if conditions:
+                        raise CompileError(f"{owner}:{rule.source_line}: 条件付きグループ内のCSSレイヤー宣言は未対応です")
+                    if rule.content is None:
+                        for parts in layer_names(rule.prelude):
+                            add_layer(layers, layer + parts)
+                    else:
+                        allow_import = False
+                        if condition:
+                            names = layer_names(rule.prelude)
+                            if len(names) != 1:
+                                continue
+                            parts = names[0]
+                        else:
+                            parts = (len(layers),)
+                        sublayer = add_layer(layers, layer + parts)
+                        result.extend(css(
+                            tinycss2.serialize(rule.content), owner, layers,
+                            imports=imports, layer=sublayer, top_level=False,
+                        ))
                     continue
                 allow_import = False
                 if label in ("media", "container") and rule.content is not None:
@@ -156,7 +220,8 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                         css(
                             tinycss2.serialize(rule.content),
                             owner,
-                            (conditions or []) + [[label, condition]],
+                            layers, conditions=(*conditions, [label, condition]),
+                            imports=imports, layer=layer, top_level=False,
                         )
                     )
                 elif label == "keyframes" and rule.content is not None:
@@ -167,7 +232,7 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                         frames[tinycss2.serialize(frame.prelude).strip()] = (
                             declarations(frame.content, owner)
                         )
-                    result.append({"keyframes": condition, "frames": frames})
+                    result.append({"keyframes": condition, "frames": frames, "layer": layer})
                 else:
                     raise CompileError(
                         f"{owner}:{rule.source_line}: 未対応のCSS @{label}"
@@ -201,7 +266,8 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                         "selector": text,
                         "specificity": list(selector.specificity),
                         "declarations": decls,
-                        "conditions": conditions or [],
+                        "conditions": list(conditions),
+                        "layer": layer,
                     }
                 )
         return result
@@ -221,6 +287,13 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
             if child.tail:
                 children.append(child.tail)
         return {"tag": element.tag, "attributes": element.attrib, "children": children}
+
+    def page_elements(element, inert=False):
+        if not isinstance(element.tag, str):
+            return
+        yield element, inert
+        for child in element:
+            yield from page_elements(child, inert or element.tag == "template")
 
     paths = [entry]
     scheduled = {entry}
@@ -244,8 +317,9 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
     for path in paths:
         tree = html5lib.parse(read(path), namespaceHTMLElements=False)
         styles = []
+        layers = {}
         scripts = []
-        for el in tree.iter():
+        for el, inert in page_elements(tree):
             if el.tag in ("include", "iframe", "object", "embed", "video", "audio"):
                 raise CompileError(f"{path}: 拡張変換では未対応の要素 <{el.tag}>")
             for attribute in list(el.attrib):
@@ -276,29 +350,47 @@ def load_site(entry, *, script_compiler=compile_script, includes=()):
                             add_page(local(reference, path))
                     else:
                         add_asset(local(reference, path))
+            if inert and module_compiler is not None:
+                continue
             if el.tag == "link" and el.attrib.get("rel") == "stylesheet":
                 source = local(el.attrib["href"], path)
-                styles.extend(css(read(source), source))
+                styles.extend(css(read(source), source, layers))
             if el.tag == "style":
-                styles.extend(css(el.text or "", path))
+                styles.extend(css(el.text or "", path, layers))
             if el.tag == "script" and el.attrib.get("type", "") in (
                 "",
                 "module",
                 "text/javascript",
                 "application/javascript",
             ):
-                source = local(el.attrib["src"], path) if "src" in el.attrib else path
-                code = read(source) if source != path else el.text or ""
-                key = (str(source), code)
+                inline = "src" not in el.attrib
+                source = path if inline else local(el.attrib["src"], path)
+                code = (el.text or "") if inline else read(source)
+                is_module = el.attrib.get("type") == "module" and module_compiler is not None
+                key = (str(source), code, is_module)
+                if is_module and inline:
+                    key = (key, len(scripts))
                 if key not in script_ids:
                     i = len(compiled_scripts)
                     script_ids[key] = i
+                    module_id = source.relative_to(root).as_posix()
                     compiled_scripts.append(
-                        script_compiler(
-                            code, source.relative_to(root), name=f"htgcScript{i}"
-                        )
+                        module_compiler.entry(
+                            code, source, root, read, local, f"htgcScript{i}",
+                            inline=inline,
+                        ) if is_module else script_compiler(
+                            code, module_id, name=f"htgcScript{i}")
                     )
                 scripts.append(script_ids[key])
+        # A layer's direct rules come after all its sublayers.
+        positions = {layer: i for i, layer in enumerate(layers)}
+        end = len(layers)
+        ordered = sorted(layers, key=lambda layer: (
+            *(positions[layer[:i]] for i in range(1, len(layer) + 1)), end,
+        ))
+        ranks = {layer: i - len(ordered) for i, layer in enumerate(ordered)}
+        for rule in styles:
+            rule["layer"] = ranks.get(rule["layer"], 0)
         title = next((el.text for el in tree.iter("title")), None) or path.stem
         pages[path.relative_to(root).as_posix()] = {
             "title": title,

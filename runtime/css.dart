@@ -37,10 +37,20 @@ class NativeCss {
   final Map<dom.Element, Map<String, String>> _cache = Map.identity();
   final Map<String, Set<dom.Element>> _selectors = {};
   final Map<String, Map<String, dynamic>> keyframes = {};
+  bool _layerRollback = false;
   NativeCss(this.runtime, this.rules) {
+    final layers = <String, int>{};
     for (final r in rules) {
-      if (r['keyframes'] != null)
-        keyframes[r['keyframes']] = Map<String, dynamic>.from(r['frames']);
+      final declarations = r['declarations'] as Map?;
+      _layerRollback |= declarations?.values.any(
+              (entry) => (entry[0] as String).toLowerCase() == 'revert-layer') ??
+          false;
+      final String? name = r['keyframes'];
+      final int layer = r['layer'] ?? 0;
+      if (name != null && layer >= (layers[name] ?? layer)) {
+        layers[name] = layer;
+        keyframes[name] = Map<String, dynamic>.from(r['frames']);
+      }
     }
   }
   static const inherited = {
@@ -67,14 +77,35 @@ class NativeCss {
     for (final entry in defaults(el).entries) {
       result.addAll(expand(entry.key, entry.value));
     }
-    final priorities = <String, List<int>>{};
+    final inlineDeclarations = pseudo.isNotEmpty
+        ? const <String>[]
+        : [
+            ...cssSplit(el.attributes['style'] ?? '', ';'),
+            for (final e in runtime.wrap(el).style.values.entries)
+              '${e.key}:${e.value}',
+          ];
+    final rollback = _layerRollback ||
+        inlineDeclarations.any((text) => text.toLowerCase().contains('revert-layer'));
+    final winners = <String, (String, List<int>)>{};
+    final candidates = rollback
+        ? <String, Map<(bool, int), (String, List<int>)>>{}
+        : null;
     void apply(String name, String value, List<int> score) {
       for (final declaration in expand(name, value).entries) {
-        final key = declaration.key;
-        final previous = priorities[key];
-        if (previous == null || compare(score, previous) >= 0) {
-          result[key] = declaration.value;
-          priorities[key] = score;
+        if (candidates == null) {
+          final previous = winners[declaration.key];
+          if (previous == null || compare(score, previous.$2) >= 0) {
+            winners[declaration.key] = (declaration.value, score);
+          }
+          continue;
+        }
+        final layers = candidates.putIfAbsent(declaration.key, () => {});
+        final inline = score[1] != 0;
+        final layer = score[0] == 0 ? score[2] : -score[2];
+        final identity = (inline, layer);
+        final previous = layers[identity];
+        if (previous == null || compare(score, previous.$2) >= 0) {
+          layers[identity] = (declaration.value, score);
         }
       }
     }
@@ -88,18 +119,16 @@ class NativeCss {
       if (p != null) selector = selector.substring(0, p.start);
       if (!conditions(r['conditions'], el) || !matches(el, selector)) continue;
       final spec = List<int>.from(r['specificity']);
+      final int layer = r['layer'] ?? 0;
       for (final e in (r['declarations'] as Map).entries) {
-        apply(e.key, e.value[0], [e.value[1] == true ? 1 : 0, 0, ...spec, order]);
+        final important = e.value[1] == true;
+        apply(e.key, e.value[0],
+            [important ? 1 : 0, 0, important ? -layer : layer, ...spec, order]);
       }
     }
-    if (pseudo.isEmpty) {
-      final declarations = [
-        ...cssSplit(el.attributes['style'] ?? '', ';'),
-        for (final e in runtime.wrap(el).style.values.entries)
-          '${e.key}:${e.value}',
-      ];
+    if (inlineDeclarations.isNotEmpty) {
       final important = RegExp(r'!\s*important\s*$', caseSensitive: false);
-      for (final text in declarations) {
+      for (final text in inlineDeclarations) {
         final colon = text.indexOf(':');
         if (colon <= 0) continue;
         final name = text.substring(0, colon).trim();
@@ -108,8 +137,31 @@ class NativeCss {
         final value = match == null ? raw : raw.substring(0, match.start).trim();
         if (value.isEmpty) continue;
         apply(name.startsWith('--') ? name : name.toLowerCase(), value,
-            [match == null ? 0 : 1, 1, 0, 0, 0, ++order]);
+            [match == null ? 0 : 1, 1, 0, 0, 0, 0, ++order]);
       }
+    }
+    for (final entry in candidates?.entries ?? const Iterable.empty()) {
+      final ordered = entry.value.values.toList()
+        ..sort((a, b) => compare(b.$2, a.$2));
+      // If an important layer rolls back, all weaker important layers are
+      // eligible, but normal layers at or above that layer are also skipped.
+      var normalLimit = 2;
+      for (final candidate in ordered) {
+        final (value, score) = candidate;
+        final important = score[0] != 0;
+        final inline = score[1] != 0;
+        if (!important && (inline ? 1 : score[2]) >= normalLimit) continue;
+        if (value.toLowerCase() == 'revert-layer') {
+          if (important && !inline) normalLimit = math.min(normalLimit, -score[2]);
+          continue;
+        }
+        winners[entry.key] = candidate;
+        break;
+      }
+    }
+    for (final entry in winners.entries) {
+      final value = entry.value.$1;
+      if (value.toLowerCase() != 'revert') result[entry.key] = value;
     }
     String substitute(String value) {
       for (var i = 0; i < 32 && value.contains('var('); i++) {
@@ -187,7 +239,7 @@ class NativeCss {
     }
     if (['span', 'a', 'strong', 'b', 'small', 'code', 'label', 'em', 'i', 'br']
         .contains(tag)) s['display'] = 'inline';
-    if (['head', 'script', 'style', 'title', 'meta', 'link', 'noscript']
+    if (['head', 'script', 'style', 'title', 'meta', 'link', 'noscript', 'template']
         .contains(tag)) s['display'] = 'none';
     if (tag == 'body') s['margin'] = '8px';
     if (tag == 'a') {
