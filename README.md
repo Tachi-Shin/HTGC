@@ -278,13 +278,13 @@ GTK 4の拡張変換はCSS描画とCanvasに未対応の箇所があるため警
 
 | 仕様 | 現在の対応と未検証の範囲 |
 | --- | --- |
-| [WHATWG HTML](https://html.spec.whatwg.org/) | Flutterではフォームの一部、`dialog`、`details` のほか、`template.content` から断片を複製して挿入できます。テンプレートのShadow DOM構文、メディア要素、埋め込み文書、Workerは未対応です。 |
+| [WHATWG HTML](https://html.spec.whatwg.org/) | Flutterではフォームの一部、`dialog`、`details` のほか、`template.content` から断片を複製して挿入できます。ローカルの `iframe/srcdoc` と `object/embed` の文書・画像を扱います。テンプレートのShadow DOM構文、メディア要素、リモート埋め込み、sandboxポリシー、Workerは未対応です。 |
 | [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | Flutterの拡張変換は、名前付き・匿名・入れ子の `@layer`、レイヤー順序の宣言、ローカル `@import … layer()`、著者スタイルの `!important` と `revert-layer` に対応します。画面幅・高さ、カラーテーマ、動きを減らす設定などに応じたレイヤー順序と条件付きインポートにも対応します。ページ媒体、詳細な組版、全CSSプロパティの値文法は未対応です。 |
-| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartまたはCに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。ローカルの動的 `import()`、トップレベル `await`、`async/await` とPromiseの基本操作にも対応します。import map、ジェネレーター、非同期イテレーター、SymbolやProxyなどの組み込みオブジェクトには未実装の範囲があります。 |
+| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartまたはCに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。ローカルの動的 `import()`、トップレベル `await`、`async/await` とPromiseの基本操作にも対応します。Symbol、通常オブジェクトの記述子・プロトタイプ操作、Map/Set/WeakMap/WeakSet、反復と分割代入、JSONの基本操作にも対応します。import map、ジェネレーター、非同期イテレーター、Proxy、TypedArrayや組み込みオブジェクトの完全な互換性は未実装です。 |
 
 Flutterモジュールの指定子には `./logic.js`、`../shared.js`、`/shared.js` のようにパスを記述します。`/` は入口HTMLのディレクトリを表します。依存モジュールは変換時に収録され、同じ文書内では各モジュールを1回評価します。
 
-全仕様への準拠は未達です。[ベンチマーク手順](benchmarks/README.md) に、[Web Platform Tests](https://web-platform-tests.org/) のレイヤー試験と、[Test262](https://github.com/tc39/test262) の例外処理・非同期実行から選んだケースの実行方法を記載しています。
+全仕様への準拠は未達です。[ベンチマーク手順](benchmarks/README.md) に、[Web Platform Tests](https://web-platform-tests.org/) のレイヤー試験と、[Test262](https://github.com/tc39/test262) の例外処理・非同期実行・組み込みオブジェクトから選んだケースの実行方法を記載しています。
 
 ### Flutterの非同期JavaScriptとモジュール
 
@@ -321,6 +321,37 @@ export async function save(text) {
 - 依存先のトップレベル `await` を待ってから利用側を評価します。循環参照、共有依存、同時インポート、失敗したモジュールの再インポートでも、同じ文書の評価結果を共有します。
 - `Promise` の生成、`resolve/reject`、`then/catch/finally`、`all/allSettled/race/any`、`withResolvers/try` を実装しています。引数には配列など現在対応する反復可能値を使います。Promiseのサブクラス、`Symbol.species`、汎用コンストラクターへの組み込みメソッド転用は未対応です。
 - `await` はPromise、thenable、通常値を受け取ります。例外と `finally`、右辺に `await` を含む代入・短絡評価にも対応します。捕捉されなかった拒否はDartのZoneへエラーを通知します。HTMLの `unhandledrejection` / `rejectionhandled` イベントは未実装です。
+
+### Flutterの埋め込み文書
+
+```html
+<iframe id="preview" src="parts/preview.html" width="480" height="240"></iframe>
+<iframe srcdoc="&lt;p&gt;この文書も変換時に収録されます&lt;/p&gt;"></iframe>
+<object data="parts/details.html" width="480" height="240"></object>
+<embed src="assets/diagram.svg" width="320" height="180">
+<script>
+  const preview = document.getElementById('preview');
+  preview.addEventListener('load', () => {
+    preview.contentDocument.getElementById('status').textContent = '親から更新';
+  });
+</script>
+```
+
+参照するHTML・CSS・JavaScriptは変換時にたどり、同じDartソースに収録します。生成アプリはHTMLファイルを実行時に読みません。`srcdoc` は `src` より優先し、その相対参照は親文書の位置を基準に解決します。画像は従来どおり生成物の `.assets` ディレクトリへコピーします。
+
+子文書は自身のDOM・CSS計算・スクリプトスコープ・スクロール位置を持ち、メディア条件には埋め込み領域の寸法を使います。子のリンクを押しても親文書は遷移しません。`contentDocument`、`contentWindow.document` と子文書の読み込み後の `load` 通知を実装しています。自分自身・祖先への循環埋め込みは空文書にします。
+
+現在の対象は入力ルート内のHTMLと画像です。外部サイト、sandbox/credentialless、Permissions Policy、完全なWindowProxy/Realm分離、親文書との `postMessage`、実行中に新しい `srcdoc` をコンパイルする機能は未実装です。外部サイトとsandbox/credentiallessの指定は変換エラーにします。GTK/IUPの埋め込み文書には対応していません。
+
+### FlutterのJavaScript組み込みオブジェクト
+
+- `Symbol()`、`Symbol.for/keyFor`、Symbolキーのプロパティ、`Symbol.iterator`・`Symbol.toPrimitive`・`Symbol.toStringTag` を扱います。
+- 通常オブジェクトのgetter/setterと継承、`Object.defineProperty/defineProperties`、属性取得、列挙順序、`assign/fromEntries/groupBy`、`create/getPrototypeOf/setPrototypeOf`、`freeze/seal/preventExtensions` と関連する判定を実装しています。Reflectからの通常オブジェクト操作にも対応します。
+- `Map`・`Set` は挿入順とSameValueZero比較を使い、反復中の追加・削除・clearを扱います。Setの集合演算と包含判定、`Map.groupBy`、弱参照キーを持つ `WeakMap/WeakSet` も実装しています。
+- `for...of`、spread、`Array.from`、配列の分割代入は `Symbol.iterator` を使います。break・return・例外・分割代入の終了時には、必要に応じてイテレーターの `return()` を呼びます。既定値・rest・computedキーを持つ分割代入の宣言にも対応します。
+- `JSON.parse` のreviver、`JSON.stringify` のreplacer・インデント・`toJSON`・循環参照エラーを実装しています。
+
+これらは組み込みオブジェクト全体の準拠を意味しません。配列の特殊なプロパティ記述子やfreeze/seal、完全な組み込みプロトタイプと関数メタデータ、サブクラス・Species、Proxy、TypedArray、Date/RegExpの全操作、JSONの数値精度とreviverのsource context、非同期イテレーターなどは残っています。対応する通常オブジェクト向けの操作を配列にもそのまま適用できるとは限りません。
 
 ### 条件付きCSSレイヤー
 

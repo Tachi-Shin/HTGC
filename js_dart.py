@@ -107,24 +107,35 @@ class Compiler:
             if kind == "var":
                 return f'{self.scope}.put({quote(pattern["name"])}, {value});'
             return f'{self.scope}.define({quote(pattern["name"])}, {value}, constant: {str(kind == "const").lower()});'
+        if pattern["type"] == "AssignmentPattern":
+            temp = self.name("default")
+            return (f"final {temp} = {value};\n" + self.bind(pattern["left"],
+                    f"(identical({temp}, jUndefined) ? {self.expr(pattern['right'])} : {temp})", kind))
         if pattern["type"] == "ObjectPattern":
-            temp = self.name("v")
-            code = f"final {temp} = {value};\n"
+            temp, keys = self.name("v"), self.name("keys")
+            code = f"final {temp} = jRequireCoercible({value});\nfinal {keys} = <Object>[];\n"
             for prop in pattern["properties"]:
-                if prop["type"] != "Property":
-                    self.fail(prop)
-                key = prop["key"].get("name", prop["key"].get("value"))
-                code += (
-                    self.bind(prop["value"], f"jGet({temp}, {quote(key)})", kind) + "\n"
-                )
+                if prop["type"] == "RestElement":
+                    code += self.bind(prop["argument"], f"jCopyProperties({temp}, excluding: {keys})", kind) + "\n"
+                    continue
+                key = self.name("key")
+                expression = self.expr(prop["key"]) if prop.get("computed") else quote(prop["key"].get("name", prop["key"].get("value")))
+                code += f"final {key} = jPropertyKey({expression});\n{keys}.add({key});\n"
+                code += self.bind(prop["value"], f"jGet({temp}, {key})", kind) + "\n"
             return code
         if pattern["type"] == "ArrayPattern":
-            temp = self.name("v")
-            return f"final {temp} = {value};\n" + "\n".join(
-                self.bind(p, f"jGet({temp}, {i})", kind)
-                for i, p in enumerate(pattern["elements"])
-                if p
-            )
+            iterator = self.name("iterator")
+            code = f"final {iterator} = jGetIterator({value});\ntry {{\n"
+            for element in pattern["elements"]:
+                if element is None:
+                    code += f"{iterator}.advance();\n"
+                elif element["type"] == "RestElement":
+                    rest = self.name("rest")
+                    code += f"final {rest} = <dynamic>[];\nwhile ({iterator}.advance()) {{ {rest}.add({iterator}.current); }}\n"
+                    code += self.bind(element["argument"], rest, kind) + "\n"
+                else:
+                    code += self.bind(element, f"({iterator}.advance() ? {iterator}.current : jUndefined)", kind) + "\n"
+            return code + f"}} catch (_error) {{ {iterator}.close(suppressErrors: _error is! JAsyncReturn); rethrow; }} finally {{ {iterator}.close(); }}\n"
         self.fail(pattern)
 
     def binding_names(self, pattern):
@@ -135,8 +146,12 @@ class Compiler:
             for prop in pattern["properties"]:
                 if prop["type"] == "Property":
                     yield from self.binding_names(prop["value"])
+                elif prop["type"] == "RestElement":
+                    yield from self.binding_names(prop["argument"])
                 else:
                     self.fail(prop)
+        elif kind in ("AssignmentPattern", "RestElement"):
+            yield from self.binding_names(pattern["left"] if kind == "AssignmentPattern" else pattern["argument"])
         elif kind == "ArrayPattern":
             for element in pattern["elements"]:
                 if element is not None:
@@ -251,7 +266,7 @@ class Compiler:
                 parts.append(
                     "...jIterable(" + self.expr(item["argument"]) + ")"
                     if item and item["type"] == "SpreadElement"
-                    else self.expr(item)
+                    else self.expr(item) if item is not None else "_jHole"
                 )
             return "<dynamic>[" + ", ".join(parts) + "]"
         if t == "ObjectExpression":
@@ -265,7 +280,10 @@ class Compiler:
                     if p.get("computed")
                     else quote(p["key"].get("name", p["key"].get("value")))
                 )
-                parts.append(f'({quote(p.get("kind", "init"))}, jString({key}), {self.expr(p["value"])})')
+                kind = p.get("kind", "init")
+                if not p.get("computed") and not p.get("method") and not p.get("shorthand") and kind == "init" and p["key"].get("name", p["key"].get("value")) == "__proto__":
+                    kind = "prototype"
+                parts.append(f'({quote(kind)}, jPropertyKey({key}), {self.expr(p["value"])})')
             return "jObjectLiteral([" + ", ".join(parts) + "])"
         if t in ("FunctionExpression", "ArrowFunctionExpression"):
             return self.function(n)
@@ -306,6 +324,9 @@ class Compiler:
                 return f'(({temp} = {callsite}).skipped ? jShortCircuit : {temp}.call({args}))'
             return f"jCall({self.expr(callee)}, {args}, optional: {optional})"
         if t == "UnaryExpression":
+            if n["operator"] == "delete" and n["argument"]["type"] == "MemberExpression":
+                target = n["argument"]
+                return f'jDelete({self.expr(target["object"])}, {self.key(target)}, strict: true)'
             return f'jUnary({quote(n["operator"])}, {self.expr(n["argument"])})'
         if t == "BinaryExpression":
             return f'jBinary({quote(n["operator"])}, {self.expr(n["left"])}, {self.expr(n["right"])})'
@@ -447,7 +468,13 @@ class Compiler:
                 init = self.bind(left["declarations"][0]["id"], iterator, left["kind"])
             else:
                 init = f'jAssign({self.ref(left)}, "=", () => {iterator});'
-            body = f'for (final {iterator} in jIterable({source})) {{\nfinal {self.scope} = JScope({parent});\n{init}\n{self.stmt(n["body"])}\n}}'
+            record = self.name("iterator")
+            caught = self.name("error")
+            body = (f'{{ final {record} = jGetIterator({source});\ntry {{\n'
+                    f'while ({record}.advance()) {{\nfinal {iterator} = {record}.current;\n'
+                    f'final {self.scope} = JScope({parent});\n{init}\n{self.stmt(n["body"])}\n}}'
+                    f'\n}} catch ({caught}) {{\n{record}.close(suppressErrors: {caught} is! JAsyncReturn);\nrethrow;\n}}'
+                    f' finally {{ {record}.close(); }}\n}}')
             self.scope = parent
             return body
         if t == "ForStatement":

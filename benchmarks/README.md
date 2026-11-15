@@ -32,7 +32,7 @@ flutter test test/wpt_layers_test.dart
 
 WPTの `layer-basic.html` からスタイル34件を取り出し、生成したFlutterアプリで各ケースの2要素の計算色が緑になることを確認します。WPTのブラウザ用ハーネスと動的にスタイルを挿入する処理は、同じ宣言を持つ生成ページとFlutterのアサーションに置き換えています。
 
-## Test262 の例外処理・非同期テスト
+## Test262 の例外処理・非同期・組み込みテスト
 
 HTGCのルートから実行します。Python 3.10以上、Node.js/npm、Dart SDKが必要です。
 
@@ -43,7 +43,7 @@ git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
 python3 benchmarks/test262_dart.py ../test262
 ```
 
-Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件を選び、元のテストソースを変更せずHTGCでDartへ変換して実行します。ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue`、`assert.compareArray`、`asyncTest`、`$DONE` をDartで提供します。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件の計29件を選び、元のテストソースを変更せずHTGCでDartへ変換して実行します。ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue`、`assert.compareArray`、`assert.throws`、`verifyProperty`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` は選定ケースのプロパティ記述子の比較を行い、Test262のpropertyHelper全体を実行するものではありません。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
 
 ## 非同期実行と条件付きCSSの回帰試験
 
@@ -56,11 +56,23 @@ cd ../portfolio-app
 flutter test test/ui_bridge_test.dart test/css_conditions_test.dart
 ```
 
-`js_async_dart.py` は2組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Node.jsは比較用で、生成アプリには使いません。`Promise.try` と `Promise.withResolvers` に対応したNode.jsが必要です（24.22.1で検証）。
+`js_async_dart.py` は6組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。組み込み機能についてはSymbol・プロパティ記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションも含みます。Node.jsは比較用で、生成アプリには使いません。`Promise.try` と `Promise.withResolvers` に対応したNode.jsが必要です（24.22.1で検証）。
 
 Flutterテストでは、トップレベル `await` の完了後と非同期クリック処理後に表示が更新されることも確認します。CSSテストは幅320・800・1000pxとテーマ・動きの設定を切り替えて、条件付きレイヤー順序とインポート、メディア範囲比較、`@supports` を検証します。
 
 これらは選定したケースの回帰試験です。WPT全体・Test262全体の通過や、ブラウザとの完全な描画一致を示すものではありません。
+
+## ローカル埋め込み文書の検証
+
+```sh
+python3 benchmarks/embedded_inputs.py
+python3 HTGC -Dart benchmarks/embedded_docs/index.html -o ../portfolio-app/lib/embedded_docs.dart
+cp benchmarks/embedded_docs_test.dart ../portfolio-app/test/
+cd ../portfolio-app
+flutter test test/embedded_docs_test.dart
+```
+
+変換時の検証では、参照文書とそのCSS/JS・画像だけの収録、`srcdoc` の優先、相対参照の基準、未対応ポリシーの診断を確認します。Flutter上では親子のDOMとCSSの分離、埋め込み寸法とメディア条件、親から子への更新、子だけの遷移、循環参照の停止、objectの代替内容を確認します。元のHTMLを読み込めないディレクトリを実行時の画像ディレクトリに指定しています。
 
 ## ポートフォリオのFlutterビルド
 

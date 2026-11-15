@@ -12,6 +12,8 @@ class JDomRuntime {
   final Map<dom.Node, JDomNode> _nodes = Map.identity();
   final _templates = Expando<dom.DocumentFragment>();
   final Map<String, JClass> customElements = {};
+  final Map<dom.Element, JDomRuntime> embeddedDocuments = Map.identity();
+  final JObject window = JObject();
   final List<JObserver> observers = [];
   final List<dynamic> frames = [];
   final Map<dom.Element, Map<String, num>> bounds = Map.identity();
@@ -152,7 +154,6 @@ class JDomRuntime {
   JScope newScope() {
     final scope = JScope();
     installJSBuiltins(scope);
-    final window = JObject();
     final localStorage = JObject({
       'getItem': jNative((a) => storage[jString(a[0])]),
       'setItem': jNative((a) {
@@ -304,6 +305,13 @@ class JDomNode extends JObject {
     if (!identical(custom, jUndefined)) return custom;
     final el = node is dom.Element ? node as dom.Element : null;
     switch (name) {
+      case 'contentDocument':
+        if (el == null || !['iframe', 'object', 'embed'].contains(el.localName)) return jUndefined;
+        final child = runtime.embeddedDocuments[el];
+        return child == null ? null : child.wrap(child.document);
+      case 'contentWindow':
+        if (el?.localName != 'iframe') return jUndefined;
+        return runtime.embeddedDocuments[el]?.window;
       case 'documentElement':
         final root = (node as dom.Document).documentElement;
         return root == null ? null : runtime.wrap(root);

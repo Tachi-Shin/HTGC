@@ -31,6 +31,18 @@ ASYNC_TESTS = (
     "await-non-promise.js", "await-throws-rejections.js",
 )
 
+BUILTIN_TESTS = (
+    *("Map/prototype/get/" + name for name in (
+        "does-not-have-mapdata-internal-slot-set.js",
+        "does-not-have-mapdata-internal-slot-weakmap.js",
+        "does-not-have-mapdata-internal-slot.js", "get.js", "returns-undefined.js",
+        "returns-value-different-key-types.js", "returns-value-normalized-zero-key.js",
+        "this-not-object-throw.js",
+    )),
+    *("Object/defineProperties/property-description-must-be-an-object-not-" + kind + ".js"
+      for kind in ("false", "null", "number", "string", "symbol", "true", "undefined")),
+)
+
 ASYNC_HARNESS = r"""
 Future<void> main() async {
   final scope = JScope();
@@ -59,6 +71,26 @@ Future<void> main() async {
     }
     return jUndefined;
   });
+  assertFn.properties['throws'] = jNative((a) {
+    try { jCall(a[1], []); }
+    catch (error) {
+      final value = jExceptionValue(error);
+      if (value is! JObject || !identical(value.get('constructor'), a[0])) {
+        throw StateError('Unexpected exception: $error');
+      }
+      return jUndefined;
+    }
+    throw StateError('Expected an exception');
+  });
+  scope.define('verifyProperty', jNative((a) {
+    final target = a[0] as JObject, key = jPropertyKey(a[1]);
+    final expected = a[2] as JObject, actual = jDescriptor(target, key);
+    if (actual is! JObject) throw StateError('Missing own property');
+    for (final name in expected.properties.keys) {
+      if (!same(jGet(actual, name), expected.get(name))) throw StateError('Descriptor mismatch: $name');
+    }
+    return jUndefined;
+  }));
   scope.define('assert', assertFn);
   scope.define('Test262Error', jNative((args) => StateError(jString(jArg(args, 0)))));
   final finish = jNative((args) {
@@ -78,6 +110,9 @@ Future<void> main() async {
 }
 """
 
+BUILTIN_HARNESS = ASYNC_HARNESS.replace(
+    '  await done.future.timeout(const Duration(seconds: 5));', '')
+
 HARNESS = """
 void main() {
   final scope = JScope();
@@ -96,6 +131,8 @@ def main():
     tests = [(args.checkout / "test/language/statements/try" / name, HARNESS) for name in TESTS]
     tests += [(args.checkout / "test/language/expressions/await" / name, ASYNC_HARNESS)
               for name in ASYNC_TESTS]
+    tests += [(args.checkout / "test/built-ins" / name, BUILTIN_HARNESS)
+              for name in BUILTIN_TESTS]
     missing = [str(path) for path, _ in tests if not path.is_file()]
     if missing:
         parser.error(f"Test262 files missing: {', '.join(missing)}")

@@ -311,13 +311,21 @@ def load_site(entry, *, script_compiler=compile_script, includes=(),
         for child in element:
             yield from page_elements(child, inert or element.tag == "template")
 
-    paths = [entry]
+    paths = [(entry.relative_to(root).as_posix(), entry, None)]
     scheduled = {entry}
+    blank_key = '#htgc-blank'
+    blank_scheduled = False
+
+    def add_blank():
+        nonlocal blank_scheduled
+        if not blank_scheduled:
+            blank_scheduled = True
+            paths.append((blank_key, entry, '<!doctype html><html><head></head><body></body></html>'))
 
     def add_page(path):
         if path not in scheduled:
             scheduled.add(path)
-            paths.append(path)
+            paths.append((path.relative_to(root).as_posix(), path, None))
 
     for include in includes:
         path = (root / include).resolve()
@@ -330,14 +338,40 @@ def load_site(entry, *, script_compiler=compile_script, includes=(),
         else:
             raise CompileError(f"--include: HTMLまたは画像を指定してください: {include}")
 
-    for path in paths:
-        tree = html5lib.parse(read(path), namespaceHTMLElements=False)
+    for page_key, path, inline_document in paths:
+        tree = html5lib.parse(read(path) if inline_document is None else inline_document,
+                             namespaceHTMLElements=False)
         styles = []
         layers = {}
         scripts = []
         for el, inert in page_elements(tree):
-            if el.tag in ("include", "iframe", "object", "embed", "video", "audio"):
+            if el.tag in ("include", "video", "audio") or (
+                el.tag in ("iframe", "object", "embed") and module_compiler is None
+            ):
                 raise CompileError(f"{path}: 拡張変換では未対応の要素 <{el.tag}>")
+            if el.tag in ("iframe", "object", "embed"):
+                add_blank()
+                # Embedded documents have independent DOM, styles and script scopes.
+                # Never fall back to a browser or read HTML at application runtime.
+                if "sandbox" in el.attrib or "credentialless" in el.attrib:
+                    raise CompileError(f"{path}: 埋め込み文書のsandbox/credentiallessポリシーは未対応です")
+                reference = el.attrib.get("data" if el.tag == "object" else "src", "")
+                if el.tag == "iframe" and "srcdoc" in el.attrib:
+                    target = f"{page_key}#htgc-srcdoc-{len(paths)}"
+                    paths.append((target, path, el.attrib["srcdoc"]))
+                    el.attrib["data-htgc-document"] = target
+                elif reference and reference != "about:blank":
+                    target_path = local(reference, path)
+                    if target_path.suffix.lower() in PAGE_SUFFIXES:
+                        add_page(target_path)
+                        el.attrib["data-htgc-document"] = target_path.relative_to(root).as_posix()
+                    elif el.tag != "iframe" and target_path.suffix.lower() in IMAGE_SUFFIXES:
+                        el.attrib["data-htgc-image"] = add_asset(target_path)
+                    else:
+                        raise CompileError(f"{path}: 埋め込みにはローカルHTMLまたは画像を指定してください: {reference}")
+                elif el.tag != "object" or reference == "about:blank":
+                    el.attrib["data-htgc-document"] = blank_key
+                el.attrib["data-htgc-source"] = reference
             for attribute in list(el.attrib):
                 if not attribute.startswith("on"):
                     continue
@@ -414,8 +448,10 @@ def load_site(entry, *, script_compiler=compile_script, includes=(),
                 rule["layerPath"] = rule["layer"]
             rule["layer"] = ranks.get(rule["layer"], 0)
         title = next((el.text for el in tree.iter("title")), None) or path.stem
-        pages[path.relative_to(root).as_posix()] = {
+        pages[page_key] = {
             "title": title,
+            "base": path.relative_to(root).as_posix(),
+            "srcdoc": inline_document,
             "tree": node_spec(tree),
             "styles": styles,
             "scripts": scripts,

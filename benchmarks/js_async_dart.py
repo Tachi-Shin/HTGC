@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile asynchronous JavaScript fixtures to Dart and compare with Node.js."""
+"""Compile JavaScript runtime fixtures to Dart and compare with Node.js."""
 import argparse
 from pathlib import Path
 import subprocess
