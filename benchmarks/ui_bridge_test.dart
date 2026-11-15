@@ -6,8 +6,9 @@ import 'package:htgc_portfolio/ui_bridge.dart';
 import 'package:htgc_portfolio/htgc_handlers.dart' as handlers;
 
 void main() {
-  testWidgets('HTML disclosure and templates, author cascade and JavaScript',
-      (tester) async {
+  testWidgets('HTML disclosure and templates, author cascade and JavaScript', (
+    tester,
+  ) async {
     final key = GlobalKey<NativeSiteState>();
     await tester.pumpWidget(
       NativeSiteApp(
@@ -34,23 +35,41 @@ void main() {
     final rule = state.css.get(state.document.querySelector('#rule-wins')!);
     expect(rule['color'], 'blue');
     expect(rule['padding-left'], '9px');
-    expect(state.css.get(state.document.querySelector('#inline-wins')!)['color'],
-        'red');
-    expect(state.document.querySelector('#exception')!.text,
-        '捕捉・終了・束縛なし・既定・次へ');
+    expect(
+      state.css.get(state.document.querySelector('#inline-wins')!)['color'],
+      'red',
+    );
+    expect(
+      state.document.querySelector('#exception')!.text,
+      '捕捉・終了・束縛なし・既定・次へ',
+    );
     final layer = state.css.get(state.document.querySelector('#layer-test')!);
     expect(layer['color'], 'blue');
     expect(layer['padding-left'], '2px');
     expect(layer['padding-right'], '10px');
-    for (final id in ['layer-rollback', 'important-rollback', 'layer-fallback']) {
-      expect(state.css.get(state.document.getElementById(id)!)['color'],
-          'green', reason: id);
+    for (final id in [
+      'layer-rollback',
+      'important-rollback',
+      'layer-fallback',
+    ]) {
+      expect(
+        state.css.get(state.document.getElementById(id)!)['color'],
+        'green',
+        reason: id,
+      );
     }
-    expect(state.css.get(state.document.getElementById('inline-rollback')!)['color'],
-        'blue');
+    expect(
+      state.css.get(state.document.getElementById('inline-rollback')!)['color'],
+      'blue',
+    );
     final moduleLog = state.document.querySelector('#module-log')!;
     expect(moduleLog.text, '1:2:2:2');
     expect(moduleLog.attributes['data-runs'], '1');
+    expect(find.text('モジュール準備完了', findRichText: true), findsOneWidget);
+    await tester.ensureVisible(find.text('非同期保存', findRichText: true));
+    await tester.tap(find.text('非同期保存', findRichText: true));
+    await tester.pumpAndSettle();
+    expect(find.text('日本語・非同期保存', findRichText: true), findsOneWidget);
     final host = state.document.querySelector('#template-result')!;
     expect(host.attributes['data-inert'], 'true');
     expect(host.attributes['data-nested'], '入れ子');

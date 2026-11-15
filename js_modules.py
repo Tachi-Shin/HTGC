@@ -35,14 +35,44 @@ class DartModules:
         self.add(source, key, owner, root, read, local)
         return (
             f"void {name}(JScope scope) {{\n"
-            f"  scope.modules(htgcModules).evaluate({quote(key)});\n"
+            f"  scope.modules(htgcModules).evaluate({quote(key)}).observe((_) {{}},\n"
+            "    (error) => Zone.current.handleUncaughtError(JThrown(error), StackTrace.current));\n"
             "}\n"
         )
+
+    def collect_dynamic(self, ast, owner, root, read, local):
+        if isinstance(ast, list):
+            for child in ast:
+                self.collect_dynamic(child, owner, root, read, local)
+        elif isinstance(ast, dict):
+            if ast.get("type") == "ImportExpression":
+                source = ast["source"]
+                specifier = source.get("value") if source["type"] == "Literal" else None
+                if isinstance(specifier, str):
+                    url = urlsplit(specifier)
+                    if (specifier.startswith(("./", "../", "/")) and
+                        not (url.scheme or url.netloc or url.query or url.fragment)):
+                        path = local(specifier, owner)
+                        # Missing dynamic imports reject at runtime, like host loading.
+                        if path.is_file():
+                            key = path.relative_to(root).as_posix()
+                            self.add(read(path), key, path, root, read, local)
+            for child in ast.values():
+                self.collect_dynamic(child, owner, root, read, local)
+
+    def script(self, source, owner, root, read, local, name):
+        key = owner.relative_to(root).as_posix()
+        compiler = Compiler(key)
+        compiler.module_owner = key
+        ast = parse(source, key)
+        self.collect_dynamic(ast, owner, root, read, local)
+        return compiler.compile(ast, name)
 
     def add(self, source, key, owner, root, read, local):
         if key in self.modules:
             return
         module = self.modules[key] = Module(Compiler(key), f"htgcModule{len(self.modules)}")
+        module.compiler.module_owner = owner.relative_to(root).as_posix()
         ast = parse(source, key)
         for node in ast["body"]:
             kind = node["type"]
@@ -111,6 +141,7 @@ class DartModules:
                 module.exports["default"] = (None, name)
             else:
                 module.statements.append(node)
+        self.collect_dynamic(ast, owner, root, read, local)
 
     def export_names(self, key, seen):
         if key in seen:
@@ -167,6 +198,7 @@ class DartModules:
         for key, module in self.modules.items():
             compiler = module.compiler
             nodes = module.statements
+            compiler.asynchronous = compiler.has_await(nodes)
             declarations = [node for node in nodes if node["type"] == "FunctionDeclaration"]
             initialize = [compiler.stmt(node) for node in declarations]
             initialize.extend(
@@ -187,7 +219,13 @@ class DartModules:
                 execute.append(compiler.stmt(node))
             functions.extend([
                 f"void {module.name}Init(JScope scope) {{\n" + "\n".join(initialize) + "\n}",
-                f"void {module.name}Body(JScope scope) {{\n" + "\n".join(execute) + "\n}",
+                f"dynamic {module.name}Body(JScope scope) {{\n" + (
+                    "return " + compiler.async_body(
+                        compiler.temp_declarations() + "\n".join(execute)
+                        + "\nthrow JAsyncReturn(jUndefined);"
+                    ) + ";" if compiler.asynchronous else
+                    compiler.temp_declarations() + "\n".join(execute) + "\nreturn jUndefined;"
+                ) + "\n}",
             ])
             imports = {
                 local: self.checked_binding(module, *binding)
@@ -205,7 +243,7 @@ class DartModules:
             definitions.append(
                 f"  {quote(key)}: JModuleDefinition([{dependencies}], "
                 f"{bindings(imports)}, {bindings(dict(sorted(exports.items())))}, "
-                f"{module.name}Init, {module.name}Body),"
+                f"{module.name}Init, {module.name}Body, hasAwait: {str(compiler.asynchronous).lower()}),"
             )
         return "\n" + "\n".join([
             *functions, "const htgcModules = <String, JModuleDefinition>{", *definitions, "};", "",

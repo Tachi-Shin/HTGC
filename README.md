@@ -279,12 +279,56 @@ GTK 4の拡張変換はCSS描画とCanvasに未対応の箇所があるため警
 | 仕様 | 現在の対応と未検証の範囲 |
 | --- | --- |
 | [WHATWG HTML](https://html.spec.whatwg.org/) | Flutterではフォームの一部、`dialog`、`details` のほか、`template.content` から断片を複製して挿入できます。テンプレートのShadow DOM構文、メディア要素、埋め込み文書、Workerは未対応です。 |
-| [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | Flutterの拡張変換は、名前付き・匿名・入れ子の `@layer`、レイヤー順序の宣言、ローカル `@import … layer()`、著者スタイルの `!important` と `revert-layer` に対応します。条件付きレイヤー宣言、ページ媒体、詳細な組版は未対応です。 |
-| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartまたはCに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。動的 `import()`、import map、トップレベル `await`、非同期関数、ジェネレーター、組み込みオブジェクトには未実装の範囲があります。 |
+| [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | Flutterの拡張変換は、名前付き・匿名・入れ子の `@layer`、レイヤー順序の宣言、ローカル `@import … layer()`、著者スタイルの `!important` と `revert-layer` に対応します。画面幅・高さ、カラーテーマ、動きを減らす設定などに応じたレイヤー順序と条件付きインポートにも対応します。ページ媒体、詳細な組版、全CSSプロパティの値文法は未対応です。 |
+| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartまたはCに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。ローカルの動的 `import()`、トップレベル `await`、`async/await` とPromiseの基本操作にも対応します。import map、ジェネレーター、非同期イテレーター、SymbolやProxyなどの組み込みオブジェクトには未実装の範囲があります。 |
 
 Flutterモジュールの指定子には `./logic.js`、`../shared.js`、`/shared.js` のようにパスを記述します。`/` は入口HTMLのディレクトリを表します。依存モジュールは変換時に収録され、同じ文書内では各モジュールを1回評価します。
 
-全仕様への準拠は未達です。[ベンチマーク手順](benchmarks/README.md) に、[Web Platform Tests](https://web-platform-tests.org/) のレイヤー試験と、[Test262](https://github.com/tc39/test262) の例外処理から選んだケースの実行方法を記載しています。
+全仕様への準拠は未達です。[ベンチマーク手順](benchmarks/README.md) に、[Web Platform Tests](https://web-platform-tests.org/) のレイヤー試験と、[Test262](https://github.com/tc39/test262) の例外処理・非同期実行から選んだケースの実行方法を記載しています。
+
+### Flutterの非同期JavaScriptとモジュール
+
+```html
+<p id="status">準備中</p>
+<button id="save" type="button">保存</button>
+<script type="module">
+  const memo = await import('./memo.js');
+  const status = document.getElementById('status');
+  status.textContent = memo.ready;
+  document.getElementById('save').addEventListener('click', async () => {
+    try {
+      status.textContent = await memo.save('メモの本文');
+    } catch (error) {
+      status.textContent = '保存に失敗しました';
+    }
+  });
+</script>
+```
+
+`memo.js` の例です。ここでは非同期処理と画面更新の動作を確認するため、文字列を返します。
+
+```js
+export const ready = await Promise.resolve('準備完了');
+export async function save(text) {
+  const result = await Promise.resolve(text);
+  return result + 'を受け取りました';
+}
+```
+
+指定方法は `HTGC -Dart main.html -o test/lib/main.dart` のままです。JavaScriptは変換時にDartへ収録され、生成アプリの起動時に `.js` を読みません。
+
+- 文字列リテラルで参照したローカルの `import('./memo.js')` は依存ファイルとして収録され、呼び出す時まで評価を遅延します。変数を使う `import(path)` は、同じ生成物に収録済みのモジュールを選択できます。未収録のファイルはPromiseを拒否します。通信で新しいJavaScriptを取得して実行する機能やimport attributesには対応していません。
+- 依存先のトップレベル `await` を待ってから利用側を評価します。循環参照、共有依存、同時インポート、失敗したモジュールの再インポートでも、同じ文書の評価結果を共有します。
+- `Promise` の生成、`resolve/reject`、`then/catch/finally`、`all/allSettled/race/any`、`withResolvers/try` を実装しています。引数には配列など現在対応する反復可能値を使います。Promiseのサブクラス、`Symbol.species`、汎用コンストラクターへの組み込みメソッド転用は未対応です。
+- `await` はPromise、thenable、通常値を受け取ります。例外と `finally`、右辺に `await` を含む代入・短絡評価にも対応します。捕捉されなかった拒否はDartのZoneへエラーを通知します。HTMLの `unhandledrejection` / `rejectionhandled` イベントは未実装です。
+
+### 条件付きCSSレイヤー
+
+`@media` / `@supports` の中の `@layer`、および `@import "theme.css" layer(theme) supports(display: flex) screen and (min-width: 600px)` を扱います。ウィンドウのサイズや設定が変わると、条件に一致するレイヤーの最初の出現順から優先順位を計算し直します。
+
+メディア条件は `screen/all/print`、`not/only/and/or` とカンマ区切り、幅・高さの `min/max` と範囲比較、`orientation`、`prefers-color-scheme`、`prefers-reduced-motion` に対応します。寸法は `px/em/rem` と単位なしの0を使えます。画面アプリなので `print` は一致しません。
+
+`@supports` は `not/and/or` と宣言条件を評価します。現時点で認識するのはカスタムプロパティ、`display`、`flex-direction`、`flex-wrap`、`text-align`、`font-style`、`object-fit`、`box-sizing`、単純な寸法と `opacity` です。未実装の機能・値文法は不一致として扱います。`selector()`、コンテナの成立判定、全メディア機能は未対応です。
 
 ## 静的変換の対応範囲
 

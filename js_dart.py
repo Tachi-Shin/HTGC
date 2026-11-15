@@ -35,6 +35,37 @@ class Compiler:
             "scope",
             "jUndefined",
         )
+        self.asynchronous = False
+        self.temps = []
+        self.module_owner = None
+
+    def temp(self):
+        name = self.name("tmp")
+        self.temps.append(name)
+        return name
+
+    def temp_declarations(self):
+        return "" if not self.temps else "dynamic " + ", ".join(self.temps) + ";\n"
+
+    @staticmethod
+    def has_await(node):
+        if isinstance(node, list):
+            return any(Compiler.has_await(child) for child in node)
+        if not isinstance(node, dict):
+            return False
+        if node.get("type") in ("FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"):
+            return False
+        return node.get("type") == "AwaitExpression" or any(
+            Compiler.has_await(child) for child in node.values()
+        )
+
+    def async_body(self, code):
+        # A return completion must pass through finally before settling a promise.
+        return (
+            "jAsync((_promise) async {\ntry {\n" + code
+            + "\n} on JAsyncReturn catch (_return) {\n_promise.resolve(_return.value);\n"
+            "} catch (_error) {\n_promise.reject(jExceptionValue(_error));\n}\n})"
+        )
 
     def name(self, prefix="s"):
         self.serial += 1
@@ -59,6 +90,17 @@ class Compiler:
             if node.get("computed")
             else quote(node["property"]["name"])
         )
+
+    def member(self, node, *, call=False, optional_call=False):
+        temp = self.temp()
+        obj, key = self.expr(node["object"]), self.key(node)
+        test = f"identical({temp} = {obj}, jShortCircuit)"
+        if node.get("optional"):
+            test += f" || jNullish({temp})"
+        value = (f"JCallSite.member({temp}, {key}, optionalCall: {str(optional_call).lower()})"
+                 if call else f"jGet({temp}, {key})")
+        skipped = "JCallSite(jShortCircuit)" if call else "jShortCircuit"
+        return f"({test} ? {skipped} : {value})"
 
     def bind(self, pattern, value, kind="let"):
         if pattern["type"] == "Identifier":
@@ -121,9 +163,11 @@ class Compiler:
                     yield from self.var_names(child)
 
     def function(self, node):
-        if node.get("async") or node.get("generator"):
-            self.fail(node, "async/generator function")
+        if node.get("generator"):
+            self.fail(node, "generator function")
         old_scope, old_this = self.scope, self.receiver
+        old_async, old_temps = self.asynchronous, self.temps
+        self.asynchronous, self.temps = node.get("async", False), []
         scope, args, receiver = self.name(), self.name("a"), self.name("this")
         self.scope = scope
         self.receiver = (
@@ -132,6 +176,9 @@ class Compiler:
         body = [f"final {scope} = JScope({old_scope});"]
         for i, param in enumerate(node["params"]):
             value = f"jArg({args}, {i})"
+            if param["type"] == "RestElement":
+                value = f"{args}.skip({i}).toList()"
+                param = param["argument"]
             if param["type"] == "AssignmentPattern":
                 value = f'jDefault({value}, () => {self.expr(param["right"])})'
                 param = param["left"]
@@ -139,11 +186,18 @@ class Compiler:
         if node["body"]["type"] == "BlockStatement":
             body.append(self.block_contents(node["body"]["body"], hoist_vars=True))
             if not self.returns(node["body"]):
-                body.append("return jUndefined;")
+                body.append("throw JAsyncReturn(jUndefined);" if self.asynchronous else "return jUndefined;")
         else:
-            body.append(f'return {self.expr(node["body"])};')
+            value = self.expr(node["body"])
+            body.append(f'throw JAsyncReturn({value});' if self.asynchronous else f'return {value};')
+        code = self.temp_declarations() + "\n".join(body)
+        result = (
+            f"JFunction(({args}, {receiver}) => {self.async_body(code)}, constructible: false)"
+            if self.asynchronous else f"JFunction(({args}, {receiver}) {{\n{code}\n}})"
+        )
         self.scope, self.receiver = old_scope, old_this
-        return f"JFunction(({args}, {receiver}) {{\n" + "\n".join(body) + "\n})"
+        self.asynchronous, self.temps = old_async, old_temps
+        return result
 
     def returns(self, node):
         if node["type"] in ("ReturnStatement", "ThrowStatement"):
@@ -169,6 +223,19 @@ class Compiler:
         if n is None:
             return "jUndefined"
         t = n["type"]
+        if t == "AwaitExpression":
+            if not self.asynchronous:
+                self.fail(n, "await outside async function/module")
+            return f'(await jAwait({self.expr(n["argument"])}))'
+        if t == "ImportExpression":
+            if self.module_owner is None:
+                self.fail(n, "dynamic import requires a compiled module graph")
+            if n.get("options") is not None:
+                self.fail(n, "import attributes")
+            return (
+                f'{self.scope}.modules(htgcModules).importModule('
+                f'{quote(self.module_owner)}, {self.expr(n["source"])})'
+            )
         if t == "Identifier":
             return f'{self.scope}.get({quote(n["name"])})'
         if t == "ThisExpression":
@@ -191,15 +258,15 @@ class Compiler:
             parts = []
             for p in n["properties"]:
                 if p["type"] == "SpreadElement":
-                    parts.append("...jProperties(" + self.expr(p["argument"]) + ")")
+                    parts.append("...jObjectSpread(" + self.expr(p["argument"]) + ")")
                     continue
                 key = (
                     self.expr(p["key"])
                     if p.get("computed")
                     else quote(p["key"].get("name", p["key"].get("value")))
                 )
-                parts.append(f'jString({key}): {self.expr(p["value"])}')
-            return "JObject({" + ", ".join(parts) + "})"
+                parts.append(f'({quote(p.get("kind", "init"))}, jString({key}), {self.expr(p["value"])})')
+            return "jObjectLiteral([" + ", ".join(parts) + "])"
         if t in ("FunctionExpression", "ArrowFunctionExpression"):
             return self.function(n)
         if t == "TemplateLiteral":
@@ -210,7 +277,7 @@ class Compiler:
                     parts.append(f'jString({self.expr(n["expressions"][i])})')
             return "(" + " + ".join(parts) + ")"
         if t == "MemberExpression":
-            return f'jGet({self.expr(n["object"])}, {self.key(n)}, optional: {str(n.get("optional",False)).lower()})'
+            return self.member(n)
         if t == "ChainExpression":
             return f'jEndChain({self.expr(n["expression"])})'
         if t in ("CallExpression", "NewExpression"):
@@ -231,28 +298,39 @@ class Compiler:
             if t == "NewExpression":
                 return f"jNew({self.expr(callee)}, {args})"
             if callee["type"] == "MemberExpression":
-                return f'jInvoke({self.expr(callee["object"])}, {self.key(callee)}, {args}, optionalObject: {str(callee.get("optional",False)).lower()}, optionalCall: {optional})'
+                callsite = self.member(callee, call=True, optional_call=n.get("optional", False))
+            else:
+                callsite = f'JCallSite({self.expr(callee)}, optional: {optional})'
+            if n.get("optional") or callee.get("optional") or callee["type"] == "MemberExpression":
+                temp = self.temp()
+                return f'(({temp} = {callsite}).skipped ? jShortCircuit : {temp}.call({args}))'
             return f"jCall({self.expr(callee)}, {args}, optional: {optional})"
         if t == "UnaryExpression":
             return f'jUnary({quote(n["operator"])}, {self.expr(n["argument"])})'
         if t == "BinaryExpression":
             return f'jBinary({quote(n["operator"])}, {self.expr(n["left"])}, {self.expr(n["right"])})'
         if t == "LogicalExpression":
+            if self.has_await(n["right"]):
+                temp = self.temp()
+                left, right = self.expr(n["left"]), self.expr(n["right"])
+                test = f'jNullish({temp} = {left})' if n["operator"] == "??" else f'jTruthy({temp} = {left})'
+                yes, no = (temp, right) if n["operator"] == "||" else (right, temp)
+                return f'({test} ? {yes} : {no})'
             return f'jLogical({quote(n["operator"])}, {self.expr(n["left"])}, () => {self.expr(n["right"])})'
         if t == "ConditionalExpression":
             return f'(jTruthy({self.expr(n["test"])}) ? {self.expr(n["consequent"])} : {self.expr(n["alternate"])})'
         if t == "AssignmentExpression":
+            if self.has_await(n["right"]):
+                temp = self.temp()
+                return (
+                    f'(({temp} = JAssignment({self.ref(n["left"])}, {quote(n["operator"])})).skip'
+                    f' ? {temp}.left : {temp}.assign({self.expr(n["right"])}))'
+                )
             return f'jAssign({self.ref(n["left"])}, {quote(n["operator"])}, () => {self.expr(n["right"])})'
         if t == "UpdateExpression":
             return f'jUpdate({self.ref(n["argument"])}, {1 if n["operator"]=="++" else -1}, {str(n["prefix"]).lower()})'
         if t == "SequenceExpression":
-            return (
-                "(() { "
-                + " ".join(self.expr(x) + ";" for x in n["expressions"][:-1])
-                + " return "
-                + self.expr(n["expressions"][-1])
-                + "; })()"
-            )
+            return "<dynamic>[" + ", ".join(self.expr(x) for x in n["expressions"]) + "].last"
         self.fail(n)
 
     def block_contents(self, nodes, *, hoist_vars=False):
@@ -349,6 +427,8 @@ class Compiler:
             self.scope = parent
             return body
         if t == "ReturnStatement":
+            if self.asynchronous:
+                return "throw JAsyncReturn(" + self.expr(n.get("argument")) + ");"
             return "return " + self.expr(n.get("argument")) + ";"
         if t == "IfStatement":
             return (
@@ -406,15 +486,18 @@ class Compiler:
         if t == "TryStatement":
             code = "try " + self.stmt(n["block"])
             handler = n.get("handler")
-            if handler is not None and handler["param"] is None:
+            if handler is not None and handler["param"] is None and not self.asynchronous:
                 code += " on Object " + self.stmt(handler["body"])
             elif handler is not None:
                 caught = self.name("caught")
                 parent = self.scope
                 self.scope = self.name()
                 code += f" catch ({caught}) {{\nfinal {self.scope} = JScope({parent});\n"
+                if self.asynchronous:
+                    code += f"if ({caught} is JAsyncReturn) rethrow;\n"
                 value = f"{caught} is JThrown ? {caught}.value : {caught}"
-                code += self.bind(handler["param"], value) + "\n"
+                if handler["param"] is not None:
+                    code += self.bind(handler["param"], value) + "\n"
                 code += self.stmt(handler["body"]) + "\n}"
                 self.scope = parent
             if n.get("finalizer") is not None:
@@ -450,9 +533,10 @@ class Compiler:
         self.fail(n)
 
     def compile(self, ast, name):
+        body = self.block_contents(ast["body"], hoist_vars=True)
         return (
             f'// JavaScript source: {self.path.replace(chr(10)," ")}\nvoid {name}(JScope scope) {{\n'
-            + self.block_contents(ast["body"], hoist_vars=True)
+            + self.temp_declarations() + body
             + "\n}\n"
         )
 

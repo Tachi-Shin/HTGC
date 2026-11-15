@@ -32,7 +32,7 @@ flutter test test/wpt_layers_test.dart
 
 WPTの `layer-basic.html` からスタイル34件を取り出し、生成したFlutterアプリで各ケースの2要素の計算色が緑になることを確認します。WPTのブラウザ用ハーネスと動的にスタイルを挿入する処理は、同じ宣言を持つ生成ページとFlutterのアサーションに置き換えています。
 
-## Test262 の例外処理テスト
+## Test262 の例外処理・非同期テスト
 
 HTGCのルートから実行します。Python 3.10以上、Node.js/npm、Dart SDKが必要です。
 
@@ -43,7 +43,24 @@ git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
 python3 benchmarks/test262_dart.py ../test262
 ```
 
-Test262の `test/language/statements/try/` から同期スクリプト6件を選び、HTGCで生成したDartを実行します。ハーネスは選定ケースで使う `Test262Error` を提供します。モジュール、非同期テスト、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件を選び、元のテストソースを変更せずHTGCでDartへ変換して実行します。ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue`、`assert.compareArray`、`asyncTest`、`$DONE` をDartで提供します。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+
+## 非同期実行と条件付きCSSの回帰試験
+
+```sh
+python3 benchmarks/js_async_dart.py --dart /path/to/dart
+python3 HTGC -Dart benchmarks/ui_bridge/index.html -o ../portfolio-app/lib/ui_bridge.dart
+cp benchmarks/ui_bridge/htgc_handlers.dart ../portfolio-app/lib/
+cp benchmarks/ui_bridge_test.dart benchmarks/css_conditions_test.dart ../portfolio-app/test/
+cd ../portfolio-app
+flutter test test/ui_bridge_test.dart test/css_conditions_test.dart
+```
+
+`js_async_dart.py` は2組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Node.jsは比較用で、生成アプリには使いません。`Promise.try` と `Promise.withResolvers` に対応したNode.jsが必要です（24.22.1で検証）。
+
+Flutterテストでは、トップレベル `await` の完了後と非同期クリック処理後に表示が更新されることも確認します。CSSテストは幅320・800・1000pxとテーマ・動きの設定を切り替えて、条件付きレイヤー順序とインポート、メディア範囲比較、`@supports` を検証します。
+
+これらは選定したケースの回帰試験です。WPT全体・Test262全体の通過や、ブラウザとの完全な描画一致を示すものではありません。
 
 ## ポートフォリオのFlutterビルド
 
@@ -91,7 +108,7 @@ Apple Silicon Macでは `flutter build macos --release` でビルドし、`lib/m
 | Contact | 3つの入力欄と必須・メール形式の検証 |
 | レイアウト | 画像帯の高さ、ヒーロー中央揃え、Gridの列、幅390pxの表示 |
 
-CSSボックスの細部、フォントと改行、フォーカス表示、フィルター、アニメーションにはブラウザとの差があります。JavaScriptの非同期関数やジェネレーター、多くのブラウザAPIには未実装の範囲があります。
+CSSボックスの細部、フォントと改行、フォーカス表示、フィルター、アニメーションにはブラウザとの差があります。JavaScriptのジェネレーター、Promiseのサブクラスや多くのブラウザAPIには未実装の範囲があります。
 
 元サイトの粒子描画は、初期化を試みる時点で関数がまだ定義されていないため自動開始しません。Contactの送信には元サイトと同じく別途受信サービスが必要です。テストはフォームの検証まで行います。
 

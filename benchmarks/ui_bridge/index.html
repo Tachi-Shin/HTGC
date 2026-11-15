@@ -6,6 +6,30 @@
   <style>
     @layer reset, theme, app;
     @import url("theme.css") layer(theme);
+    @import url("conditional.css") layer(imported) supports(display: flex) screen and (min-width: 600px);
+    @media (width >= 600px) {
+      @layer wide {
+        #conditional-layer { color: green; }
+        #conditional-body { opacity: 0.5; }
+      }
+    }
+    @layer fallback, wide;
+    @layer fallback {
+      #conditional-layer { color: red; }
+    }
+    @layer wide { #conditional-layer { color: green; } }
+    @supports (display: bananas) {
+      @layer unused { #conditional-supports { color: red; } }
+    }
+    @supports ((display: flex) and (not (display: bananas))) {
+      @layer supported { #conditional-supports { color: green; } }
+    }
+    @media print { #conditional-media { opacity: 0.1; } }
+    @media screen and (400px <= width < 900px) { #conditional-media { opacity: 0.7; } }
+    @media (prefers-reduced-motion: reduce) { #conditional-motion { opacity: 0.2; } }
+    @media (prefers-reduced-motion: no-preference) { #conditional-motion { opacity: 0.8; } }
+    @media (prefers-color-scheme: dark) { #conditional-theme { color: white; } }
+    @media (prefers-color-scheme: light) { #conditional-theme { color: black; } }
     @layer app.components {
       #layer-test {
         color: red;
@@ -55,6 +79,8 @@
     <span id="inline-rollback" style="color: revert-layer !important"></span>
     <span id="layer-fallback"></span>
   </div>
+  <p id="async-status">準備中</p>
+  <button id="async-save" type="button">非同期保存</button>
   <p id="module-log" data-runs="" hidden></p>
   <template id="memo-template">
     <article id="template-content" hidden>テンプレートの本文</article>
@@ -126,5 +152,13 @@
     log.textContent = count + ':' + increment() + ':' + state.count + ':' + readCycle();
   </script>
   <script type="module" src="./module_state.js"></script>
+  <script type="module">
+    const memo = await import('./module_async.js');
+    const status = document.getElementById('async-status');
+    status.textContent = memo.message;
+    document.getElementById('async-save').addEventListener('click', async () => {
+      status.textContent = await memo.formatMemo('日本語');
+    });
+  </script>
 </body>
 </html>
