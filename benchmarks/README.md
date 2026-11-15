@@ -14,6 +14,23 @@ flutter test test/ui_bridge_test.dart
 
 このテストは、文字入力がDartへ渡り、非同期処理の結果が入力欄とダイアログに反映されることを確認します。元のページを離れた後に、古いハンドラーから別ページを書き換えられないことも検証します。
 
+同じテストで、`details` の排他的な開閉、スタイルシートとインライン宣言の `!important`、例外の捕捉、`switch` のフォールスルーも検証します。
+
+## Test262 の例外処理テスト
+
+HTGCのルートから実行します。Python 3.10以上、Node.js/npm、Dart SDKが必要です。
+
+```sh
+npm --prefix javascript ci
+git clone https://github.com/tc39/test262.git ../test262
+git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
+python3 benchmarks/test262_dart.py ../test262
+```
+
+Test262の `test/language/statements/try/` から同期スクリプト6件を選び、HTGCで生成したDartを実行します。ハーネスは選定ケースで使う `Test262Error` を提供します。モジュール、非同期テスト、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+
+## ポートフォリオのFlutterビルド
+
 対象は [Tachi-Shin/Tachi-Shin.github.io](https://github.com/Tachi-Shin/Tachi-Shin.github.io) のコミット `c264c62fa8ceddac553cfd8e9873d2d659d524b4` です。
 
 HTGCのルートで実行します。Python 3.10以上、Node.js/npm、Flutterと対象OSのFlutterデスクトップ開発環境を用意してください。Flutter 3.47.9 / Dart 3.13.7で検証しました。

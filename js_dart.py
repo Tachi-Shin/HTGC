@@ -62,6 +62,8 @@ class Compiler:
 
     def bind(self, pattern, value, kind="let"):
         if pattern["type"] == "Identifier":
+            if kind == "var":
+                return f'{self.scope}.put({quote(pattern["name"])}, {value});'
             return f'{self.scope}.define({quote(pattern["name"])}, {value}, constant: {str(kind == "const").lower()});'
         if pattern["type"] == "ObjectPattern":
             temp = self.name("v")
@@ -83,6 +85,41 @@ class Compiler:
             )
         self.fail(pattern)
 
+    def binding_names(self, pattern):
+        kind = pattern["type"]
+        if kind == "Identifier":
+            yield pattern["name"]
+        elif kind == "ObjectPattern":
+            for prop in pattern["properties"]:
+                if prop["type"] == "Property":
+                    yield from self.binding_names(prop["value"])
+                else:
+                    self.fail(prop)
+        elif kind == "ArrayPattern":
+            for element in pattern["elements"]:
+                if element is not None:
+                    yield from self.binding_names(element)
+        else:
+            self.fail(pattern)
+
+    def var_names(self, node):
+        if isinstance(node, list):
+            for item in node:
+                yield from self.var_names(item)
+        elif isinstance(node, dict):
+            kind = node.get("type")
+            if kind in (
+                "FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression",
+                "ClassDeclaration", "ClassExpression",
+            ):
+                return
+            if kind == "VariableDeclaration" and node["kind"] == "var":
+                for declaration in node["declarations"]:
+                    yield from self.binding_names(declaration["id"])
+            else:
+                for child in node.values():
+                    yield from self.var_names(child)
+
     def function(self, node):
         if node.get("async") or node.get("generator"):
             self.fail(node, "async/generator function")
@@ -100,7 +137,7 @@ class Compiler:
                 param = param["left"]
             body.append(self.bind(param, value))
         if node["body"]["type"] == "BlockStatement":
-            body.append(self.block_contents(node["body"]["body"]))
+            body.append(self.block_contents(node["body"]["body"], hoist_vars=True))
             if not self.returns(node["body"]):
                 body.append("return jUndefined;")
         else:
@@ -118,6 +155,13 @@ class Compiler:
                 bool(node.get("alternate"))
                 and self.returns(node["consequent"])
                 and self.returns(node["alternate"])
+            )
+        if node["type"] == "TryStatement":
+            finalizer = node.get("finalizer")
+            handler = node.get("handler")
+            return (finalizer is not None and self.returns(finalizer)) or (
+                self.returns(node["block"])
+                and (handler is None or self.returns(handler["body"]))
             )
         return False
 
@@ -211,15 +255,68 @@ class Compiler:
             )
         self.fail(n)
 
-    def block_contents(self, nodes):
+    def block_contents(self, nodes, *, hoist_vars=False):
         # Function declarations are initialized before the surrounding statements.
-        return (
-            "\n".join(self.stmt(n) for n in nodes if n["type"] == "FunctionDeclaration")
-            + "\n"
-            + "\n".join(
-                self.stmt(n) for n in nodes if n["type"] != "FunctionDeclaration"
+        code = [self.stmt(n) for n in nodes if n["type"] == "FunctionDeclaration"]
+        if hoist_vars:
+            code.extend(
+                f"{self.scope}.declareVar({quote(name)});"
+                for name in dict.fromkeys(self.var_names(nodes))
             )
+        code.extend(self.stmt(n) for n in nodes if n["type"] != "FunctionDeclaration")
+        return "\n".join(code)
+
+    def switch(self, node):
+        cases = node["cases"]
+        if not cases:
+            return self.expr(node["discriminant"]) + ";"
+        value, selected = self.name("value"), self.name("case")
+        discriminant = self.expr(node["discriminant"])
+        parent = self.scope
+        self.scope = self.name()
+        labels = [self.name("case") for _ in cases]
+        def terminates(body):
+            return bool(body) and (
+                body[-1]["type"] in ("BreakStatement", "ContinueStatement")
+                or self.returns(body[-1])
+            )
+
+        falls_through = [not terminates(case["consequent"]) for case in cases]
+        code = [
+            "{",
+            f"final {value} = {discriminant};",
+            f"final {self.scope} = JScope({parent});",
+        ]
+        code.extend(
+            self.stmt(stmt)
+            for case in cases
+            for stmt in case["consequent"]
+            if stmt["type"] == "FunctionDeclaration"
         )
+        default = next((i for i, case in enumerate(cases) if case["test"] is None), -1)
+        choices = [
+            f'jBinary("===", {value}, {self.expr(case["test"])}) == true ? {i} : '
+            for i, case in enumerate(cases)
+            if case["test"] is not None
+        ]
+        code.extend([
+            f"final {selected} = {''.join(choices)}{default};",
+            f"switch ({selected}) {{",
+        ])
+        for i, case in enumerate(cases):
+            label = f"{labels[i]}: " if i > 0 and falls_through[i - 1] else ""
+            code.append(f"{label}case {i}:")
+            body = case["consequent"]
+            code.extend(
+                self.stmt(stmt) for stmt in body
+                if stmt["type"] != "FunctionDeclaration"
+            )
+            if i + 1 < len(cases) and falls_through[i]:
+                code.append(f"continue {labels[i + 1]};")
+            elif falls_through[i]:
+                code.append("break;")
+        self.scope = parent
+        return "\n".join([*code, "}", "}"])
 
     def stmt(self, n):
         t = n["type"]
@@ -231,10 +328,17 @@ class Compiler:
             return "\n".join(
                 self.bind(d["id"], self.expr(d.get("init")), n["kind"])
                 for d in n["declarations"]
+                if n["kind"] != "var" or d.get("init") is not None
             )
         if t == "FunctionDeclaration":
             return self.bind(n["id"], self.function(n))
         if t == "BlockStatement":
+            if not any(
+                child["type"] in ("ClassDeclaration", "FunctionDeclaration")
+                or child["type"] == "VariableDeclaration" and child["kind"] != "var"
+                for child in n["body"]
+            ):
+                return "{\n" + self.block_contents(n["body"]) + "\n}"
             parent = self.scope
             self.scope = self.name()
             body = (
@@ -297,6 +401,25 @@ class Compiler:
             )
         if t == "DoWhileStatement":
             return f'do {{\n{self.stmt(n["body"])}\n}} while (jTruthy({self.expr(n["test"])}));'
+        if t == "SwitchStatement":
+            return self.switch(n)
+        if t == "TryStatement":
+            code = "try " + self.stmt(n["block"])
+            handler = n.get("handler")
+            if handler is not None and handler["param"] is None:
+                code += " on Object " + self.stmt(handler["body"])
+            elif handler is not None:
+                caught = self.name("caught")
+                parent = self.scope
+                self.scope = self.name()
+                code += f" catch ({caught}) {{\nfinal {self.scope} = JScope({parent});\n"
+                value = f"{caught} is JThrown ? {caught}.value : {caught}"
+                code += self.bind(handler["param"], value) + "\n"
+                code += self.stmt(handler["body"]) + "\n}"
+                self.scope = parent
+            if n.get("finalizer") is not None:
+                code += " finally " + self.stmt(n["finalizer"])
+            return code
         if t in ("BreakStatement", "ContinueStatement"):
             if n.get("label"):
                 self.fail(n)
@@ -323,13 +446,13 @@ class Compiler:
                 + "})",
             )
         if t == "ThrowStatement":
-            return "throw " + self.expr(n["argument"]) + ";"
+            return "throw JThrown(" + self.expr(n["argument"]) + ");"
         self.fail(n)
 
     def compile(self, ast, name):
         return (
             f'// JavaScript source: {self.path.replace(chr(10)," ")}\nvoid {name}(JScope scope) {{\n'
-            + self.block_contents(ast["body"])
+            + self.block_contents(ast["body"], hoist_vars=True)
             + "\n}\n"
         )
 

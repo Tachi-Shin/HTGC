@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'js_core.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html;
@@ -20,10 +21,83 @@ class JDomRuntime {
       this.onMutation,
       this.onNavigate,
       this.saveStorage})
-      : storage = storage ?? {};
+      : storage = storage ?? {} {
+    final names = <String>{};
+    for (final element in document.querySelectorAll('details[open]')) {
+      final name = element.attributes['name'];
+      if (name != null && name.isNotEmpty && !names.add(name)) {
+        element.attributes.remove('open');
+      } else {
+        wrap(element).queueDetailsToggle(false, true);
+      }
+    }
+  }
   JDomNode wrap(dom.Node node) =>
       _nodes.putIfAbsent(node, () => JDomNode(this, node));
   void changed() => onMutation?.call();
+  void setDetailsOpen(dom.Element element, bool open, {String value = ''}) {
+    final wasOpen = element.attributes.containsKey('open');
+    if (open) {
+      element.attributes['open'] = value;
+      if (!wasOpen) {
+        wrap(element).queueDetailsToggle(false, true);
+        final other = otherOpenDetails(element);
+        if (other != null) setDetailsOpen(other, false);
+      }
+    } else {
+      element.attributes.remove('open');
+      if (wasOpen) wrap(element).queueDetailsToggle(true, false);
+    }
+    changed();
+  }
+
+  dom.Element? otherOpenDetails(dom.Element element) {
+    final name = element.attributes['name'];
+    if (name == null || name.isEmpty) return null;
+    dom.Node root = element;
+    while (root.parentNode != null) {
+      root = root.parentNode!;
+    }
+    final elements = switch (root) {
+      dom.Document() => root.querySelectorAll('details[open]'),
+      dom.DocumentFragment() => root.querySelectorAll('details[open]'),
+      dom.Element() => [
+          if (root.localName == 'details' && root.attributes.containsKey('open'))
+            root,
+          ...root.querySelectorAll('details[open]'),
+        ],
+      _ => const <dom.Element>[],
+    };
+    for (final other in elements) {
+      if (!identical(other, element) && other.attributes['name'] == name) {
+        return other;
+      }
+    }
+    return null;
+  }
+
+  void updateDetailsGroup(dom.Element element) {
+    if (element.localName == 'details' && element.attributes.containsKey('open') &&
+        otherOpenDetails(element) != null) {
+      setDetailsOpen(element, false);
+    }
+  }
+
+  void insertDetails(dom.Node root, {bool parsed = false}) {
+    for (final element in [if (root is dom.Element) root, ...allElements(root)]) {
+      if (element.localName == 'details' && element.attributes.containsKey('open')) {
+        if (parsed) wrap(element).queueDetailsToggle(false, true);
+        updateDetailsGroup(element);
+      }
+    }
+  }
+
+  dom.Element? firstSummary(dom.Element details) {
+    for (final child in details.children) {
+      if (child.localName == 'summary') return child;
+    }
+    return null;
+  }
   List<dom.Element> allElements(dom.Node root) => [
         for (final child in root.nodes) ...[
           if (child is dom.Element) child,
@@ -131,6 +205,8 @@ class JDomNode extends JObject {
   late final JStyle style = JStyle(this);
   JCanvasContext? canvas;
   int canvasWidth = 300, canvasHeight = 150;
+  Timer? _detailsToggle;
+  bool? _detailsOldOpen;
   JDomNode(this.runtime, this.node);
   dynamic query(String selector, bool all) {
     final dynamic parent = node;
@@ -143,26 +219,50 @@ class JDomNode extends JObject {
     return el == null ? null : runtime.wrap(el);
   }
 
-  void dispatch(String type) {
+  void queueDetailsToggle(bool wasOpen, bool open) {
+    _detailsOldOpen ??= wasOpen;
+    _detailsToggle?.cancel();
+    _detailsToggle = Timer(Duration.zero, () {
+      final oldOpen = _detailsOldOpen!;
+      _detailsOldOpen = null;
+      _detailsToggle = null;
+      dispatch('toggle', data: {
+        'oldState': oldOpen ? 'open' : 'closed',
+        'newState': open ? 'open' : 'closed',
+        'cancelable': false,
+        'bubbles': false,
+      });
+    });
+  }
+
+  void dispatch(String type, {Map<String, dynamic> data = const {}}) {
     final event = JObject({
       'type': type,
       'target': this,
       'currentTarget': this,
-      'defaultPrevented': false
+      'defaultPrevented': false,
+      ...data,
     });
     event.set('preventDefault', jNative((a) {
-      event.set('defaultPrevented', true);
+      if (event.get('cancelable') != false) event.set('defaultPrevented', true);
       return jUndefined;
     }));
     for (final fn in List<dynamic>.from(events[type] ?? [])) {
       jCall(fn, [event], receiver: this);
     }
-    if (type == 'click' &&
-        node is dom.Element &&
-        (node as dom.Element).localName == 'a' &&
+    if (type == 'click' && node is dom.Element &&
         event.get('defaultPrevented') != true) {
-      final href = (node as dom.Element).attributes['href'];
-      if (href != null) runtime.onNavigate?.call(href);
+      final element = node as dom.Element;
+      if (element.localName == 'a') {
+        final href = element.attributes['href'];
+        if (href != null) runtime.onNavigate?.call(href);
+      }
+      final parent = element.parent;
+      if (parent != null && parent.localName == 'details' &&
+          identical(runtime.firstSummary(parent), element)) {
+        runtime.setDetailsOpen(parent, !parent.attributes.containsKey('open'));
+        return;
+      }
     }
     runtime.changed();
   }
@@ -187,6 +287,14 @@ class JDomNode extends JObject {
         return el?.attributes['class'] ?? '';
       case 'id':
         return el?.id ?? '';
+      case 'name':
+        if (el?.localName == 'details') return el!.attributes['name'] ?? '';
+        return jUndefined;
+      case 'open':
+        if (el?.localName == 'details' || el?.localName == 'dialog') {
+          return el!.attributes.containsKey('open');
+        }
+        return jUndefined;
       case 'tagName':
         return el?.localName?.toUpperCase() ?? '';
       case 'children':
@@ -254,14 +362,26 @@ class JDomNode extends JObject {
         return jNative((a) => el!.attributes[jString(a[0])]);
       case 'setAttribute':
         return jNative((a) {
-          el!.attributes[jString(a[0])] = jString(a[1]);
-          runtime.changed();
+          final key = jString(a[0]);
+          final value = jString(a[1]);
+          if (el!.localName == 'details' && key == 'open') {
+            runtime.setDetailsOpen(el, true, value: value);
+          } else {
+            el.attributes[key] = value;
+            if (key == 'name') runtime.updateDetailsGroup(el);
+            runtime.changed();
+          }
           return jUndefined;
         });
       case 'removeAttribute':
         return jNative((a) {
-          el!.attributes.remove(jString(a[0]));
-          runtime.changed();
+          final key = jString(a[0]);
+          if (el!.localName == 'details' && key == 'open') {
+            runtime.setDetailsOpen(el, false);
+          } else {
+            el.attributes.remove(key);
+            runtime.changed();
+          }
           return jUndefined;
         });
       case 'appendChild':
@@ -269,12 +389,16 @@ class JDomNode extends JObject {
           final child = a[0] as JDomNode;
           if (child.node is dom.DocumentFragment) {
             final nodes = List<dom.Node>.from(child.node.nodes);
-            node.nodes.addAll(nodes);
+            for (final child in nodes) {
+              node.nodes.add(child);
+              runtime.insertDetails(child);
+            }
             for (final child in nodes) {
               runtime.upgrade(child);
             }
           } else {
             node.nodes.add(child.node);
+            runtime.insertDetails(child.node);
             runtime.upgrade(child.node);
           }
           runtime.changed();
@@ -317,6 +441,15 @@ class JDomNode extends JObject {
   dynamic set(String name, dynamic value) {
     final el = node is dom.Element ? node as dom.Element : null;
     switch (name) {
+      case 'name':
+        if (el?.localName != 'details') return super.set(name, value);
+        el!.attributes['name'] = jString(value);
+        runtime.updateDetailsGroup(el);
+        break;
+      case 'open':
+        if (el?.localName != 'details') return super.set(name, value);
+        runtime.setDetailsOpen(el!, jTruthy(value));
+        return value;
       case 'textContent':
         node.text = jString(value);
         break;
@@ -324,7 +457,10 @@ class JDomNode extends JObject {
         final fragment =
             html.parseFragment(jString(value), container: el!.localName!);
         node.nodes.clear();
-        node.nodes.addAll(List<dom.Node>.from(fragment.nodes));
+        for (final child in List<dom.Node>.from(fragment.nodes)) {
+          node.nodes.add(child);
+          runtime.insertDetails(child, parsed: true);
+        }
         runtime.upgrade(node);
         break;
       case 'className':

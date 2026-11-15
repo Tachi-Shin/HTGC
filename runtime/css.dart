@@ -68,6 +68,16 @@ class NativeCss {
       result.addAll(expand(entry.key, entry.value));
     }
     final priorities = <String, List<int>>{};
+    void apply(String name, String value, List<int> score) {
+      for (final declaration in expand(name, value).entries) {
+        final key = declaration.key;
+        final previous = priorities[key];
+        if (previous == null || compare(score, previous) >= 0) {
+          result[key] = declaration.value;
+          priorities[key] = score;
+        }
+      }
+    }
     var order = 0;
     for (final r in rules) {
       order++;
@@ -79,27 +89,26 @@ class NativeCss {
       if (!conditions(r['conditions'], el) || !matches(el, selector)) continue;
       final spec = List<int>.from(r['specificity']);
       for (final e in (r['declarations'] as Map).entries) {
-        final score = [e.value[1] == true ? 1 : 0, ...spec, order];
-        for (final declaration in expand(e.key, e.value[0]).entries) {
-          final key = declaration.key;
-          final old = priorities[key];
-          if (old == null || compare(score, old) >= 0) {
-            result[key] = declaration.value;
-            priorities[key] = score;
-          }
-        }
+        apply(e.key, e.value[0], [e.value[1] == true ? 1 : 0, 0, ...spec, order]);
       }
     }
     if (pseudo.isEmpty) {
-      for (final text in (el.attributes['style'] ?? '').split(';')) {
+      final declarations = [
+        ...cssSplit(el.attributes['style'] ?? '', ';'),
+        for (final e in runtime.wrap(el).style.values.entries)
+          '${e.key}:${e.value}',
+      ];
+      final important = RegExp(r'!\s*important\s*$', caseSensitive: false);
+      for (final text in declarations) {
         final colon = text.indexOf(':');
-        if (colon > 0) {
-          result.addAll(expand(text.substring(0, colon).trim(),
-              text.substring(colon + 1).trim()));
-        }
-      }
-      for (final declaration in runtime.wrap(el).style.values.entries) {
-        result.addAll(expand(declaration.key, declaration.value));
+        if (colon <= 0) continue;
+        final name = text.substring(0, colon).trim();
+        final raw = text.substring(colon + 1).trim();
+        final match = important.firstMatch(raw);
+        final value = match == null ? raw : raw.substring(0, match.start).trim();
+        if (value.isEmpty) continue;
+        apply(name.startsWith('--') ? name : name.toLowerCase(), value,
+            [match == null ? 0 : 1, 1, 0, 0, 0, ++order]);
       }
     }
     String substitute(String value) {

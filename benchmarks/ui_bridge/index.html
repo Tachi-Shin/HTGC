@@ -6,6 +6,8 @@
   <style>
     @import url("theme.css");
     article { padding: 12px; }
+    #rule-wins, #inline-wins { color: blue !important; }
+    #rule-wins { padding-left: 2px; padding: 5px; padding-left: 9px; }
   </style>
 </head>
 <body>
@@ -16,6 +18,22 @@
     <p id="status" hidden>待機中</p>
     <a href="next.html">次へ</a>
   </article>
+  <p id="rule-wins" style="COLOR: red">スタイルシート</p>
+  <p id="inline-wins" style="color: red !IMPORTANT; color: green">インライン</p>
+  <p id="exception"></p>
+  <p id="toggles" hidden></p>
+  <details id="first" name="options">
+    <summary>最初の項目</summary>
+    <p>最初の本文</p>
+    <summary>別の見出し</summary>
+  </details>
+  <details id="second" name="options">
+    <summary>次の項目</summary>
+    <p>次の本文</p>
+  </details>
+  <details id="fallback">
+    <p>既定の見出しの本文</p>
+  </details>
   <dialog id="saved">
     <p id="message"></p>
     <button type="button" onclick="closeMemo(event.ui)">閉じる</button>
@@ -26,6 +44,34 @@
       count++;
     } while (count < 1);
     document.getElementById('loop').textContent = count + '回実行';
+    let result = '';
+    try {
+      throw null;
+    } catch (error) {
+      var fromCatch = error === null;
+      result = fromCatch ? '捕捉' : '失敗';
+    } finally {
+      result += '・終了';
+    }
+    try {
+      throw 1;
+    } catch {
+      result += '・束縛なし';
+    }
+    switch ('2') {
+      case 2:
+        result += '・失敗';
+        break;
+      default:
+        result += '・既定';
+      case '3':
+        result += '・次へ';
+    }
+    if (fromCatch) document.getElementById('exception').textContent = result;
+    const toggles = document.getElementById('toggles');
+    document.getElementById('first').addEventListener('toggle', event => {
+      toggles.textContent += event.oldState + ':' + event.newState + ';';
+    });
   </script>
 </body>
 </html>
