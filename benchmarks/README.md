@@ -1,4 +1,4 @@
-# ポートフォリオのC・Dart変換ベンチマーク
+# Dart変換とECMAScriptのベンチマーク
 
 ## DartとHTMLのイベント連携
 
@@ -43,7 +43,11 @@ git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
 python3 benchmarks/test262_dart.py ../test262
 ```
 
-Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件の計29件を選び、元のテストソースを変更せずHTGCでDartへ変換して実行します。ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue`、`assert.compareArray`、`assert.throws`、`verifyProperty`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` は選定ケースのプロパティ記述子の比較を行い、Test262のpropertyHelper全体を実行するものではありません。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の計100件を選び、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` に列挙しています。
+
+BigIntの試験では、2〜36進数の文字列化、整数変換と構文エラー、`asIntN/asUintN` の算術・型変換・副作用の順序、プロトタイプと関数の記述子、呼び出し時の例外を検証します。BigIntの全試験ではなく、複数Realm、Functionの継承、スクリプトのグローバル `this`、Dateと組み合わせた変換などは対象外です。
+
+ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue`、`assert.compareArray`、`assert.throws`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。Test262のpropertyHelper全体やProxy/Reflect.constructを使うisConstructor.js自体の実行ではありません。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
 
 ## 非同期実行と条件付きCSSの回帰試験
 
@@ -56,11 +60,19 @@ cd ../portfolio-app
 flutter test test/ui_bridge_test.dart test/css_conditions_test.dart
 ```
 
-`js_async_dart.py` は6組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。組み込み機能についてはSymbol・プロパティ記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションも含みます。Node.jsは比較用で、生成アプリには使いません。`Promise.try` と `Promise.withResolvers` に対応したNode.jsが必要です（24.22.1で検証）。
+`js_async_dart.py` は7組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。Node.jsは比較用で、生成アプリには使いません。`Promise.try` と `Promise.withResolvers` に対応したNode.jsが必要です（24.22.1で検証）。
 
 Flutterテストでは、トップレベル `await` の完了後と非同期クリック処理後に表示が更新されることも確認します。CSSテストは幅320・800・1000pxとテーマ・動きの設定を切り替えて、条件付きレイヤー順序とインポート、メディア範囲比較、`@supports` を検証します。
 
 これらは選定したケースの回帰試験です。WPT全体・Test262全体の通過や、ブラウザとの完全な描画一致を示すものではありません。
+
+## Dart専用CLIの検証
+
+```sh
+python3 benchmarks/dart_cli.py
+```
+
+出力形式の省略時にDartが生成されること、従来の `-Dart` との一致、廃止した `-Gtk/-Clang` の拒否、任意のDartハンドラー呼び出し、BigIntを使う入力の変換、外部画像のコピー、入力ファイルの上書き防止を確認します。
 
 ## ローカル埋め込み文書の検証
 
@@ -124,19 +136,6 @@ CSSボックスの細部、フォントと改行、フォーカス表示、フ�
 
 元サイトの粒子描画は、初期化を試みる時点で関数がまだ定義されていないため自動開始しません。Contactの送信には元サイトと同じく別途受信サービスが必要です。テストはフォームの検証まで行います。
 
-## C11 / GTK 4のビルド
-
-HTGCのルートで実行します。上記のPython・npm依存に加え、Cコンパイラ、GTK 4とlibxml2の開発パッケージ、`pkg-config` が必要です。
-
-```sh
-python3 HTGC -Gtk ../portfolio-site/index.html --include contact.html -o ../portfolio.gtk.c
-cc -std=c11 -Wall -Wextra -Werror ../portfolio.gtk.c -o ../portfolio-gtk \
-  $(pkg-config --cflags --libs gtk4 libxml-2.0) -lm
-../portfolio-gtk index.html dark
-```
-
-Linux x64のGTK 4.18.6で4ページの起動を確認しました。C版には、CSSの疑似要素、フィルター、タイポグラフィ、位置指定などに未対応・近似の箇所があります。Canvas、ResizeObserverの通知、requestAnimationFrameの実行、プロセスをまたぐテーマ保持は未対応です。IUP版の拡張変換も未実装です。
-
 ## 元サイトとの照合
 
 Chromiumは比較用の基準画像とDOMの取得に使います。HTGCの変換と生成アプリの動作には不要です。
@@ -145,12 +144,9 @@ Chromiumは比較用の基準画像とDOMの取得に使います。HTGCの変�
 npm install --prefix benchmarks --no-save --package-lock=false playwright@1.62.1
 npm exec --prefix benchmarks -- playwright install chromium --only-shell
 node benchmarks/reference.cjs ../portfolio-site ../portfolio-reference
-python3 benchmarks/check_c_dom.py ../portfolio-site ../portfolio-reference/reference.json
 ```
 
-Linux x64で、Chromium 150.0.7871.181の基準と、Cが生成した全4ページのナビゲーションとフッター、ニュース9件、タイムライン119件のテキストを照合しました。テーマ切替はC側でdark → auto → light → darkを確認しました。
-
-画素比較では、両アプリのクライアント領域を1280×720、DPR 1、ダークテーマに設定します。Flutterは `--reduced-motion` を渡し、GTK 4は設定の `gtk-enable-animations` を無効にして、アニメーションを止めます。Pillowをインストールしてから、同条件で撮ったPNGを比較します。
+画素比較では、ブラウザとFlutterのクライアント領域を1280×720、DPR 1、ダークテーマに設定します。Flutterは `--reduced-motion` を渡してアニメーションを止めます。Pillowをインストールしてから、同条件で撮ったPNGを比較します。
 
 ```sh
 python3 benchmarks/compare_visual.py ../portfolio-reference/index.png ../actual/index.png \
@@ -159,11 +155,11 @@ python3 benchmarks/compare_visual.py ../portfolio-reference/index.png ../actual/
 
 既定ではRGBが1画素でも異なると終了コード1を返します。平均RGB誤差は各色成分の絶対差を0〜255の値で平均したものです。
 
-| ページ | Dart 平均RGB誤差 | C / GTK 4 平均RGB誤差 |
-| --- | ---: | ---: |
-| Home | 3.16 | 6.51 |
-| Projects | 13.13 | 19.48 |
-| About | 8.64 | 9.85 |
-| Contact | 9.01 | 13.17 |
+| ページ | Dart 平均RGB誤差 |
+| --- | ---: |
+| Home | 3.16 |
+| Projects | 13.13 |
+| About | 8.64 |
+| Contact | 9.01 |
 
 この条件では4ページすべてで画素差があります。完全一致の判定は全画素の差がゼロになった時点です。

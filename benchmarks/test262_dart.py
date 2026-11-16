@@ -43,6 +43,80 @@ BUILTIN_TESTS = (
       for kind in ("false", "null", "number", "string", "symbol", "true", "undefined")),
 )
 
+NUMERIC_TESTS = (
+    "BigInt/asIntN/arithmetic.js",
+    "BigInt/asIntN/asIntN.js",
+    "BigInt/asIntN/bigint-tobigint-errors.js",
+    "BigInt/asIntN/bigint-tobigint-toprimitive.js",
+    "BigInt/asIntN/bigint-tobigint-wrapped-values.js",
+    "BigInt/asIntN/bigint-tobigint.js",
+    "BigInt/asIntN/bits-toindex-errors.js",
+    "BigInt/asIntN/bits-toindex-toprimitive.js",
+    "BigInt/asIntN/bits-toindex-wrapped-values.js",
+    "BigInt/asIntN/bits-toindex.js",
+    "BigInt/asIntN/length.js",
+    "BigInt/asIntN/name.js",
+    "BigInt/asIntN/not-a-constructor.js",
+    "BigInt/asIntN/order-of-steps.js",
+    "BigInt/asUintN/arithmetic.js",
+    "BigInt/asUintN/asUintN.js",
+    "BigInt/asUintN/bigint-tobigint-errors.js",
+    "BigInt/asUintN/bigint-tobigint-toprimitive.js",
+    "BigInt/asUintN/bigint-tobigint-wrapped-values.js",
+    "BigInt/asUintN/bigint-tobigint.js",
+    "BigInt/asUintN/bits-toindex-errors.js",
+    "BigInt/asUintN/bits-toindex-toprimitive.js",
+    "BigInt/asUintN/bits-toindex-wrapped-values.js",
+    "BigInt/asUintN/bits-toindex.js",
+    "BigInt/asUintN/length.js",
+    "BigInt/asUintN/name.js",
+    "BigInt/asUintN/not-a-constructor.js",
+    "BigInt/asUintN/order-of-steps.js",
+    "BigInt/call-value-of-when-to-string-present.js",
+    "BigInt/constructor-coercion.js",
+    "BigInt/constructor-empty-string.js",
+    "BigInt/constructor-from-binary-string.js",
+    "BigInt/constructor-from-decimal-string.js",
+    "BigInt/constructor-from-hex-string.js",
+    "BigInt/constructor-from-octal-string.js",
+    "BigInt/constructor-from-string-syntax-errors.js",
+    "BigInt/constructor-integer.js",
+    "BigInt/constructor-trailing-leading-spaces.js",
+    "BigInt/infinity-throws-rangeerror.js",
+    "BigInt/is-a-constructor.js",
+    "BigInt/length.js",
+    "BigInt/name.js",
+    "BigInt/nan-throws-rangeerror.js",
+    "BigInt/negative-infinity-throws.rangeerror.js",
+    "BigInt/non-integer-rangeerror.js",
+    "BigInt/prototype/Symbol.toStringTag.js",
+    "BigInt/prototype/constructor.js",
+    "BigInt/prototype/prop-desc.js",
+    "BigInt/prototype/proto.js",
+    "BigInt/prototype/toString/a-z.js",
+    "BigInt/prototype/toString/default-radix.js",
+    "BigInt/prototype/toString/length.js",
+    "BigInt/prototype/toString/name.js",
+    "BigInt/prototype/toString/not-a-constructor.js",
+    "BigInt/prototype/toString/prop-desc.js",
+    "BigInt/prototype/toString/prototype-call.js",
+    "BigInt/prototype/toString/radix-2-to-36.js",
+    "BigInt/prototype/toString/radix-err.js",
+    "BigInt/prototype/toString/radix-tointegerorinfinity-throws-symbol.js",
+    "BigInt/prototype/toString/radix-tointegerorinfinity-throws-toprimitive-or-bigint.js",
+    "BigInt/prototype/toString/string-is-code-units-of-decimal-digits-only.js",
+    "BigInt/prototype/toString/thisbigintvalue-not-valid-throws.js",
+    "BigInt/prototype/valueOf/length.js",
+    "BigInt/prototype/valueOf/name.js",
+    "BigInt/prototype/valueOf/not-a-constructor.js",
+    "BigInt/prototype/valueOf/prop-desc.js",
+    "BigInt/prototype/valueOf/return.js",
+    "BigInt/prototype/valueOf/this-value-invalid-object-throws.js",
+    "BigInt/prototype/valueOf/this-value-invalid-primitive-throws.js",
+    "BigInt/tostring-throws.js",
+    "BigInt/valueof-throws.js",
+)
+
 ASYNC_HARNESS = r"""
 Future<void> main() async {
   final scope = JScope();
@@ -92,7 +166,12 @@ Future<void> main() async {
     return jUndefined;
   }));
   scope.define('assert', assertFn);
-  scope.define('Test262Error', jNative((args) => StateError(jString(jArg(args, 0)))));
+  late final JFunction testError;
+  testError = jNative((args) => JError('Test262Error', jString(jArg(args, 0)))..properties['constructor'] = testError);
+  scope.define('Test262Error', testError);
+  // Inspect our [[Construct]] flag; this does not execute Test262's
+  // Proxy/Reflect.construct-based isConstructor.js implementation.
+  scope.define('isConstructor', jNative((args) => jArg(args, 0) is JFunction && (args[0] as JFunction).constructible));
   final finish = jNative((args) {
     if (done.isCompleted) throw StateError(r'$DONE called twice');
     if (identical(jArg(args, 0), jUndefined)) { done.complete(); }
@@ -132,7 +211,7 @@ def main():
     tests += [(args.checkout / "test/language/expressions/await" / name, ASYNC_HARNESS)
               for name in ASYNC_TESTS]
     tests += [(args.checkout / "test/built-ins" / name, BUILTIN_HARNESS)
-              for name in BUILTIN_TESTS]
+              for name in (*BUILTIN_TESTS, *NUMERIC_TESTS)]
     missing = [str(path) for path, _ in tests if not path.is_file()]
     if missing:
         parser.error(f"Test262 files missing: {', '.join(missing)}")
@@ -140,7 +219,7 @@ def main():
     counts = {"PASS": 0, "FAIL": 0, "UNSUPPORTED": 0}
     with TemporaryDirectory(prefix="htgc-test262-") as temporary:
         for path, harness in tests:
-            name = path.name
+            name = str(path.relative_to(args.checkout / 'test'))
             try:
                 code = compile_script(path.read_text(encoding="utf-8"), path)
             except CompileError as error:

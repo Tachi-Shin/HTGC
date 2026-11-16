@@ -102,6 +102,12 @@ class Compiler:
         skipped = "JCallSite(jShortCircuit)" if call else "jShortCircuit"
         return f"({test} ? {skipped} : {value})"
 
+    def property_key(self, node):
+        key = node["key"]
+        return (quote(key["name"])
+                if not node.get("computed") and key["type"] == "Identifier"
+                else self.expr(key))
+
     def bind(self, pattern, value, kind="let"):
         if pattern["type"] == "Identifier":
             if kind == "var":
@@ -119,7 +125,7 @@ class Compiler:
                     code += self.bind(prop["argument"], f"jCopyProperties({temp}, excluding: {keys})", kind) + "\n"
                     continue
                 key = self.name("key")
-                expression = self.expr(prop["key"]) if prop.get("computed") else quote(prop["key"].get("name", prop["key"].get("value")))
+                expression = self.property_key(prop)
                 code += f"final {key} = jPropertyKey({expression});\n{keys}.add({key});\n"
                 code += self.bind(prop["value"], f"jGet({temp}, {key})", kind) + "\n"
             return code
@@ -208,7 +214,11 @@ class Compiler:
         code = self.temp_declarations() + "\n".join(body)
         result = (
             f"JFunction(({args}, {receiver}) => {self.async_body(code)}, constructible: false)"
-            if self.asynchronous else f"JFunction(({args}, {receiver}) {{\n{code}\n}})"
+            if self.asynchronous else (
+                f"JFunction(({args}, {receiver}) {{\n{code}\n}}, constructible: false)"
+                if node["type"] == "ArrowFunctionExpression" else
+                f"jFunction(({args}, {receiver}) {{\n{code}\n}})"
+            )
         )
         self.scope, self.receiver = old_scope, old_this
         self.asynchronous, self.temps = old_async, old_temps
@@ -259,6 +269,16 @@ class Compiler:
             if "regex" in n:
                 return f'JRegex({quote(n["regex"]["pattern"])}, {quote(n["regex"]["flags"])})'
             value = n.get("value")
+            if "bigint" in n:
+                digits = n["bigint"].replace("_", "")
+                radix = {"0x": 16, "0o": 8, "0b": 2}.get(digits[:2].lower())
+                return (f'BigInt.parse({quote(digits[2:])}, radix: {radix})'
+                        if radix else f'BigInt.parse({quote(digits)})')
+            if type(value) in (int, float):
+                # ECMAScript Number is binary64, including integral literals.
+                return repr(float(value))
+            if value is None and (n.get("raw", "")[0:1].isdigit() or n.get("raw", "").startswith(".")):
+                return "double.infinity"
             return quote(value) if isinstance(value, str) else json.dumps(value)
         if t == "ArrayExpression":
             parts = []
@@ -275,11 +295,7 @@ class Compiler:
                 if p["type"] == "SpreadElement":
                     parts.append("...jObjectSpread(" + self.expr(p["argument"]) + ")")
                     continue
-                key = (
-                    self.expr(p["key"])
-                    if p.get("computed")
-                    else quote(p["key"].get("name", p["key"].get("value")))
-                )
+                key = self.property_key(p)
                 kind = p.get("kind", "init")
                 if not p.get("computed") and not p.get("method") and not p.get("shorthand") and kind == "init" and p["key"].get("name", p["key"].get("value")) == "__proto__":
                     kind = "prototype"

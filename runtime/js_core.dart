@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:collection';
+import 'dart:typed_data';
 
 class JUndefined {
   const JUndefined();
@@ -1179,6 +1180,31 @@ class JFunction extends JObject {
 JFunction jNative(dynamic Function(List<dynamic>) callback) =>
     JFunction((args, receiver) => callback(args));
 
+JFunction jBuiltin(dynamic Function(List<dynamic>) callback) =>
+    JFunction((args, receiver) => callback(args), constructible: false);
+
+JFunction jFunction(dynamic Function(List<dynamic>, dynamic) body) {
+  late final JFunction function;
+  function = JFunction(
+    body,
+    construct: (arguments) {
+      final prototype = function.get('prototype');
+      final instance = JObject()
+        ..prototype = prototype is JObject ? prototype : jObjectPrototype;
+      final result = body(arguments, instance);
+      return result is JObject || result is List ? result : instance;
+    },
+  );
+  final prototype = JObject({'constructor': function});
+  prototype.flags['constructor'] = JPropertyFlags(enumerable: false);
+  function.properties['prototype'] = prototype;
+  function.flags['prototype'] = JPropertyFlags(
+    enumerable: false,
+    configurable: false,
+  );
+  return function;
+}
+
 class JClass extends JObject {
   final dynamic base;
   final Map<String, dynamic> methods;
@@ -1215,6 +1241,7 @@ bool jTruthy(dynamic v) {
   if (jNullish(v) || identical(v, jShortCircuit)) return false;
   if (v is bool) return v;
   if (v is num) return v != 0 && !v.isNaN;
+  if (v is BigInt) return v != BigInt.zero;
   if (v is String) return v.isNotEmpty;
   return true;
 }
@@ -1222,7 +1249,6 @@ bool jTruthy(dynamic v) {
 String jString(dynamic v) {
   if (identical(v, jUndefined)) return 'undefined';
   if (v == null) return 'null';
-  if (v is JBox) return jString(v.value);
   if (v is String) return v;
   if (v is JSymbol)
     throw JThrown(JError('TypeError', 'Cannot convert a Symbol to a string'));
@@ -1233,22 +1259,32 @@ String jString(dynamic v) {
     ].join(',');
   if (v is JError) return '${v.get('name')}: ${v.get('message')}';
   if (v is JObject) return jString(jPrimitive(v, hint: 'string'));
-  if (v is double && v.isFinite && v == v.truncateToDouble())
-    return v.toInt().toString();
-  if (v is double && v.isNaN) return 'NaN';
+  if (v is num) return jNumberString(v.toDouble());
   return v.toString();
 }
 
-num jNumber(dynamic v) {
-  if (v == null) return 0;
+double jNumber(dynamic v) {
+  if (v == null) return 0.0;
   if (identical(v, jUndefined)) return double.nan;
-  if (v is num) return v;
-  if (v is bool) return v ? 1 : 0;
-  if (v is JSymbol)
-    throw JThrown(JError('TypeError', 'Cannot convert Symbol to number'));
+  if (v is num) return v.toDouble();
+  if (v is bool) return v ? 1.0 : 0.0;
+  if (v is JSymbol || v is BigInt)
+    throw JThrown(
+      JError(
+        'TypeError',
+        'Cannot implicitly convert Symbol or BigInt to Number',
+      ),
+    );
   if (v is JObject || v is List) return jNumber(jPrimitive(v, hint: 'number'));
-  final text = jString(v).trim();
-  return text.isEmpty ? 0 : num.tryParse(text) ?? double.nan;
+  final text = jTrim(jString(v));
+  if (text.isEmpty) return 0.0;
+  final radix = jRadixInteger(text);
+  if (radix != null) return radix.toDouble();
+  if (!RegExp(
+    r'^[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$',
+  ).hasMatch(text))
+    return double.nan;
+  return double.tryParse(text) ?? double.nan;
 }
 
 int jRelativeIndex(dynamic value, int length) {
@@ -1258,6 +1294,671 @@ int jRelativeIndex(dynamic value, int length) {
   if (numeric == double.negativeInfinity) return 0;
   final index = numeric.truncate();
   return (index < 0 ? length + index : index).clamp(0, length);
+}
+
+// ECMA-262 StringNumericLiteral whitespace (not Dart's broader trim set).
+final _jWhitespace = RegExp(
+  r'^[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
+);
+String jTrim(String value) => value.replaceAll(_jWhitespace, '');
+
+BigInt? jRadixInteger(String text) {
+  if (RegExp(r'^0[xX][0-9a-fA-F]+$').hasMatch(text))
+    return BigInt.parse(text.substring(2), radix: 16);
+  if (RegExp(r'^0[oO][0-7]+$').hasMatch(text))
+    return BigInt.parse(text.substring(2), radix: 8);
+  if (RegExp(r'^0[bB][01]+$').hasMatch(text))
+    return BigInt.parse(text.substring(2), radix: 2);
+  return null;
+}
+
+BigInt? jStringBigInt(String value) {
+  final text = jTrim(value);
+  if (text.isEmpty) return BigInt.zero;
+  return jRadixInteger(text) ??
+      (RegExp(r'^[+-]?[0-9]+$').hasMatch(text) ? BigInt.tryParse(text) : null);
+}
+
+dynamic jNumeric(dynamic value) {
+  final primitive = jPrimitive(value, hint: 'number');
+  return primitive is BigInt ? primitive : jNumber(primitive);
+}
+
+BigInt jBigInt(dynamic value, {bool allowNumber = false}) {
+  value = jPrimitive(value, hint: 'number');
+  if (value is BigInt) return value;
+  if (value is bool) return value ? BigInt.one : BigInt.zero;
+  if (value is String) {
+    final parsed = jStringBigInt(value);
+    if (parsed != null) return parsed;
+    throw JThrown(JError('SyntaxError', 'Invalid BigInt string'));
+  }
+  if (allowNumber && value is num) {
+    if (!value.isFinite || value != value.truncateToDouble())
+      throw JThrown(JError('RangeError', 'BigInt requires an integral Number'));
+    return BigInt.from(value);
+  }
+  throw JThrown(JError('TypeError', 'Cannot convert value to BigInt'));
+}
+
+String jNumberString(double value) {
+  if (value.isNaN) return 'NaN';
+  if (value == 0) return '0';
+  if (value.isInfinite) return value.isNegative ? '-Infinity' : 'Infinity';
+  final sign = value.isNegative ? '-' : '';
+  final parts = value.abs().toString().toLowerCase().split('e');
+  final mantissa = parts[0];
+  var point =
+      (mantissa.contains('.') ? mantissa.indexOf('.') : mantissa.length) +
+      (parts.length == 2 ? int.parse(parts[1]) : 0);
+  var digits = mantissa.replaceAll('.', '');
+  while (digits.startsWith('0')) {
+    digits = digits.substring(1);
+    point--;
+  }
+  digits = digits.replaceFirst(RegExp(r'0+$'), '');
+  if (point > 0 && point <= 21) {
+    return sign +
+        (point >= digits.length
+            ? digits + '0' * (point - digits.length)
+            : '${digits.substring(0, point)}.${digits.substring(point)}');
+  }
+  if (point <= 0 && point > -6) return '${sign}0.${'0' * -point}$digits';
+  final exponent = point - 1;
+  return '$sign${digits[0]}${digits.length == 1 ? '' : '.${digits.substring(1)}'}e${exponent >= 0 ? '+' : ''}$exponent';
+}
+
+// Exact binary64 fraction, used for radix conversion and decimal rounding.
+(BigInt, BigInt) jDoubleFraction(double value) {
+  final data = ByteData(8)..setFloat64(0, value.abs());
+  final high = data.getUint32(0), low = data.getUint32(4);
+  final exponent = (high >> 20) & 0x7ff;
+  var numerator = (BigInt.from(high & 0xfffff) << 32) | BigInt.from(low);
+  if (exponent != 0) numerator |= BigInt.one << 52;
+  final power = (exponent == 0 ? 1 : exponent) - 1075;
+  return power >= 0
+      ? (numerator << power, BigInt.one)
+      : (numerator, BigInt.one << -power);
+}
+
+String jNumberRadix(double value, int radix) {
+  final (numerator, denominator) = jDoubleFraction(value);
+  var integer = numerator ~/ denominator;
+  var remainder = numerator % denominator;
+  final digits = <int>[];
+  final base = BigInt.from(radix);
+  // Half an ULP at this value. At exact powers of two the lower interval
+  // is narrower; use that bound on both sides to avoid premature rounding.
+  final data = ByteData(8)..setFloat64(0, value.abs());
+  final high = data.getUint32(0), low = data.getUint32(4);
+  final exponent = (high >> 20) & 0x7ff;
+  final power =
+      (exponent == 0 ? 1 : exponent) -
+      1076 -
+      (exponent > 1 && (high & 0xfffff) == 0 && low == 0 ? 1 : 0);
+  var tolerance = power >= 0 ? denominator << power : denominator;
+  final scale = power >= 0 ? BigInt.one : BigInt.one << -power;
+  while (remainder != BigInt.zero) {
+    remainder *= base;
+    digits.add((remainder ~/ denominator).toInt());
+    remainder %= denominator;
+    tolerance *= base;
+    final down = remainder * scale <= tolerance;
+    final up = (denominator - remainder) * scale <= tolerance;
+    if (down || up) {
+      if (up && (!down || remainder * BigInt.two > denominator)) {
+        var i = digits.length - 1;
+        while (i >= 0 && digits[i] == radix - 1) {
+          digits[i--] = 0;
+        }
+        if (i < 0) {
+          integer += BigInt.one;
+        } else {
+          digits[i]++;
+        }
+      }
+      break;
+    }
+  }
+  while (digits.isNotEmpty && digits.last == 0) {
+    digits.removeLast();
+  }
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  return '${value.isNegative ? '-' : ''}${integer.toRadixString(radix)}${digits.isEmpty ? '' : '.${digits.map((d) => alphabet[d]).join()}'}';
+}
+
+(String, int) jDecimalDigits(double value, int precision) {
+  if (value == 0) return ('0' * precision, 0);
+  var exponent = int.parse(value.abs().toStringAsExponential().split('e')[1]);
+  var (n, d) = jDoubleFraction(value);
+  final power = precision - 1 - exponent;
+  if (power >= 0) {
+    n *= BigInt.from(10).pow(power);
+  } else {
+    d *= BigInt.from(10).pow(-power);
+  }
+  var digits = ((n * BigInt.two + d) ~/ (d * BigInt.two)).toString();
+  if (digits.length > precision) {
+    digits = digits.substring(0, precision);
+    exponent++;
+  }
+  return (digits.padLeft(precision, '0'), exponent);
+}
+
+int jUint32(dynamic value) {
+  final number = jNumber(value);
+  if (!number.isFinite || number == 0) return 0;
+  return (BigInt.from(number) & BigInt.from(0xffffffff)).toInt();
+}
+
+int jInt32(dynamic value) => jSigned32(jUint32(value));
+int jSigned32(int value) {
+  final bits = value & 0xffffffff;
+  return bits >= 0x80000000 ? bits - 0x100000000 : bits;
+}
+
+bool jStrictEqual(dynamic a, dynamic b) {
+  if (a is num && b is num) return a == b;
+  if (a is BigInt && b is BigInt) return a == b;
+  return a.runtimeType == b.runtimeType && a == b;
+}
+
+bool jLooseEqual(dynamic a, dynamic b) {
+  if (jStrictEqual(a, b)) return true;
+  if (jNullish(a) || jNullish(b)) return jNullish(a) && jNullish(b);
+  if (a is num && b is String) return jLooseEqual(a, jNumber(b));
+  if (a is String && b is num) return jLooseEqual(jNumber(a), b);
+  if (a is BigInt && b is String) return a == jStringBigInt(b);
+  if (a is String && b is BigInt) return jStringBigInt(a) == b;
+  if (a is bool) return jLooseEqual(jNumber(a), b);
+  if (b is bool) return jLooseEqual(a, jNumber(b));
+  final aObject = a is JObject || a is List;
+  final bObject = b is JObject || b is List;
+  if (aObject != bObject)
+    return aObject
+        ? jLooseEqual(jPrimitive(a), b)
+        : jLooseEqual(a, jPrimitive(b));
+  if (a is BigInt && b is num)
+    return b.isFinite && b == b.truncateToDouble() && a == BigInt.from(b);
+  if (a is num && b is BigInt) return jLooseEqual(b, a);
+  return false;
+}
+
+int? jBigIntCompare(BigInt a, num b) {
+  if (b.isNaN) return null;
+  if (b.isInfinite) return b.isNegative ? 1 : -1;
+  final truncated = BigInt.from(b);
+  final result = a.compareTo(truncated);
+  if (result != 0 || b == b.truncateToDouble()) return result;
+  return b.isNegative ? 1 : -1;
+}
+
+int? jCompare(dynamic a, dynamic b) {
+  // Relational operators always coerce the left source operand first.
+  a = jPrimitive(a, hint: 'number');
+  b = jPrimitive(b, hint: 'number');
+  if (a is String && b is String) return a.compareTo(b);
+  if (a is BigInt && b is String) {
+    b = jStringBigInt(b);
+    if (b == null) return null;
+  }
+  if (a is String && b is BigInt) {
+    a = jStringBigInt(a);
+    if (a == null) return null;
+  }
+  a = jNumeric(a);
+  b = jNumeric(b);
+  if (a is BigInt && b is BigInt) return a.compareTo(b);
+  if (a is BigInt) return jBigIntCompare(a, b);
+  if (b is BigInt) {
+    final result = jBigIntCompare(b, a);
+    return result == null ? null : -result;
+  }
+  if (a.isNaN || b.isNaN) return null;
+  return a == b
+      ? 0
+      : a < b
+      ? -1
+      : 1;
+}
+
+dynamic jNumericBinary(String op, dynamic a, dynamic b) {
+  a = jNumeric(a);
+  b = jNumeric(b);
+  if ((a is BigInt) != (b is BigInt))
+    throw JThrown(JError('TypeError', 'Cannot mix BigInt and Number'));
+  if (a is BigInt && b is BigInt) {
+    switch (op) {
+      case '+':
+        return a + b;
+      case '-':
+        return a - b;
+      case '*':
+        return a * b;
+      case '/':
+      case '%':
+        if (b == BigInt.zero)
+          throw JThrown(JError('RangeError', 'BigInt division by zero'));
+        return op == '/' ? a ~/ b : a.remainder(b);
+      case '**':
+        if (b.isNegative)
+          throw JThrown(JError('RangeError', 'Negative BigInt exponent'));
+        if (b == BigInt.zero) return BigInt.one;
+        if (a == BigInt.zero || a == BigInt.one) return a;
+        if (a == -BigInt.one) return b.isEven ? BigInt.one : -BigInt.one;
+        if (b > BigInt.from(10000000) || a.bitLength * b.toInt() > 10000000)
+          throw JThrown(
+            JError('RangeError', 'BigInt exceeds implementation size limit'),
+          );
+        return a.pow(b.toInt());
+      case '&':
+        return a & b;
+      case '|':
+        return a | b;
+      case '^':
+        return a ^ b;
+      case '>>>':
+        throw JThrown(
+          JError('TypeError', 'BigInt has no unsigned right shift'),
+        );
+      case '<<':
+      case '>>':
+        final left = op == '<<' ? !b.isNegative : b.isNegative;
+        final count = b.abs();
+        if (a == BigInt.zero) return a;
+        if (!left && count >= BigInt.from(a.bitLength + 1))
+          return a.isNegative ? -BigInt.one : BigInt.zero;
+        if (count > BigInt.from(10000000) ||
+            left && a.bitLength + count.toInt() > 10000000)
+          throw JThrown(
+            JError('RangeError', 'BigInt exceeds implementation size limit'),
+          );
+        return left ? a << count.toInt() : a >> count.toInt();
+    }
+  }
+  final x = a as double, y = b as double;
+  switch (op) {
+    case '+':
+      return x + y;
+    case '-':
+      return x - y;
+    case '*':
+      return x * y;
+    case '/':
+      return x / y;
+    case '%':
+      return x.remainder(y);
+    case '**':
+      if (y.isNaN) return double.nan;
+      if (y == 0) return 1.0;
+      if (x.abs() == 1 && y.isInfinite) return double.nan;
+      return math.pow(x, y).toDouble();
+    case '&':
+      return (jInt32(x) & jInt32(y)).toDouble();
+    case '|':
+      return (jInt32(x) | jInt32(y)).toDouble();
+    case '^':
+      return (jInt32(x) ^ jInt32(y)).toDouble();
+    case '<<':
+      return jSigned32(jInt32(x) << (jUint32(y) & 31)).toDouble();
+    case '>>':
+      return (jInt32(x) >> (jUint32(y) & 31)).toDouble();
+    case '>>>':
+      return (jUint32(x) >> (jUint32(y) & 31)).toDouble();
+  }
+  throw StateError('Numeric operator $op');
+}
+
+double jInteger(dynamic value) {
+  final number = jNumber(value);
+  return number.isNaN || number == 0 ? 0.0 : number.truncateToDouble();
+}
+
+final JObject jNumberPrototype = JObject();
+final JObject jBigIntPrototype = JObject();
+final JObject jStringPrototype = JObject();
+final JObject jBooleanPrototype = JObject();
+
+void installJSPrimitiveWrappers(JScope scope) {
+  dynamic stringValue(List<dynamic> a, {bool construct = false}) => a.isEmpty
+      ? ''
+      : !construct && a[0] is JSymbol
+      ? (a[0] as JSymbol).descriptive
+      : jString(a[0]);
+  final string = JFunction(
+    (a, _) => stringValue(a),
+    construct: (a) => JBox(stringValue(a, construct: true)),
+  );
+  string.properties['fromCharCode'] = jBuiltin(
+    (a) => String.fromCharCodes(a.map((v) => jUint32(v) & 0xffff)),
+  );
+  string.properties['fromCodePoint'] = jBuiltin(
+    (a) => String.fromCharCodes(
+      a.map((v) {
+        final code = jNumber(v);
+        if (!code.isFinite ||
+            code < 0 ||
+            code > 0x10ffff ||
+            code != code.truncateToDouble())
+          throw JThrown(JError('RangeError', 'Invalid code point'));
+        return code.toInt();
+      }),
+    ),
+  );
+  final boolean = JFunction(
+    (a, _) => jTruthy(jArg(a, 0)),
+    construct: (a) => JBox(jTruthy(jArg(a, 0))),
+  );
+  for (final isString in [true, false]) {
+    final prototype = isString ? jStringPrototype : jBooleanPrototype;
+    final constructor = isString ? string : boolean;
+    prototype.properties['constructor'] = constructor;
+    constructor.properties['prototype'] = prototype;
+    constructor.flags['prototype'] = JPropertyFlags(
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    );
+    for (final method in ['toString', 'valueOf']) {
+      final function = JFunction((a, receiver) {
+        final value = identical(receiver, prototype)
+            ? (isString ? '' : false)
+            : receiver is JBox
+            ? receiver.value
+            : receiver;
+        if (isString ? value is! String : value is! bool)
+          throw JThrown(
+            JError('TypeError', 'Incompatible primitive wrapper receiver'),
+          );
+        return method == 'toString' ? jString(value) : value;
+      }, constructible: false);
+      jNameFunction(function, method, 0);
+      prototype.properties[method] = function;
+    }
+    jBuiltinProperties(prototype);
+    jNameFunction(constructor, isString ? 'String' : 'Boolean', 1);
+  }
+  jStringPrototype.properties['length'] = 0;
+  jStringPrototype.flags['length'] = JPropertyFlags(
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  );
+  scope.define('String', string);
+  scope.define('Boolean', boolean);
+}
+
+dynamic jNumericReceiver(dynamic receiver, bool bigint) {
+  final value = receiver is JBox ? receiver.value : receiver;
+  if (bigint ? value is BigInt : value is num) return value;
+  if (!bigint && identical(receiver, jNumberPrototype)) return 0.0;
+  throw JThrown(JError('TypeError', 'Incompatible numeric receiver'));
+}
+
+double jParseInt(dynamic value, dynamic radixValue) {
+  var text = jTrim(jString(value));
+  final negative = text.startsWith('-');
+  if (text.startsWith('+') || negative) text = text.substring(1);
+  var radix = jInt32(radixValue);
+  if (radix != 0 && (radix < 2 || radix > 36)) return double.nan;
+  final stripPrefix = radix == 0 || radix == 16;
+  if (radix == 0) radix = 10;
+  if (stripPrefix && (text.startsWith('0x') || text.startsWith('0X'))) {
+    text = text.substring(2);
+    radix = 16;
+  }
+  var count = 0;
+  const digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+  for (final code in text.toLowerCase().codeUnits) {
+    final digit = digits.indexOf(String.fromCharCode(code));
+    if (digit < 0 || digit >= radix) break;
+    count++;
+  }
+  if (count == 0) return double.nan;
+  final result = BigInt.parse(
+    text.substring(0, count),
+    radix: radix,
+  ).toDouble();
+  return negative ? -result : result;
+}
+
+double jParseFloat(dynamic value) {
+  final match = RegExp(
+    r'^[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)',
+  ).firstMatch(jTrim(jString(value)));
+  return match == null ? double.nan : double.parse(match[0]!);
+}
+
+void installJSNumbers(JScope scope) {
+  final parseInt = jBuiltin((a) => jParseInt(jArg(a, 0), jArg(a, 1)));
+  final parseFloat = jBuiltin((a) => jParseFloat(jArg(a, 0)));
+  dynamic numberValue(List<dynamic> a) {
+    if (a.isEmpty) return 0.0;
+    final value = jNumeric(a[0]);
+    return value is BigInt ? value.toDouble() : value;
+  }
+
+  final number = JFunction(
+    (a, _) => numberValue(a),
+    construct: (a) => JBox(numberValue(a)),
+  );
+  number.properties.addAll({
+    'prototype': jNumberPrototype,
+    'name': 'Number',
+    'length': 1,
+    'EPSILON': 2.220446049250313e-16,
+    'MAX_VALUE': 1.7976931348623157e308,
+    'MIN_VALUE': 5e-324,
+    'MAX_SAFE_INTEGER': 9007199254740991.0,
+    'MIN_SAFE_INTEGER': -9007199254740991.0,
+    'NaN': double.nan,
+    'POSITIVE_INFINITY': double.infinity,
+    'NEGATIVE_INFINITY': double.negativeInfinity,
+    'isNaN': jBuiltin((a) => jArg(a, 0) is num && (a[0] as num).isNaN),
+    'isFinite': jBuiltin((a) => jArg(a, 0) is num && (a[0] as num).isFinite),
+    'isInteger': jBuiltin(
+      (a) =>
+          jArg(a, 0) is num &&
+          (a[0] as num).isFinite &&
+          a[0] == (a[0] as num).truncateToDouble(),
+    ),
+    'isSafeInteger': jBuiltin(
+      (a) =>
+          jArg(a, 0) is num &&
+          (a[0] as num).isFinite &&
+          a[0] == (a[0] as num).truncateToDouble() &&
+          (a[0] as num).abs() <= 9007199254740991,
+    ),
+    'parseInt': parseInt,
+    'parseFloat': parseFloat,
+  });
+  final bigint = JFunction(
+    (a, _) => jBigInt(jArg(a, 0), allowNumber: true),
+    construct: (_) =>
+        throw JThrown(JError('TypeError', 'BigInt cannot be called with new')),
+  );
+  bigint.properties.addAll({
+    'prototype': jBigIntPrototype,
+    'name': 'BigInt',
+    'length': 1,
+  });
+  for (final signed in [false, true]) {
+    bigint.properties[signed ? 'asIntN' : 'asUintN'] = JFunction((a, _) {
+      final bits = jInteger(jArg(a, 0));
+      if (bits < 0 || bits > 9007199254740991)
+        throw JThrown(JError('RangeError', 'Invalid BigInt bit width'));
+      final value = jBigInt(jArg(a, 1));
+      if (bits == 0) return BigInt.zero;
+      if (value == BigInt.zero ||
+          (signed
+              ? value.bitLength < bits
+              : !value.isNegative && value.bitLength <= bits))
+        return value;
+      if (bits > 10000000)
+        throw JThrown(
+          JError('RangeError', 'BigInt exceeds implementation size limit'),
+        );
+      final modulus = BigInt.one << bits.toInt();
+      final result = value % modulus;
+      return signed && result >= (modulus >> 1) ? result - modulus : result;
+    }, constructible: false);
+  }
+  for (final big in [false, true]) {
+    final prototype = big ? jBigIntPrototype : jNumberPrototype;
+    prototype.properties['constructor'] = big ? bigint : number;
+    prototype.properties['valueOf'] = JFunction(
+      (a, receiver) => jNumericReceiver(receiver, big),
+      constructible: false,
+    );
+    prototype.properties['toString'] = JFunction((a, receiver) {
+      final value = jNumericReceiver(receiver, big);
+      final radix = identical(jArg(a, 0), jUndefined) ? 10.0 : jInteger(a[0]);
+      if (radix < 2 || radix > 36)
+        throw JThrown(JError('RangeError', 'Radix must be between 2 and 36'));
+      if (big) return (value as BigInt).toRadixString(radix.toInt());
+      if (radix == 10 || !(value as num).isFinite || value == 0)
+        return jString(value);
+      return jNumberRadix(value.toDouble(), radix.toInt());
+    }, constructible: false);
+    jBuiltinProperties(prototype);
+  }
+  jBigIntPrototype.symbols[jSymbols['toStringTag']!] = 'BigInt';
+  jBigIntPrototype.flags[jSymbols['toStringTag']!] = JPropertyFlags(
+    writable: false,
+    enumerable: false,
+  );
+  for (final method in ['toFixed', 'toExponential', 'toPrecision']) {
+    jNumberPrototype.properties[method] = JFunction((a, receiver) {
+      final value = (jNumericReceiver(receiver, false) as num).toDouble();
+      final omitted = identical(jArg(a, 0), jUndefined);
+      if (method == 'toPrecision' && omitted) return jString(value);
+      final digits = jInteger(jArg(a, 0));
+      if (method != 'toFixed' && !value.isFinite) return jString(value);
+      if (digits < (method == 'toPrecision' ? 1 : 0) || digits > 100)
+        throw JThrown(JError('RangeError', 'Invalid precision'));
+      if (!value.isFinite) return jString(value);
+      final positive = value == 0 ? 0.0 : value;
+      if (method == 'toFixed') {
+        if (value.abs() >= 1e21) return jString(value);
+        final (n, d) = jDoubleFraction(value);
+        final scaled = n * BigInt.from(10).pow(digits.toInt());
+        final rounded = (scaled * BigInt.two + d) ~/ (d * BigInt.two);
+        final text = rounded.toString().padLeft(digits.toInt() + 1, '0');
+        final point = text.length - digits.toInt();
+        return '${value < 0 ? '-' : ''}${text.substring(0, point)}${digits == 0 ? '' : '.${text.substring(point)}'}';
+      }
+      if (method == 'toExponential' && omitted)
+        return positive.toStringAsExponential().replaceFirst(
+          RegExp(r'\.0e'),
+          'e',
+        );
+      final precision = digits.toInt() + (method == 'toExponential' ? 1 : 0);
+      final (decimal, exponent) = jDecimalDigits(positive, precision);
+      final sign = value < 0 ? '-' : '';
+      if (method == 'toExponential' || exponent < -6 || exponent >= precision) {
+        return '$sign${decimal[0]}${decimal.length == 1 ? '' : '.${decimal.substring(1)}'}e${exponent >= 0 ? '+' : ''}$exponent';
+      }
+      if (exponent < 0) return '${sign}0.${'0' * (-exponent - 1)}$decimal';
+      final point = exponent + 1;
+      return sign +
+          (point >= decimal.length
+              ? decimal + '0' * (point - decimal.length)
+              : '${decimal.substring(0, point)}.${decimal.substring(point)}');
+    }, constructible: false);
+  }
+  jBuiltinProperties(jNumberPrototype);
+  jBuiltinProperties(bigint);
+  jBuiltinProperties(number);
+  for (final constructor in [bigint, number]) {
+    for (final key in ['name', 'length']) {
+      constructor.flags[key] = JPropertyFlags(
+        writable: false,
+        enumerable: false,
+      );
+    }
+    for (final key in constructor.properties.keys) {
+      final method = constructor.properties[key];
+      if (method is JFunction)
+        jNameFunction(
+          method,
+          key,
+          key == 'asIntN' || key == 'asUintN' || key == 'parseInt' ? 2 : 1,
+        );
+    }
+  }
+  for (final prototype in [jNumberPrototype, jBigIntPrototype]) {
+    for (final key in prototype.properties.keys) {
+      final method = prototype.properties[key];
+      if (method is JFunction && key != 'constructor')
+        jNameFunction(
+          method,
+          key,
+          key == 'valueOf' ||
+                  identical(prototype, jBigIntPrototype) && key == 'toString'
+              ? 0
+              : 1,
+        );
+    }
+  }
+  for (final key in [
+    'EPSILON',
+    'MAX_VALUE',
+    'MIN_VALUE',
+    'MAX_SAFE_INTEGER',
+    'MIN_SAFE_INTEGER',
+    'NaN',
+    'POSITIVE_INFINITY',
+    'NEGATIVE_INFINITY',
+    'prototype',
+  ]) {
+    number.flags[key] = JPropertyFlags(
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    );
+  }
+  bigint.flags['prototype'] = JPropertyFlags(
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  );
+  scope.define('Number', number);
+  scope.define('BigInt', bigint);
+  scope.define('parseInt', parseInt);
+  scope.define('parseFloat', parseFloat);
+  scope.define('isNaN', jBuiltin((a) => jNumber(jArg(a, 0)).isNaN));
+  scope.define('isFinite', jBuiltin((a) => jNumber(jArg(a, 0)).isFinite));
+}
+
+void jNameFunction(JFunction function, String name, int length) {
+  function.properties.addAll({'name': name, 'length': length});
+  for (final key in ['name', 'length']) {
+    function.flags[key] = JPropertyFlags(writable: false, enumerable: false);
+  }
+}
+
+double jMathRound(double value) {
+  if (!value.isFinite || value == 0) return value;
+  if (value >= -0.5 && value < 0) return -0.0;
+  final floor = value.floorToDouble();
+  return value - floor < 0.5 ? floor : floor + 1;
+}
+
+double jHypot(List<dynamic> arguments) {
+  final values = arguments.map(jNumber).map((v) => v.abs()).toList();
+  if (values.any((v) => v.isInfinite)) return double.infinity;
+  if (values.any((v) => v.isNaN)) return double.nan;
+  final largest = values.fold<double>(0.0, math.max);
+  if (largest == 0) return 0.0;
+  var sum = 0.0, correction = 0.0;
+  for (final value in values) {
+    final scaled = value / largest;
+    final term = scaled * scaled - correction;
+    final next = sum + term;
+    correction = (next - sum) - term;
+    sum = next;
+  }
+  return math.sqrt(sum) * largest;
 }
 
 List<dynamic> jArrayLikeList(dynamic value) {
@@ -1336,6 +2037,8 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
   final property = jPropertyKey(key);
   if (property is JSymbol) {
     if (value is JObject) return value.read(property, value);
+    if (value is BigInt) return jBigIntPrototype.read(property, value);
+    if (value is num) return jNumberPrototype.read(property, value);
     if (identical(property, jSymbols['iterator']) &&
         (value is List || value is String))
       return jNative((_) => jBuiltinIterator(value));
@@ -1544,7 +2247,9 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
   }
   if (value is JRegex && name == 'test')
     return jNative((a) => value.value.hasMatch(jString(a[0])));
-  if (value is num && name == 'toString') return jNative((a) => jString(value));
+  if (value is num) return jNumberPrototype.read(name, value);
+  if (value is BigInt) return jBigIntPrototype.read(name, value);
+  if (value is bool) return jBooleanPrototype.read(name, value);
   return jUndefined;
 }
 
@@ -1599,8 +2304,8 @@ dynamic jAssign(JRef ref, String op, dynamic Function() rhs) {
 }
 
 dynamic jUpdate(JRef ref, num delta, bool prefix) {
-  final old = jNumber(ref.read());
-  final next = old + delta;
+  final old = jNumeric(ref.read());
+  final next = old is BigInt ? old + BigInt.from(delta) : old + delta;
   ref.write(next);
   return prefix ? next : old;
 }
@@ -1617,16 +2322,17 @@ dynamic jUnary(String op, dynamic value) {
     case '!':
       return !jTruthy(value);
     case '-':
-      final number = jNumber(value);
-      return number == 0 ? -(number.toDouble()) : -number;
+      return -jNumeric(value);
     case '+':
       return jNumber(value);
     case '~':
-      return ~jNumber(value).toInt();
+      final number = jNumeric(value);
+      return number is BigInt ? ~number : (~jInt32(number)).toDouble();
     case 'void':
       return jUndefined;
     case 'typeof':
       if (value is JSymbol) return 'symbol';
+      if (value is BigInt) return 'bigint';
       return identical(value, jUndefined)
           ? 'undefined'
           : value is bool
@@ -1645,60 +2351,43 @@ dynamic jUnary(String op, dynamic value) {
 dynamic jBinary(String op, dynamic a, dynamic b) {
   switch (op) {
     case '===':
-      return a is num && b is num
-          ? a == b
-          : a.runtimeType == b.runtimeType && a == b;
+      return jStrictEqual(a, b);
     case '!==':
       return !jBinary('===', a, b);
     case '==':
-      return jNullish(a) && jNullish(b) ||
-          jBinary('===', a, b) ||
-          ((a is num || a is bool || b is num || b is bool) &&
-              jNumber(a) == jNumber(b));
+      return jLooseEqual(a, b);
     case '!=':
       return !jBinary('==', a, b);
     case '+':
       a = jPrimitive(a);
       b = jPrimitive(b);
-      return a is String || b is String
-          ? jString(a) + jString(b)
-          : jNumber(a) + jNumber(b);
+      if (a is String || b is String) return jString(a) + jString(b);
+      return jNumericBinary(op, a, b);
     case '-':
-      return jNumber(a) - jNumber(b);
     case '*':
-      return jNumber(a) * jNumber(b);
     case '/':
-      return jNumber(a) / jNumber(b);
     case '%':
-      return jNumber(a).remainder(jNumber(b));
     case '**':
-      return math.pow(jNumber(a), jNumber(b));
-    case '<':
-      return a is String && b is String
-          ? a.compareTo(b) < 0
-          : jNumber(a) < jNumber(b);
-    case '>':
-      return a is String && b is String
-          ? a.compareTo(b) > 0
-          : jNumber(a) > jNumber(b);
-    case '<=':
-      return a is String && b is String
-          ? a.compareTo(b) <= 0
-          : jNumber(a) <= jNumber(b);
-    case '>=':
-      return a is String && b is String
-          ? a.compareTo(b) >= 0
-          : jNumber(a) >= jNumber(b);
     case '&':
-      return jNumber(a).toInt() & jNumber(b).toInt();
     case '|':
-      return jNumber(a).toInt() | jNumber(b).toInt();
     case '^':
-      return jNumber(a).toInt() ^ jNumber(b).toInt();
     case '<<':
-      return jNumber(a).toInt() << jNumber(b).toInt();
     case '>>':
-      return jNumber(a).toInt() >> jNumber(b).toInt();
+    case '>>>':
+      return jNumericBinary(op, a, b);
+    case '<':
+    case '>':
+    case '<=':
+    case '>=':
+      final comparison = jCompare(a, b);
+      if (comparison == null) return false;
+      return op == '<'
+          ? comparison < 0
+          : op == '>'
+          ? comparison > 0
+          : op == '<='
+          ? comparison <= 0
+          : comparison >= 0;
     case 'in':
       if (b is! JObject && b is! List)
         throw JThrown(
@@ -1756,18 +2445,8 @@ void installJSBuiltins(JScope scope) {
       ),
     ),
   );
-  scope.define('Boolean', jNative((a) => jTruthy(jArg(a, 0))));
-  scope.define(
-    'String',
-    jNative(
-      (a) => a.isEmpty
-          ? ''
-          : a[0] is JSymbol
-          ? (a[0] as JSymbol).descriptive
-          : jString(a[0]),
-    ),
-  );
-  scope.define('Number', jNative((a) => a.isEmpty ? 0 : jNumber(a[0])));
+  installJSPrimitiveWrappers(scope);
+  installJSNumbers(scope);
   scope.define(
     'Date',
     jNative((a) {
@@ -1826,20 +2505,64 @@ void installJSBuiltins(JScope scope) {
     'Math',
     JObject({
       'PI': math.pi,
+      'E': math.e,
+      'LN2': math.ln2,
+      'LN10': math.ln10,
+      'LOG2E': math.log2e,
+      'LOG10E': math.log10e,
+      'SQRT2': math.sqrt2,
+      'SQRT1_2': math.sqrt1_2,
+      'round': jNative((a) => jMathRound(jNumber(jArg(a, 0)))),
+      'trunc': jNative((a) => jNumber(jArg(a, 0)).truncateToDouble()),
+      'sign': jNative((a) {
+        final n = jNumber(jArg(a, 0));
+        return n.isNaN || n == 0
+            ? n
+            : n.isNegative
+            ? -1.0
+            : 1.0;
+      }),
+      'imul': jNative(
+        (a) => jSigned32(
+          ((BigInt.from(jUint32(jArg(a, 0))) *
+                      BigInt.from(jUint32(jArg(a, 1)))) &
+                  BigInt.from(0xffffffff))
+              .toInt(),
+        ).toDouble(),
+      ),
+      'clz32': jNative((a) => (32 - jUint32(jArg(a, 0)).bitLength).toDouble()),
+      'fround': jNative((a) => (Float32List(1)..[0] = jNumber(jArg(a, 0)))[0]),
+      'pow': jNative(
+        (a) => jNumericBinary('**', jNumber(jArg(a, 0)), jNumber(jArg(a, 1))),
+      ),
+      'atan2': jNative(
+        (a) => math.atan2(jNumber(jArg(a, 0)), jNumber(jArg(a, 1))),
+      ),
+      for (final entry in <String, double Function(num)>{
+        'sin': math.sin,
+        'cos': math.cos,
+        'tan': math.tan,
+        'asin': math.asin,
+        'acos': math.acos,
+        'atan': math.atan,
+        'exp': math.exp,
+        'log': math.log,
+      }.entries)
+        entry.key: jNative((a) => entry.value(jNumber(jArg(a, 0)))),
+      'log2': jNative((a) => math.log(jNumber(jArg(a, 0))) / math.ln2),
+      'log10': jNative((a) => math.log(jNumber(jArg(a, 0))) / math.ln10),
       'random': jNative((a) => random.nextDouble()),
-      'floor': jNative((a) => jNumber(a[0]).floor()),
-      'ceil': jNative((a) => jNumber(a[0]).ceil()),
-      'abs': jNative((a) => jNumber(a[0]).abs()),
-      'sqrt': jNative((a) => math.sqrt(jNumber(a[0]))),
+      'floor': jNative((a) => jNumber(jArg(a, 0)).floorToDouble()),
+      'ceil': jNative((a) => jNumber(jArg(a, 0)).ceilToDouble()),
+      'abs': jNative((a) => jNumber(jArg(a, 0)).abs()),
+      'sqrt': jNative((a) => math.sqrt(jNumber(jArg(a, 0)))),
       'min': jNative(
         (a) => a.map(jNumber).fold<num>(double.infinity, math.min),
       ),
       'max': jNative(
         (a) => a.map(jNumber).fold<num>(double.negativeInfinity, math.max),
       ),
-      'hypot': jNative(
-        (a) => math.sqrt(a.map(jNumber).fold<num>(0, (sum, v) => sum + v * v)),
-      ),
+      'hypot': jNative(jHypot),
     }),
   );
   scope.define(
@@ -1949,7 +2672,11 @@ void jForEachIterable(dynamic value, void Function(dynamic) callback) {
 class JBox extends JObject {
   final dynamic value;
   JBox(this.value) {
+    if (value is num) prototype = jNumberPrototype;
+    if (value is BigInt) prototype = jBigIntPrototype;
+    if (value is bool) prototype = jBooleanPrototype;
     if (value is String) {
+      prototype = jStringPrototype;
       for (var i = 0; i < value.length; i++) {
         properties['$i'] = value[i];
         flags['$i'] = JPropertyFlags(writable: false, configurable: false);
@@ -2569,12 +3296,19 @@ dynamic jJSONParse(dynamic text, dynamic reviver) {
           entry.key as String: convert(entry.value),
       });
     if (value is List) return value.map(convert).toList();
+    if (value is num) return value.toDouble();
     return value;
   }
 
   dynamic root;
   try {
-    root = convert(jsonDecode(jString(text)));
+    // Dart decodes the integer spelling -0 as int zero. Preserve its sign
+    // without rewriting quoted strings or relaxing the JSON grammar.
+    final source = jString(text).replaceAllMapped(
+      RegExp(r'("(?:[^"\\]|\\.)*")|(-0)(?=[\x20\t\r\n]*(?:[,}\]]|$))'),
+      (match) => match[1] ?? '-0.0',
+    );
+    root = convert(jsonDecode(source));
   } on FormatException {
     throw JThrown(JError('SyntaxError', 'Invalid JSON text'));
   }
@@ -2632,8 +3366,8 @@ dynamic jJSONStringify(dynamic value, dynamic replacer, dynamic space) {
       : '';
   String? serialize(dynamic holder, String key, String indent) {
     var current = jGet(holder, key);
-    if (current is JObject) {
-      final toJSON = current.get('toJSON');
+    if (current is JObject || current is BigInt) {
+      final toJSON = jGet(current, 'toJSON');
       if (toJSON is JFunction)
         current = jCall(toJSON, [key], receiver: current);
     }

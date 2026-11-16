@@ -3,7 +3,6 @@
 import math
 import re
 
-from c_source import c_string
 from frontend import CompileError
 from js_dart import parse, quote
 
@@ -68,29 +67,27 @@ def parse_handler(source, path, attribute):
     return call(statements[0]["expression"])
 
 
-def emit_handler(expression, *, dart, text_parameter):
+def emit_handler(expression, *, text_parameter):
     kind, *parts = expression
-    prefix = "handlers." if dart else ""
+    prefix = "handlers."
     if kind == "text":
         return text_parameter
     if kind == "ui":
-        if not dart:
-            raise CompileError("event.ui は -Dart のイベント属性で使えます")
         return "htgcPage"
     if kind == "value":
         return prefix + parts[0]
     if kind == "call":
         name, arguments = parts
         args = ", ".join(
-            emit_handler(arg, dart=dart, text_parameter=text_parameter)
+            emit_handler(arg, text_parameter=text_parameter)
             for arg in arguments
         )
         return f"{prefix}{name}({args})"
     value = parts[0]
     if isinstance(value, str):
-        return quote(value) if dart else c_string(value)
+        return quote(value)
     if value is None:
-        return "null" if dart else "NULL"
+        return "null"
     if isinstance(value, bool):
         return str(value).lower()
     return repr(value)

@@ -53,7 +53,7 @@ def generate(entry, *, includes=(), asset_name="htgc.assets"):
     )
     source += "\nfinal htgcHandlers = <String, void Function(String, HtgcUi)>{\n"
     for index, handler in enumerate(site.handlers):
-        expression = emit_handler(handler, dart=True, text_parameter="text")
+        expression = emit_handler(handler, text_parameter="text")
         source += f"  '{index}': (text, htgcPage) => {expression},\n"
     source += "};\n"
     source += f"const htgcAssetDirectory = {quote(asset_name)};\n"

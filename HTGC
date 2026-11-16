@@ -7,52 +7,36 @@ from shutil import copyfile
 import sys
 
 import backend_dart
-import backend_gtk
-import backend_iup
 from frontend import CompileError, load_program
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Hyper Text GUI Compiler — compile HTML/CSS to C (IUP/GTK 4) or Dart (Flutter).",
+        description="Hyper Text GUI Compiler — compile HTML/CSS/JavaScript to Dart (Flutter).",
         allow_abbrev=False,
     )
-    target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument("-Clang", dest="target", action="store_const", const="c", help="generate C11 for IUP")
-    target.add_argument("-Gtk", dest="target", action="store_const", const="gtk.c", help="generate C11 for GTK 4")
-    target.add_argument("-Dart", dest="target", action="store_const", const="dart", help="generate Dart for Flutter")
+    parser.add_argument("-Dart", action="store_true", help="generate Dart for Flutter (the default)")
     parser.add_argument("html", type=Path, help="HTML entry point")
-    parser.add_argument("-o", "--output", type=Path, help="output file (default: input stem with target extension)")
-    parser.add_argument("--strict", action="store_true", help="treat backend warnings as errors")
+    parser.add_argument("-o", "--output", type=Path, help="output file (default: input stem with .dart extension)")
+    parser.add_argument("--strict", action="store_true", help="compatibility option; unsupported syntax always fails")
     parser.add_argument("--include", action="append", type=Path, default=[],
-                        help="include an additional HTML page or image relative to the entry directory (GTK 4 and Dart)")
+                        help="include an additional HTML page or image relative to the entry directory")
     args = parser.parse_args()
-    if args.include and args.target == "c":
-        parser.error("--include requires -Gtk or -Dart")
     try:
-        output = args.output or args.html.with_suffix("." + args.target)
+        output = args.output or args.html.with_suffix(".dart")
         program = None
         if not args.include:
             try:
                 program = load_program(args.html)
             except CompileError:
-                if args.target == "c":
-                    raise
+                pass
         if program is None:
-            if args.target == "dart":
-                from native_dart import generate
-            else:
-                from native_c import generate
+            from native_dart import generate
 
             asset_name = output.name + ".assets"
             code, site = generate(args.html, includes=args.include, asset_name=asset_name)
             if output.resolve() in site.inputs:
                 raise CompileError(f"{output}: 入力ファイルには上書きできません")
-            if args.target == "gtk.c":
-                message = "GTKの拡張変換では一部のCSS描画とCanvasが未対応です"
-                if args.strict:
-                    raise CompileError(message)
-                print(f"HTGC: warning: {message}", file=sys.stderr)
             asset_directory = output.parent.resolve() / asset_name
             if site.assets and asset_directory.is_symlink():
                 raise CompileError(f"{asset_directory}: 画像の出力先にシンボリックリンクは使えません")
@@ -73,16 +57,7 @@ def main():
             return
         if output.resolve() in program.inputs:
             raise CompileError(f"{output}: 入力ファイルには上書きできません")
-        if args.target == "c":
-            code, warnings = backend_iup.generate(program)
-        elif args.target == "gtk.c":
-            code, warnings = backend_gtk.generate(program)
-        else:
-            code, warnings = backend_dart.generate(program), []
-        if warnings and args.strict:
-            raise CompileError("\n".join(warnings))
-        for warning in warnings:
-            print(f"HTGC: warning: {warning}", file=sys.stderr)
+        code = backend_dart.generate(program)
         output.write_text(code, encoding="utf-8")
     except (OSError, ValueError, RecursionError) as error:
         parser.exit(1, f"HTGC: {error}\n")
