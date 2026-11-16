@@ -1,0 +1,61 @@
+let checks = 0;
+function eq(a, b) { checks++; if (!Object.is(a, b)) throw new Error('check ' + checks + ': ' + String(a) + ' != ' + String(b)); }
+function error(fn, name) { let caught = ''; try { fn(); } catch(e) { caught = e.name; } eq(caught, name); }
+const key = {}, map = new Map([[key, null], [NaN, 4], [-0, 5]]);
+eq(map.size, 3); eq(map.get(key), null); eq(map.get({}), undefined); eq(map.get(NaN), 4); eq(map.get(0), 5);
+eq(map.set(key, 9), map); eq(map.size, 3); eq(map.get(key), 9);
+eq(Object.getPrototypeOf(map), Map.prototype);
+eq(Object.keys(map).length, 0); eq(map.set, Map.prototype.set);
+error(() => Map(), 'TypeError'); error(() => Map.prototype.get.call({}, key), 'TypeError');
+eq(Object.prototype.toString.call(map), '[object Map]');
+const ordered = new Map([[1, 'a'], [2, 'b'], [3, 'c']]);
+const iterator = ordered.keys(); eq(iterator[Symbol.iterator](), iterator);
+eq(iterator.next().value, 1); ordered.delete(2); ordered.set(4, 'd');
+eq(iterator.next().value, 3); eq(iterator.next().value, 4);
+eq(iterator.next().done, true); ordered.set(5, 'e'); eq(iterator.next().done, true);
+const live = new Map([[1, 'a'], [2, 'b']]);
+const seen = [];
+live.forEach((v, k, owner) => { eq(owner, live); seen.push(k); if (k === 1) { live.delete(2); live.set(3, 'c'); } });
+eq(seen.join(','), '1,3');
+const cleared = live.keys(); eq(cleared.next().value, 1); live.clear(); live.set(7, 'g'); eq(cleared.next().value, 7);
+const set = new Set([1, 2, 2, NaN, NaN, -0]);
+eq(set.size, 4); eq(set.has(NaN), true); eq(set.keys, set.values);
+eq([...new Set('A😀A')].join(','), 'A,😀');
+eq([...new Set([1, 2]).union(new Set([2, 3]))].join(','), '1,2,3');
+eq([...new Set([1, 2, 3]).intersection(new Set([3, 1]))].join(','), '3,1');
+eq([...new Set([1, 2, 3]).difference(new Set([2]))].join(','), '1,3');
+eq([...new Set([1, 2]).symmetricDifference(new Set([2, 3]))].join(','), '1,3');
+eq(new Set([1]).isSubsetOf(new Set([1, 2])), true);
+eq(new Set([1, 2]).isSupersetOf(new Set([1])), true);
+eq(new Set([1]).isDisjointFrom(new Set([2])), true);
+eq(new Set([1]).isDisjointFrom(new Set([1])), false);
+const groups = Map.groupBy([1, 2, 3], x => x % 2);
+eq(groups.get(1).join(','), '1,3');
+const weak = new WeakMap([[key, null]]); eq(weak.has(key), true); eq(weak.get(key), null);
+eq(weak.set(key, 5), weak); eq(weak.get(key), 5); eq(weak.delete(key), true); eq(weak.has(key), false);
+const symbol = Symbol(); eq(new WeakSet([symbol]).has(symbol), true);
+error(() => new WeakSet([Symbol.for('registered')]), 'TypeError');
+let closed = 0;
+const values = { [Symbol.iterator]() { return {next() { return {value: 3, done: false}; }, return() { closed++; return {}; }}; }};
+for (const value of values) { eq(value, 3); break; } eq(closed, 1);
+error(() => new Map(values), 'TypeError'); eq(closed, 2);
+error(() => Array.from(values, () => { throw new Error('mapper'); }), 'Error'); eq(closed, 3);
+function first() { for (const value of values) return value; }
+eq(first(), 3); eq(closed, 4);
+const failure = {[Symbol.iterator]() {return { next() {return {done: false, value: 1}; }, return() {throw 'cleanup'; }}; }};
+let caught;
+try {for (const x of failure) {throw 'original';}} catch(e) {caught = e;}
+eq(caught, 'original');
+try {for (const x of failure) {break;}} catch(e) {caught = e;}
+eq(caught, 'cleanup');
+const mutable = new Set([1, 2]);
+const other = {size: 10, has(key) {mutable.clear(); return key === 2;}, keys() {return [][Symbol.iterator]();}};
+eq([...mutable.difference(other)].join(','), '1');
+const unionSource = new Set([1]);
+const mutateOnIterator = {size: 1, has() {return false;}, keys() {unionSource.add(2); return [3][Symbol.iterator]();}};
+eq([...unionSource.union(mutateOnIterator)].join(','), '1,2,3');
+eq(Object.keys(Map.prototype).length, 0); eq(Object.keys(WeakMap.prototype).length, 0);
+eq(WeakMap.prototype.get.call(new WeakMap([[key, 12]]), key), 12);
+error(() => WeakMap.prototype.get.call(new WeakSet(), key), 'TypeError');
+console.log('collections: ' + checks + ' checks');
+$DONE();

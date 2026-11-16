@@ -6,10 +6,13 @@ import re
 from native_frontend import load_site
 from native_events import emit_handler
 from js_dart import quote
+from js_modules import DartModules
 
 
 def generate(entry, *, includes=(), asset_name="htgc.assets"):
-    site = load_site(entry, includes=includes)
+    modules = DartModules()
+    site = load_site(entry, includes=includes, cascade_layers=True,
+                     module_compiler=modules)
     imports = []
     bodies = []
     for name in ["js_core", "dom", "css", "flutter"]:
@@ -37,6 +40,7 @@ def generate(entry, *, includes=(), asset_name="htgc.assets"):
         + "".join(bodies)
     )
     source += "\n" + "".join(site.scripts)
+    source += modules.emit()
     source += (
         "\nfinal Map<String,dynamic> htgcSiteData = jsonDecode("
         + quote(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
@@ -49,7 +53,7 @@ def generate(entry, *, includes=(), asset_name="htgc.assets"):
     )
     source += "\nfinal htgcHandlers = <String, void Function(String, HtgcUi)>{\n"
     for index, handler in enumerate(site.handlers):
-        expression = emit_handler(handler, dart=True, text_parameter="text")
+        expression = emit_handler(handler, text_parameter="text")
         source += f"  '{index}': (text, htgcPage) => {expression},\n"
     source += "};\n"
     source += f"const htgcAssetDirectory = {quote(asset_name)};\n"

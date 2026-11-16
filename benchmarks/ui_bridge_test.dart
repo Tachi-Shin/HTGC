@@ -6,6 +6,115 @@ import 'package:htgc_portfolio/ui_bridge.dart';
 import 'package:htgc_portfolio/htgc_handlers.dart' as handlers;
 
 void main() {
+  testWidgets('HTML disclosure and templates, author cascade and JavaScript', (
+    tester,
+  ) async {
+    final key = GlobalKey<NativeSiteState>();
+    await tester.pumpWidget(
+      NativeSiteApp(
+        key: key,
+        entry: htgcSiteData['entry'],
+        pages: Map<String, dynamic>.from(htgcSiteData['pages']),
+        assets: Set<String>.from(htgcSiteData['assets']),
+        assetDirectory: Directory('lib/$htgcAssetDirectory'),
+        scripts: htgcScripts,
+        storage: {},
+        pageHandlers: htgcHandlers,
+      ),
+    );
+    await tester.pumpAndSettle();
+    final state = key.currentState!;
+    final first = state.document.querySelector('#first')!;
+    final second = state.document.querySelector('#second')!;
+    final fallback = state.document.querySelector('#fallback')!;
+    final toggles = state.document.querySelector('#toggles')!;
+    final firstSummary = find.text('▸ 最初の項目', findRichText: true);
+    final firstBody = find.text('最初の本文', findRichText: true);
+    final secondBody = find.text('次の本文', findRichText: true);
+
+    final rule = state.css.get(state.document.querySelector('#rule-wins')!);
+    expect(rule['color'], 'blue');
+    expect(rule['padding-left'], '9px');
+    expect(
+      state.css.get(state.document.querySelector('#inline-wins')!)['color'],
+      'red',
+    );
+    expect(
+      state.document.querySelector('#exception')!.text,
+      '捕捉・終了・束縛なし・既定・次へ',
+    );
+    final layer = state.css.get(state.document.querySelector('#layer-test')!);
+    expect(layer['color'], 'blue');
+    expect(layer['padding-left'], '2px');
+    expect(layer['padding-right'], '10px');
+    for (final id in [
+      'layer-rollback',
+      'important-rollback',
+      'layer-fallback',
+    ]) {
+      expect(
+        state.css.get(state.document.getElementById(id)!)['color'],
+        'green',
+        reason: id,
+      );
+    }
+    expect(
+      state.css.get(state.document.getElementById('inline-rollback')!)['color'],
+      'blue',
+    );
+    final moduleLog = state.document.querySelector('#module-log')!;
+    expect(moduleLog.text, '1:2:2:2');
+    expect(moduleLog.attributes['data-runs'], '1');
+    expect(find.text('モジュール準備完了', findRichText: true), findsOneWidget);
+    await tester.ensureVisible(find.text('非同期保存', findRichText: true));
+    await tester.tap(find.text('非同期保存', findRichText: true));
+    await tester.pumpAndSettle();
+    expect(find.text('日本語・非同期保存', findRichText: true), findsOneWidget);
+    final host = state.document.querySelector('#template-result')!;
+    expect(host.attributes['data-inert'], 'true');
+    expect(host.attributes['data-nested'], '入れ子');
+    expect(host.querySelector('#template-content')!.text, 'テンプレートの本文');
+    expect(state.document.querySelectorAll('#template-content'), hasLength(1));
+
+    expect(firstBody, findsNothing);
+    expect(secondBody, findsNothing);
+    await tester.ensureVisible(firstSummary);
+    await tester.tap(firstSummary);
+    await tester.pumpAndSettle();
+    expect(first.attributes.containsKey('open'), isTrue);
+    expect(firstBody, findsOneWidget);
+    expect(toggles.text, 'closed:open;');
+
+    state.runtime.wrap(first.children.last).dispatch('click');
+    expect(first.attributes.containsKey('open'), isTrue);
+    state.runtime.wrap(second).set('open', true);
+    await tester.pumpAndSettle();
+    expect(firstBody, findsNothing);
+    expect(secondBody, findsOneWidget);
+    expect(state.runtime.wrap(second).get('open'), isTrue);
+    expect(toggles.text, 'closed:open;open:closed;');
+
+    state.runtime.wrap(first).set('open', true);
+    state.runtime.wrap(first).set('open', false);
+    expect(toggles.text, 'closed:open;open:closed;');
+    await tester.pumpAndSettle();
+    expect(toggles.text, 'closed:open;open:closed;closed:closed;');
+
+    final defaultSummary = find.text('Details');
+    await tester.ensureVisible(defaultSummary);
+    await tester.tap(defaultSummary);
+    await tester.pumpAndSettle();
+    expect(fallback.attributes.containsKey('open'), isTrue);
+    expect(find.text('既定の見出しの本文', findRichText: true), findsOneWidget);
+
+    state.runtime.wrap(second).set('open', true);
+    state.runtime.wrap(fallback).set('name', 'options');
+    await tester.pumpAndSettle();
+    expect(fallback.attributes.containsKey('open'), isFalse);
+    expect(second.attributes.containsKey('open'), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('HTML events update the rendered Flutter page', (tester) async {
     final key = GlobalKey<NativeSiteState>();
     await tester.pumpWidget(

@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><title>埋め込み文書</title>
+<style>p { color: green; } iframe, object, embed { display: block; } </style>
+</head><body>
+<p id="status">親文書</p>
+<iframe id="child" src="nested/child.html" width="320" height="180"></iframe>
+<iframe id="inline" width="240" height="120" src="missing.html" srcdoc="&lt;style&gt;p { color: red; }&lt;/style&gt;&lt;p id='message'&gt;srcdocの本文&lt;/p&gt;&lt;a href='nested/next.html'&gt;srcdocから移動&lt;/a&gt;"></iframe>
+<object id="object" data="nested/next.html" width="210" height="100"><p>代替内容</p></object>
+<embed id="embed" src="nested/next.html" width="200" height="100">
+<object><p id="fallback">オブジェクト代替内容</p></object>
+<iframe id="loop" src="index.html" width="180" height="90"></iframe>
+<script>
+const child = document.getElementById('child');
+child.addEventListener('load', () => {
+  const doc = child.contentDocument;
+  const message = doc.getElementById('message');
+  if (message) message.textContent = message.textContent + '・親から更新';
+  document.getElementById('status').textContent = child.contentWindow.document === doc ? '文書接続OK' : '文書接続失敗';
+});
+</script>
+</body></html>

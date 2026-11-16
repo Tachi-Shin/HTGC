@@ -93,6 +93,10 @@ class NativeSiteApp extends StatefulWidget {
   final void Function(Map<String, String>)? saveStorage;
   final void Function(Uri)? externalLink;
   final bool? reducedMotion;
+  final Size? viewport;
+  final List<String> ancestors;
+  final void Function(JDomRuntime)? onDocumentReady;
+  final void Function(JDomRuntime)? onDocumentDisposed;
   final Map<String, void Function(String)> handlers;
   final Map<String, void Function(String, HtgcUi)> pageHandlers;
   const NativeSiteApp(
@@ -106,6 +110,10 @@ class NativeSiteApp extends StatefulWidget {
       this.saveStorage,
       this.externalLink,
       this.reducedMotion,
+      this.viewport,
+      this.ancestors = const [],
+      this.onDocumentReady,
+      this.onDocumentDisposed,
       this.handlers = const {},
       this.pageHandlers = const {}});
   @override
@@ -130,6 +138,7 @@ class NativeSiteState extends State<NativeSiteApp>
   final elapsed = ValueNotifier<double>(0);
   bool loading = false, queued = false, hasAnimation = false;
   dom.Document get document => runtime.document;
+  String get basePath => widget.pages[current]['base'] as String? ?? current;
 
   bool isTextField(dom.Element el) =>
       el.localName == 'textarea' ||
@@ -162,7 +171,7 @@ class NativeSiteState extends State<NativeSiteApp>
   }
 
   bool isHidden(dom.Element el, Map<String, String> style) =>
-      el.attributes.containsKey('hidden') ||
+      el.localName == 'template' || el.attributes.containsKey('hidden') ||
       (el.localName == 'dialog' &&
           (identical(el, modalElement) || !el.attributes.containsKey('open'))) ||
       style['display'] == 'none';
@@ -256,11 +265,19 @@ class NativeSiteState extends State<NativeSiteApp>
     runtime.dark = platform.platformBrightness == Brightness.dark;
     runtime.reducedMotion =
         widget.reducedMotion ?? platform.accessibilityFeatures.disableAnimations;
+    if (widget.viewport != null) {
+      runtime.viewportWidth = widget.viewport!.width;
+      runtime.viewportHeight = widget.viewport!.height;
+    }
     final root = runtime.newScope();
     for (final int script in data['scripts']) {
       widget.scripts[script](JScope(root));
     }
     loading = false;
+    final page = runtime;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(page, runtime)) widget.onDocumentReady?.call(page);
+    });
   }
 
   void queue() {
@@ -277,7 +294,7 @@ class NativeSiteState extends State<NativeSiteApp>
   }
 
   void navigate(String href) {
-    final uri = Uri(scheme: 'https', host: 'htgc.invalid', path: '/$current')
+    final uri = Uri(scheme: 'https', host: 'htgc.invalid', path: '/$basePath')
         .resolve(href);
     if (uri.host != 'htgc.invalid' || !['http', 'https'].contains(uri.scheme)) {
       if (!['http', 'https', 'mailto', 'tel'].contains(uri.scheme)) return;
@@ -290,6 +307,7 @@ class NativeSiteState extends State<NativeSiteApp>
     }
     var path = Uri.decodeComponent(uri.path).replaceFirst(RegExp(r'^/'), '');
     if (path.isEmpty || path.endsWith('/')) path += 'index.html';
+    if (widget.ancestors.contains(path)) return;
     if (path != current) {
       history.add(current);
       setState(() => load(path));
@@ -310,6 +328,7 @@ class NativeSiteState extends State<NativeSiteApp>
 
   @override
   void dispose() {
+    widget.onDocumentDisposed?.call(runtime);
     ticker.dispose();
     elapsed.dispose();
     modalRevision.dispose();
@@ -355,7 +374,8 @@ class NativeSiteState extends State<NativeSiteApp>
         title: widget.pages[current]['title'],
         theme: ThemeData(useMaterial3: false),
         home: Builder(builder: (context) {
-          final media = MediaQuery.of(context);
+          final inheritedMedia = MediaQuery.of(context);
+          final media = widget.viewport == null ? inheritedMedia : inheritedMedia.copyWith(size: widget.viewport);
           runtime.viewportWidth = media.size.width;
           runtime.viewportHeight = media.size.height;
           runtime.dark = media.platformBrightness == Brightness.dark;
@@ -500,7 +520,8 @@ class NativeSiteState extends State<NativeSiteApp>
     if (isHidden(el, s) || s.containsKey('clip'))
       return const TextSpan(text: '');
     if (el.localName == 'br') return const TextSpan(text: '\n');
-    if (['a', 'button', 'img', 'input', 'textarea', 'meter'].contains(el.localName) ||
+    if (['a', 'button', 'details', 'summary', 'img', 'input', 'textarea', 'meter', 'iframe', 'object', 'embed']
+            .contains(el.localName) ||
         s['display'] != 'inline')
       return WidgetSpan(child: buildNode(el, shrink: true));
     return TextSpan(
@@ -519,7 +540,7 @@ class NativeSiteState extends State<NativeSiteApp>
           children: [for (final child in children) span(child, s)]));
   String assetPath(String reference) {
     if (reference.startsWith('/')) return reference.substring(1);
-    return Uri(path: current).resolve(reference).path;
+    return Uri(path: basePath).resolve(reference).path;
   }
 
   Widget imageWidget(String reference, double? width, double? height,
@@ -546,6 +567,55 @@ class NativeSiteState extends State<NativeSiteApp>
         fit: fit,
         cacheHeight: cacheHeight,
         filterQuality: FilterQuality.medium);
+  }
+
+  Widget embeddedDocument(dom.Element el, double width, double height) {
+    final parent = runtime;
+    var target = el.attributes['data-htgc-document'] ?? '#htgc-blank';
+    final originalPage = widget.pages[target];
+    final originalSrcdoc = target.contains('#htgc-srcdoc-') && originalPage != null
+        ? originalPage['srcdoc'] : null;
+    if (el.attributes['srcdoc'] != originalSrcdoc) {
+      throw UnsupportedError('Changing srcdoc at runtime requires recompilation');
+    }
+    if (el.attributes.containsKey('sandbox') || el.attributes.containsKey('credentialless')) {
+      throw UnsupportedError('Embedded document sandbox/credentialless is not implemented');
+    }
+    final reference = el.attributes[el.localName == 'object' ? 'data' : 'src'] ?? '';
+    if (!el.attributes.containsKey('srcdoc') && reference != (el.attributes['data-htgc-source'] ?? '')) {
+      target = reference.isEmpty || reference == 'about:blank'
+          ? '#htgc-blank' : assetPath(reference);
+    }
+    if (target == current || widget.ancestors.contains(target)) target = '#htgc-blank';
+    if (!widget.pages.containsKey(target)) throw StateError('Embedded document is not compiled: $target');
+    return SizedBox(
+      width: width,
+      height: height,
+      child: ClipRect(child: NativeSiteApp(
+        key: ValueKey((el, target)),
+        entry: target,
+        pages: widget.pages,
+        assets: widget.assets,
+        assetDirectory: widget.assetDirectory,
+        scripts: widget.scripts,
+        storage: widget.storage,
+        saveStorage: widget.saveStorage,
+        externalLink: widget.externalLink,
+        reducedMotion: widget.reducedMotion,
+        handlers: widget.handlers,
+        pageHandlers: widget.pageHandlers,
+        viewport: Size(width, height),
+        ancestors: [...widget.ancestors, current],
+        onDocumentReady: (child) {
+          if (!mounted || !identical(parent, runtime)) return;
+          parent.embeddedDocuments[el] = child;
+          parent.wrap(el).dispatch('load', data: {'bubbles': false, 'cancelable': false});
+        },
+        onDocumentDisposed: (child) {
+          if (identical(parent.embeddedDocuments[el], child)) parent.embeddedDocuments.remove(el);
+        },
+      )),
+    );
   }
 
   Widget buildNode(dom.Element el,
@@ -579,13 +649,17 @@ class NativeSiteState extends State<NativeSiteApp>
     final outerWidth = math.max(0.0, available - margin.horizontal);
     final maxWidth = css.length(s['max-width'], basis: outerWidth, font: f) ??
         double.infinity;
-    final requestedWidth = css.length(s['width'], basis: outerWidth, font: f);
+    final embedded = el.attributes.containsKey('data-htgc-document') ||
+        el.attributes.containsKey('data-htgc-image') || el.localName == 'iframe';
+    final requestedWidth = css.length(s['width'], basis: outerWidth, font: f) ??
+        (embedded ? double.tryParse(el.attributes['width'] ?? '') ?? 300 : null);
     final block = !shrink &&
         !['inline', 'inline-block', 'inline-flex'].contains(s['display']);
     final width = requestedWidth == null && !block
         ? null
         : math.min(requestedWidth ?? outerWidth, maxWidth);
-    final height = css.length(s['height'], basis: heightBasis, font: f);
+    final height = css.length(s['height'], basis: heightBasis, font: f) ??
+        (embedded ? double.tryParse(el.attributes['height'] ?? '') ?? 150 : null);
     final innerWidth = math.max(
         0.0, math.min(width ?? outerWidth, maxWidth) - padding.horizontal);
     final children = el.nodes
@@ -594,8 +668,21 @@ class NativeSiteState extends State<NativeSiteApp>
         .toList();
     final flow = <dom.Node>[];
     final absolute = <dom.Element>[];
+    final details = pseudo.isEmpty && el.localName == 'details';
+    final summary = details ? runtime.firstSummary(el) : null;
+    final open = details && el.attributes.containsKey('open');
+    final parent = el.parent;
+    final isSummary = pseudo.isEmpty &&
+        parent != null &&
+        parent.localName == 'details' &&
+        identical(runtime.firstSummary(parent), el);
     if (pseudo.isEmpty) {
+      if (isSummary) {
+        flow.add(dom.Text(parent.attributes.containsKey('open') ? '▾ ' : '▸ '));
+      }
+      if (summary != null) flow.add(summary);
       for (final child in children) {
+        if (identical(child, summary) || (details && !open)) continue;
         if (child is dom.Element && css.get(child)['position'] == 'absolute')
           absolute.add(child);
         else
@@ -615,6 +702,13 @@ class NativeSiteState extends State<NativeSiteApp>
     } else if (el.localName == 'img') {
       content = imageWidget(el.attributes['src'] ?? '', width, height,
           fit: s['object-fit'] == 'cover' ? BoxFit.cover : BoxFit.contain);
+    } else if (el.attributes.containsKey('data-htgc-image')) {
+      content = imageWidget(el.attributes['data-htgc-image']!, width, height,
+          fit: s['object-fit'] == 'cover' ? BoxFit.cover : BoxFit.contain);
+    } else if (el.attributes.containsKey('data-htgc-document') || el.localName == 'iframe') {
+      content = LayoutBuilder(builder: (context, constraints) => embeddedDocument(el,
+          constraints.maxWidth.isFinite ? constraints.maxWidth : innerWidth,
+          height ?? 150));
     } else if (el.localName == 'canvas') {
       content = CustomPaint(
           size: Size(width ?? 300, height ?? 150),
@@ -765,6 +859,22 @@ class NativeSiteState extends State<NativeSiteApp>
               items[i]
             ]
           ]);
+    }
+    if (details && summary == null) {
+      content = Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Semantics(
+            expanded: open,
+            child: TextButton(
+              onPressed: () => runtime.setDetailsOpen(el, !open),
+              child: const Text('Details'),
+            ),
+          ),
+          if (open) content,
+        ],
+      );
     }
     if (s['display'] == 'grid' && s['place-items'] == 'center')
       content = Center(child: content);
@@ -918,6 +1028,7 @@ class NativeSiteState extends State<NativeSiteApp>
     if (pseudo.isNotEmpty) return content;
     final click = el.localName == 'a' ||
         el.localName == 'button' ||
+        isSummary ||
         runtime.wrap(el).events.containsKey('click');
     if (click) {
       final enabled = el.localName != 'button' ||
@@ -943,7 +1054,8 @@ class NativeSiteState extends State<NativeSiteApp>
         },
         child: Semantics(
           label: el.attributes['aria-label'],
-          button: el.localName == 'button',
+          button: el.localName == 'button' || isSummary,
+          expanded: isSummary ? parent.attributes.containsKey('open') : null,
           enabled: el.localName == 'button' ? enabled : null,
           link: el.localName == 'a',
           child: GestureDetector(

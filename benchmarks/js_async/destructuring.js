@@ -1,0 +1,42 @@
+let checks = 0;
+function eq(a, b) {checks++; if (!Object.is(a, b)) throw new Error('check ' + checks + ': ' + String(a) + ' != ' + String(b));}
+const [first, , third, ...tail] = new Set([1, 2, 3, 4, 5]);
+eq(first, 1); eq(third, 3); eq(tail.join(','), '4,5');
+const [letter, emoji] = 'A😀'; eq(letter, 'A'); eq(emoji, '😀');
+const [empty = 'default', nullable = 'other'] = [undefined, null]; eq(empty, 'default'); eq(nullable, null);
+const symbol = Symbol(), source = {[symbol]: 3, a: 1, b: 2};
+const {[symbol]: sym, a, ...rest} = source;
+eq(sym, 3); eq(a, 1); eq(rest.b, 2); eq(Object.hasOwn(rest, symbol), false);
+let getters = 0;
+const {x, ...left} = {get x() {getters++; return 1;}, y: 2};
+eq(getters, 1); eq(left.y, 2);
+const {missing = 4} = {}; eq(missing, 4);
+let closed = 0;
+const iterable = {[Symbol.iterator]() {return {next() {return {done: false, value: undefined};}, return() {closed++; return {};}};}};
+const [fallback = 7] = iterable; eq(fallback, 7); eq(closed, 1);
+function fail() {throw 'default';}
+try {const [value = fail()] = iterable;} catch (error) {eq(error, 'default');}
+eq(closed, 2);
+const [] = iterable; eq(closed, 3);
+const holes = [, undefined, 3]; eq(holes.length, 3); eq(Object.hasOwn(holes, '0'), false); eq(Object.hasOwn(holes, '1'), true);
+eq([...holes].join(','), ',,3'); eq(JSON.stringify(holes), '[null,null,3]');
+const emptyArray = new Array(2); eq(Object.keys(emptyArray).length, 0); eq([...emptyArray].length, 2);
+const from = Object.assign({}, {get a() {delete this.b; return 1;}, b: 2});
+eq(Object.keys(from).join(','), 'a');
+const values = Object.values({get a() {delete this.b; return 1;}, b: 2}); eq(values.join(','), '1');
+const copied = {...{get a() {delete this.b; return 1;}, b: 2}}; eq(Object.keys(copied).join(','), 'a');
+const groups = Object.groupBy([1, 2, 3], n => n % 2); eq(Object.getPrototypeOf(groups), null); eq(groups['1'].join(','), '1,3');
+eq(Reflect.apply((a, b) => a + b, null, {0: 4, 1: 5, length: 2}), 9);
+let arrayCalls = 0;
+const mapped = holes.map(value => {arrayCalls++; return value;});
+eq(arrayCalls, 2); eq(Object.hasOwn(mapped, '0'), false);
+eq(holes.includes(undefined), true); eq([NaN].includes(NaN), true); eq([NaN].indexOf(NaN), -1);
+eq(holes.indexOf(undefined), 1); eq(holes.includes(3, -1), true);
+const mutation = [1, 2];
+eq(mutation.filter((v, i) => {mutation[i] = 8; mutation.push(9); return true;}).join(','), '1,2');
+const grown = []; grown.length = 3; eq(Object.keys(grown).length, 0); eq(grown.pop(), undefined);
+eq([1, 2].slice(1, 0).length, 0); eq([1, 2].slice(undefined).join(','), '1,2');
+const sorted = [3, , undefined, 1].sort();
+eq(sorted[0], 1); eq(sorted[1], 3); eq(Object.hasOwn(sorted, '2'), true); eq(Object.hasOwn(sorted, '3'), false);
+console.log('destructuring: ' + checks + ' checks');
+$DONE();
