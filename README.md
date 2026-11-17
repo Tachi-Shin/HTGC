@@ -426,3 +426,5 @@ $project_root = (Get-Location).Path
 ```
 
 配布するファイルは、macOS・Linuxでは `dist/HTGC`、Windowsでは `dist/HTGC.exe` です。上記では描画ランタイムとAcorn・regexpu-coreを含むJavaScript変換用ファイルも同梱します。JavaScriptを含む入力の変換時には、実行するPCのPATHにNode.jsが必要です。Node.jsは生成アプリの実行時には使いません。生成されたDartをアプリとしてビルドするには、Flutter SDKと対象OSのビルド環境が必要です。
+
+参考実装と利用条件は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。Acorn（MIT）の式解析構造を参考にした実装のライセンス全文は、生成Dartにも保持します。

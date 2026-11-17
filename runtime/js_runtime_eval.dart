@@ -1,5 +1,34 @@
 part of 'js_core.dart';
 
+/*
+Expression parsing follows the assignment/conditional precedence structure in
+Acorn (parseMaybeAssign / parseMaybeConditional / parseExprOp). Reimplemented
+in Dart with HTGC runtime references and deferred evaluation.
+Source: https://github.com/acornjs/acorn (installed version below in notices).
+
+MIT License
+
+Copyright (C) 2012-2022 by various contributors (see AUTHORS)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+
 // A deliberately small runtime parser. Parse the complete input before running
 // any expression so unsupported syntax cannot cause partial side effects.
 typedef _EvalRead = dynamic Function();
@@ -20,7 +49,7 @@ class _RuntimeEvalParser {
   int at = 0;
   _RuntimeEvalParser(this.source, this.scope, this.thisValue) {
     final token = RegExp(
-      r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[()\[\].,+\-*/%<>=!~;]''',
+      r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[()\[\].,:?&|^+\-*/%<>=!~;]''',
     );
     var pos = 0;
     while (pos < source.length) {
@@ -50,23 +79,44 @@ class _RuntimeEvalParser {
     '??': 1,
     '||': 1,
     '&&': 2,
-    '==': 3,
-    '!=': 3,
-    '===': 3,
-    '!==': 3,
-    '<': 4,
-    '>': 4,
-    '<=': 4,
-    '>=': 4,
-    '<<': 5,
-    '>>': 5,
-    '>>>': 5,
-    '+': 6,
-    '-': 6,
-    '*': 7,
-    '/': 7,
-    '%': 7,
-    '**': 8,
+    '|': 3,
+    '^': 4,
+    '&': 5,
+    '==': 6,
+    '!=': 6,
+    '===': 6,
+    '!==': 6,
+    '<': 7,
+    '>': 7,
+    '<=': 7,
+    '>=': 7,
+    '<<': 8,
+    '>>': 8,
+    '>>>': 8,
+    '+': 9,
+    '-': 9,
+    '*': 10,
+    '/': 10,
+    '%': 10,
+    '**': 11,
+  };
+  static const assignments = {
+    '=',
+    '+=',
+    '-=',
+    '*=',
+    '/=',
+    '%=',
+    '**=',
+    '<<=',
+    '>>=',
+    '>>>=',
+    '&=',
+    '|=',
+    '^=',
+    '&&=',
+    '||=',
+    '??=',
   };
   List<_EvalRead> parse() {
     final statements = <_EvalRead>[];
@@ -95,14 +145,24 @@ class _RuntimeEvalParser {
         return jBinary(op, value, right.read());
       });
     }
-    if (min == 0 && take('=')) {
-      final target = left.write;
-      final reference = left.reference;
-      if (target == null && reference == null) _unsupported();
+    if (min == 0 && take('?')) {
+      final condition = left;
+      final yes = expression();
+      expect(':');
+      final no = expression();
+      left = _EvalExpr(
+        () => jTruthy(condition.read()) ? yes.read() : no.read(),
+      );
+    }
+    if (min == 0 && assignments.contains(peek)) {
+      final operator = tokens[at++];
+      final target = left;
+      if (target.write == null && target.reference == null) _unsupported();
       final right = expression();
       left = _EvalExpr(() {
-        final ref = reference?.call();
-        return ref != null ? ref.write(right.read()) : target!(right.read());
+        final ref =
+            target.reference?.call() ?? JRef(target.read, target.write!);
+        return jAssign(ref, operator, right.read);
       });
     }
     return left;

@@ -28,6 +28,20 @@ function test() {
   source = 'base().add(rhs())';
   order = '';
   console.log(eval(source), order);
+  for (const expression of [
+    'value += 2', 'value *= 3', 'value -= 1', 'value /= 2',
+    'value %= 4', 'value **= 2', 'value <<= 1', 'value >>= 1',
+    'value >>>= 0', 'value |= 8', 'value &= 15', 'value ^= 2',
+    'value &&= 0', 'value ||= 4', 'value ??= 99',
+    'value > 0 ? value : missing', 'false ? missing : true ? 7 : 8',
+    '1 | 2 & 4 ^ 8',
+  ]) console.log(eval(expression));
+  source = 'base()[key()] += rhs()';
+  order = '';
+  console.log(eval(source), order);
+  source = 'obj.value ||= rhs()';
+  order = '';
+  console.log(eval(source), order);
   const nonString = {};
   console.log(eval(nonString) === nonString);
 }
