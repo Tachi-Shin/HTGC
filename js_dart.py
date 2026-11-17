@@ -27,13 +27,14 @@ def quote(value):
     return json.dumps(value, ensure_ascii=True).replace("$", r"\$")
 
 
-def parse(source, path):
+def parse(source, path, *, source_type="module"):
     node = shutil.which("node")
     parser = Path(__file__).parent / "javascript" / "parse.cjs"
     if not node:
         raise CompileError("JavaScriptの構文解析にはNode.jsが必要です")
     result = subprocess.run(
-        [node, str(parser)], input=source, encoding="utf-8", capture_output=True
+        [node, str(parser), *(["--script"] if source_type == "script" else [])],
+        input=source, encoding="utf-8", capture_output=True
     )
     if result.returncode:
         raise CompileError(
@@ -422,7 +423,7 @@ class Compiler:
         scope = self.scope
         expression = self.function(function)
         self.scope = parent
-        return f'() {{ final {scope} = {parent}.root; return {expression}; }}'
+        return f'() {{ final {scope} = {parent}.globalScope; return {expression}; }}'
 
     def expr(self, n):
         if n is None:
@@ -664,11 +665,15 @@ class Compiler:
                 names.append(node["id"]["name"])
         return [f"{self.scope}.reserve({quote(name)});" for name in names]
 
-    def block_contents(self, nodes, *, hoist_vars=False):
+    def block_contents(self, nodes, *, hoist_vars=False, global_functions=False):
         def contents():
             # Function declarations are initialized before the surrounding statements.
             code = self.reserve_lexical(nodes)
-            code.extend(self.stmt(n) for n in nodes if n["type"] == "FunctionDeclaration")
+            code.extend(
+                f'{self.scope}.declareFunction({quote(n["id"]["name"])}, {self.function(n)});'
+                if global_functions else self.stmt(n)
+                for n in nodes if n["type"] == "FunctionDeclaration"
+            )
             if hoist_vars:
                 code.extend(
                     f"{self.scope}.declareVar({quote(name)});"
@@ -1079,8 +1084,9 @@ class Compiler:
 
     def compile(self, ast, name):
         self.script_name = name
+        self.receiver = 'scope.scriptThis'
         self.collect_constructor_aliases(ast)
-        body = self.block_contents(ast["body"], hoist_vars=True)
+        body = self.block_contents(ast["body"], hoist_vars=True, global_functions=True)
         return (
             f'// JavaScript source: {self.path.replace(chr(10)," ")}\nvoid {name}(JScope scope) {{\n'
             + self.temp_declarations() + body
@@ -1088,5 +1094,5 @@ class Compiler:
         )
 
 
-def compile_script(source, path, name="htgcScript"):
-    return Compiler(path).compile(parse(source, path), name)
+def compile_script(source, path, name="htgcScript", *, source_type="module"):
+    return Compiler(path).compile(parse(source, path, source_type=source_type), name)

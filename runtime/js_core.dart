@@ -18,6 +18,7 @@ part 'js_byte_encoding.dart';
 part 'js_iteration_helpers.dart';
 part 'js_iterator_zip.dart';
 part 'js_disposal.dart';
+part 'js_weakrefs.dart';
 part 'js_normalization.dart';
 part 'js_unicode_data.dart';
 
@@ -388,10 +389,12 @@ dynamic jDefault(dynamic value, dynamic Function() fallback) =>
 
 class JScope {
   final JScope? parent;
+  final bool isGlobalScript;
   final Map<String, dynamic> _values = {};
   final Set<String> _constants = {};
   final Map<String, dynamic Function()> _imports = {};
   JModuleGraph? _modules;
+  JObject? _globalObject;
   final _templates = <String, JTemplateArray>{};
   JTemplateArray template(
     String site,
@@ -400,13 +403,54 @@ class JScope {
   ) =>
       parent?.template(site, cooked, raw) ??
       _templates.putIfAbsent(site, () => JTemplateArray(cooked, raw: raw));
-  JScope([this.parent]);
+  JScope([this.parent]) : isGlobalScript = false;
+  JScope.script(this.parent) : isGlobalScript = true;
   JScope get root => parent?.root ?? this;
+  JScope get globalScope => isGlobalScript ? this : (parent?.globalScope ?? this);
+  dynamic get scriptThis => isGlobalScript ? root._globalObject : jUndefined;
   JModuleGraph modules(Map<String, JModuleDefinition> definitions) =>
-      parent?.modules(definitions) ??
-      (_modules ??= JModuleGraph(this, definitions));
+      isGlobalScript || parent == null
+          ? (_modules ??= JModuleGraph(this, definitions))
+          : parent!.modules(definitions);
+
+  void attachGlobal(JObject object) {
+    if (parent != null || _globalObject != null) {
+      throw StateError('Global object is already attached or scope is nested');
+    }
+    _globalObject = object;
+    for (final entry in _values.entries) {
+      defineGlobal(entry.key, entry.value);
+    }
+    _values.clear();
+    defineGlobal('undefined', jUndefined, writable: false, configurable: false);
+    defineGlobal('NaN', double.nan, writable: false, configurable: false);
+    defineGlobal('Infinity', double.infinity, writable: false, configurable: false);
+    defineGlobal('globalThis', object);
+  }
+
+  void defineGlobal(String name, dynamic value, {bool writable = true, bool configurable = true, bool enumerable = false}) {
+    final object = _globalObject;
+    if (parent != null || object == null) {
+      throw StateError('A global object has not been attached');
+    }
+    if (!jDefineProperty(object, name, JObject({
+      'value': value, 'writable': writable, 'enumerable': enumerable,
+      'configurable': configurable,
+    }))) {
+      throw JThrown(JError('TypeError', 'Cannot define global property: $name'));
+    }
+  }
 
   void reserve(String name) {
+    if (_values.containsKey(name) || _imports.containsKey(name)) {
+      throw JThrown(JError('SyntaxError', 'Identifier already declared: $name'));
+    }
+    if (isGlobalScript) {
+      final descriptor = jDescriptor(root._globalObject, name);
+      if (descriptor is JObject && !jTruthy(jGet(descriptor, 'configurable'))) {
+        throw JThrown(JError('SyntaxError', 'Restricted global property: $name'));
+      }
+    }
     _values[name] = _jUninitialized;
   }
 
@@ -415,7 +459,33 @@ class JScope {
   }
 
   void declareVar(String name) {
+    if (isGlobalScript) {
+      if (_values.containsKey(name) || _imports.containsKey(name)) {
+        throw JThrown(JError('SyntaxError', 'Identifier already declared: $name'));
+      }
+      final object = root._globalObject!;
+      if (!jHasOwn(object, name)) {
+        root.defineGlobal(name, jUndefined, enumerable: true, configurable: false);
+      }
+      return;
+    }
     _values.putIfAbsent(name, () => jUndefined);
+  }
+
+  void declareFunction(String name, dynamic value) {
+    if (!isGlobalScript) {
+      define(name, value);
+      return;
+    }
+    if (_values.containsKey(name) || _imports.containsKey(name)) {
+      throw JThrown(JError('SyntaxError', 'Identifier already declared: $name'));
+    }
+    final object = root._globalObject!;
+    if (jHasOwn(object, name)) {
+      jSet(object, name, value);
+    } else {
+      root.defineGlobal(name, value, enumerable: true, configurable: false);
+    }
   }
 
   dynamic define(String name, dynamic value, {bool constant = false}) {
@@ -437,6 +507,8 @@ class JScope {
     final read = _imports[name];
     if (read != null) return read();
     if (parent != null) return parent!.get(name);
+    final global = _globalObject;
+    if (global != null && jHasProperty(global, name)) return jGet(global, name);
     if (name == 'undefined') return jUndefined;
     if (name == 'NaN') return double.nan;
     if (name == 'Infinity') return double.infinity;
@@ -454,6 +526,8 @@ class JScope {
   dynamic getForTypeof(String name) {
     if (_values.containsKey(name) || _imports.containsKey(name)) return get(name);
     if (parent != null) return parent!.getForTypeof(name);
+    final global = _globalObject;
+    if (global != null && jHasProperty(global, name)) return jGet(global, name);
     if (name == 'NaN') return double.nan;
     if (name == 'Infinity') return double.infinity;
     return jUndefined;
@@ -471,6 +545,8 @@ class JScope {
     if (_imports.containsKey(name))
       throw JThrown(JError('TypeError', 'Assignment to import: $name'));
     if (parent != null) return parent!.put(name, value);
+    final global = _globalObject;
+    if (global != null && jHasProperty(global, name)) return jSet(global, name, value);
     throw JThrown(
       JError('ReferenceError', 'Assignment to undeclared name: $name'),
     );
@@ -2651,7 +2727,7 @@ dynamic jBinary(String op, dynamic a, dynamic b) {
   throw StateError('Binary operator $op');
 }
 
-void installJSBuiltins(JScope scope) {
+void installJSBuiltins(JScope scope, {JObject? globalObject}) {
   installJSObjects(scope);
   installJSFunctionPrototype(scope);
   installJSProxies(scope);
@@ -2659,6 +2735,7 @@ void installJSBuiltins(JScope scope) {
   installJSAtomics(scope);
   installJSRegExp(scope);
   installJSCollections(scope);
+  installJSWeakReferences(scope);
   installJSIterators(scope);
   scope.define('DisposableStack', jDisposableStack);
   scope.define('AsyncDisposableStack', jAsyncDisposableStack);
@@ -2851,6 +2928,7 @@ void installJSBuiltins(JScope scope) {
       }),
     }),
   );
+  scope.attachGlobal(globalObject ?? JObject());
 }
 
 final _jBuiltinIteratorPrototypes = <String, JObject>{};

@@ -65,7 +65,7 @@ class DartModules:
         key = owner.relative_to(root).as_posix()
         compiler = Compiler(key)
         compiler.module_owner = key
-        ast = parse(source, key)
+        ast = parse(source, key, source_type="script")
         self.collect_dynamic(ast, owner, root, read, local)
         return compiler.compile(ast, name)
 

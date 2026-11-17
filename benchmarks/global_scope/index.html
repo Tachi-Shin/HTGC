@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ja">
+<body>
+  <p id="status">待機中</p>
+  <script>
+    var shared = 2;
+    let localLexical = 5;
+    function readValue() { return shared + localLexical; }
+  </script>
+  <script>
+    globalThis.shared = 4;
+    globalThis.added = 3;
+    let fromFunction = Function('return localLexical')();
+    document.getElementById('status').textContent =
+      String(readValue() + added + fromFunction) + ':' + String(globalThis === window && this === window);
+  </script>
+  <script type="module">
+    let moduleOnly = 1;
+    document.getElementById('status').textContent +=
+      ':' + String(readValue()) + ':' + typeof globalThis.moduleOnly;
+    const target = {};
+    const token = {};
+    const ref = new WeakRef(target);
+    const registry = new FinalizationRegistry(() => {});
+    registry.register(target, 'held', token);
+    document.getElementById('status').textContent +=
+      ':' + String(ref.deref() === target && registry.unregister(token));
+  </script>
+</body>
+</html>

@@ -153,7 +153,7 @@ class JDomRuntime {
 
   JScope newScope() {
     final scope = JScope();
-    installJSBuiltins(scope);
+    installJSBuiltins(scope, globalObject: window);
     final localStorage = JObject({
       'getItem': jNative((a) => storage[jString(a[0])]),
       'setItem': jNative((a) {
@@ -219,8 +219,7 @@ class JDomRuntime {
       'innerHeight': viewportHeight,
     };
     for (final entry in globals.entries) {
-      scope.define(entry.key, entry.value);
-      window.set(entry.key, entry.value);
+      scope.defineGlobal(entry.key, entry.value);
     }
     return scope;
   }

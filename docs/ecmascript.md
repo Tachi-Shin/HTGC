@@ -4,7 +4,7 @@
 
 | 仕様の領域 | 未実装、または一部だけ実装している機能 |
 | --- | --- |
-| 実行コンテキスト、Realm、Agent | Realmごとのintrinsic・プロトタイプ・エラーとグローバル環境の分離、スクリプトとモジュールで異なるグローバル束縛、複数Agentとメモリモデル |
+| 実行コンテキスト、Realm、Agent | Realmごとのintrinsic・プロトタイプ・エラーの分離、グローバル宣言の競合やホスト仕様の残り、複数Agentとメモリモデル。globalThisとWindowの同一性、通常スクリプト間のvar・関数・字句束縛の共有、モジュールの字句束縛の分離は対応 |
 | 宣言と関数 | スクリプトの非strictモード、非strictの引数オブジェクトと仮引数の連動、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunction/AsyncGeneratorFunctionコンストラクターとeval |
 | クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
 | 式と文 | with、細部の評価順と例外。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
@@ -14,7 +14,7 @@
 | 数値、日時、文字列 | Number/Math/BigIntの境界とメタデータ、Dateの実装依存の旧式書式・時刻規則、ロケール依存の完全な照合・大小文字変換、Unicodeの網羅検証。Unicode 17.0のString.normalize、String.raw、コード単位・コードポイント、検索・抽出・パディング等は対応 |
 | RegExp | 実行時に作るvパターン、重複する名前付きグループ、Speciesと汎用メソッド、最新Unicodeや全キャプチャ条件の差。vリテラルと静的なRegExp呼び出しを変換 |
 | インデックス付きコレクション | 配列の継承、穴・length・Speciesの細部、TypedArrayの全変換順・記述子・全メソッドの派生型。Array.fromAsyncと不足していた配列メソッド、Uint8ArrayのBase64・16進変換は対応 |
-| キー付き・弱参照コレクション | Map/Set/WeakMap/WeakSetの細部、弱参照のGC保証とWeakRef/FinalizationRegistry、派生型。Map・WeakMapのgetOrInsert/getOrInsertComputedは対応 |
+| キー付き・弱参照コレクション | Map/Set/WeakMap/WeakSetの細部、弱参照のGCや後始末の時機、派生型の細部。WeakRefとFinalizationRegistryの基本APIに対応。Map・WeakMapのgetOrInsert/getOrInsertComputedは対応 |
 | バイナリデータとメモリモデル | 複数Agentで共有するSharedArrayBuffer・ブロッキングAtomics.wait、ArrayBuffer新APIとSpecies、バッファ制限。単一Agent用のSharedArrayBufferとAtomicsは今回の変更で対応 |
 | 非同期・反復 | AsyncIteratorの全仕様、Promiseの派生型・Species・ジョブ順の全ケース。同期Iteratorのzip、zipKeyed、map、filter、flatMap、take、drop、reduce、includes、joinなど、非同期IteratorのSymbol.asyncDispose、DisposableStackとAsyncDisposableStackは対応 |
 | JSON、追加仕様 | 任意のホストフックとAnnex Bの残り。JSON.rawJSON/isRawJSONとreviverのcontext.sourceは対応。ECMA-402のIntlやHTMLのWorkerは各別仕様 |
@@ -34,3 +34,7 @@
 固定文字列の `eval` は変換時に解析し、直接呼び出し元のスコープにアクセスするDartコードを生成します。固定文字列の `Function` は大域スコープを参照する通常関数として変換します。評価値が文字列でない `eval` は引数を返します。任意の実行時文字列、間接eval、Functionへの動的な引数、評価完了値の全パターン、非strictなevalの変数環境は未実装です。AsyncFunction／GeneratorFunction／AsyncGeneratorFunctionは、コンストラクターを関数式から直接取得するか、変数に代入し、固定文字列を渡す場合に変換できます。
 
 直接evalにおける空の文・ブロック、条件分岐、ループ、switch、try/finallyの評価完了値を拡充しました。スクリプトの全構文に対する完了値の適合性は未検証です。
+
+通常のHTMLスクリプトでは、globalThisとwindowが同じオブジェクトを指します。globalThisへのプロパティ変更はグローバル識別子に反映され、varと関数宣言は後続スクリプトと共有されます。let・const・classはグローバルオブジェクトのプロパティを作らず、後続の通常スクリプトとモジュールから参照できます。組み込みプロトタイプのRealmごとの分離、全グローバル宣言の競合、非strictの仕様は未完です。
+
+`WeakRef` と `FinalizationRegistry` はDartの弱参照とファイナライザーを使用します。参照対象の回収と後始末の実行時機はDartのGCとホストに依存し、ECMAScriptのジョブ境界やGCに関わる全条件は未検証です。

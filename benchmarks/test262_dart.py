@@ -271,7 +271,13 @@ def main():
                     )
                 if harness == BUILTIN_HARNESS and re.search(r"^flags:\s*\[[^\]]*\basync\b", metadata, re.M):
                     harness = ASYNC_HARNESS
-                code = compile_script(source, path)
+                global_script = name.startswith(("language/global-code/decl-", "built-ins/global/")) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
+                if global_script:
+                    harness = harness.replace(
+                        '  final scope = JScope();\n  installJSBuiltins(scope);',
+                        '  final root = JScope();\n  installJSBuiltins(root);\n  final scope = JScope.script(root);',
+                    )
+                code = compile_script(source, path, source_type="script" if global_script else "module")
             except CompileError as error:
                 status, details = "UNSUPPORTED", str(error)
             else:

@@ -270,8 +270,9 @@ class NativeSiteState extends State<NativeSiteApp>
       runtime.viewportHeight = widget.viewport!.height;
     }
     final root = runtime.newScope();
+    final global = JScope.script(root);
     for (final int script in data['scripts']) {
-      widget.scripts[script](JScope(root));
+      widget.scripts[script](global);
     }
     loading = false;
     final page = runtime;

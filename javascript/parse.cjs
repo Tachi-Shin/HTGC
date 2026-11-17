@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const acorn = require('acorn');
 try {
   const input = fs.readFileSync(0, 'utf8');
-  const ast = acorn.parse(input, {ecmaVersion: 'latest', sourceType: 'module', locations: true});
+  const ast = acorn.parse(input, {ecmaVersion: 'latest', sourceType: process.argv.includes('--script') ? 'script' : 'module', locations: true});
   function rewriteUnicodeSets(pattern, flags) {
     return require('regexpu-core')(pattern, flags, {
       unicodeSetsFlag: 'transform',
