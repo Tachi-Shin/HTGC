@@ -122,6 +122,7 @@ class JGenerator extends JObject {
 
 JObject jBuildGeneratorPrototype(bool asynchronous) {
   final prototype = JObject();
+  if (!asynchronous) prototype.prototype = jIteratorPrototype;
   for (final mode in ['next', 'return', 'throw']) {
     final function = JFunction((args, receiver) {
       if (receiver is! JGenerator || receiver.asynchronous != asynchronous) {
@@ -134,8 +135,10 @@ JObject jBuildGeneratorPrototype(bool asynchronous) {
     jNameFunction(function, mode, 1);
     prototype.properties[mode] = function;
   }
-  prototype.symbols[jSymbols[asynchronous ? 'asyncIterator' : 'iterator']!] =
-      JFunction((a, r) => r, constructible: false);
+  if (asynchronous) {
+    prototype.symbols[jSymbols['asyncIterator']!] =
+        JFunction((a, r) => r, constructible: false);
+  }
   prototype.symbols[jSymbols['toStringTag']!] = asynchronous
       ? 'AsyncGenerator'
       : 'Generator';

@@ -162,6 +162,19 @@ Future<void> main() async {
     }
     throw StateError('Expected an exception');
   });
+  assertFn.properties['throwsAsync'] = jNative((a) => jAsync((promise) async {
+    try {
+      await jAwait(jCall(a[1], []));
+      promise.reject('Expected an exception');
+    } catch (error) {
+      final value = jExceptionValue(error);
+      if (value is JObject && identical(value.get('constructor'), a[0])) {
+        promise.resolve(jUndefined);
+      } else {
+        promise.reject('Unexpected exception: $error');
+      }
+    }
+  }));
   scope.define('verifyProperty', jNative((a) {
     final target = a[0] as JObject, key = jPropertyKey(a[1]);
     final expected = a[2] as JObject, actual = jDescriptor(target, key);

@@ -489,9 +489,8 @@ dynamic jRegexSplit(JRegex regex, String input, dynamic limitValue) {
 JObject jRegexMatchAll(JRegex source, String input) {
   final regex = JRegex(source.pattern, source.flagText, lowered: source.lowered)
     ..set('lastIndex', jLength(source.get('lastIndex')).toDouble());
-  final iterator = JObject();
   var done = false;
-  iterator.properties['next'] = jBuiltin((a) {
+  return JIterator(() {
     if (done) return JObject({'value': jUndefined, 'done': true});
     final result = jRegexExec(regex, input);
     if (result == null) {
@@ -510,9 +509,7 @@ JObject jRegexMatchAll(JRegex source, String input) {
         ).toDouble(),
       );
     return JObject({'value': result, 'done': false});
-  });
-  iterator.symbols[jSymbols['iterator']!] = jBuiltin((a) => iterator);
-  return iterator;
+  }, kind: 'RegExp String Iterator');
 }
 
 dynamic jStringRegExp(String operation, String input, List<dynamic> args) {

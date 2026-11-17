@@ -15,6 +15,10 @@ part 'js_text_methods.dart';
 part 'js_math_methods.dart';
 part 'js_function_methods.dart';
 part 'js_byte_encoding.dart';
+part 'js_iteration_helpers.dart';
+part 'js_disposal.dart';
+part 'js_normalization.dart';
+part 'js_unicode_data.dart';
 
 class JUndefined {
   const JUndefined();
@@ -993,7 +997,7 @@ class JModuleDefinition {
   final Map<String, JModuleBinding> imports, exports;
   final void Function(JScope) initialize;
   final dynamic Function(JScope) execute;
-  final bool hasAwait;
+  final bool hasAwait, json;
   const JModuleDefinition(
     this.dependencies,
     this.imports,
@@ -1001,6 +1005,7 @@ class JModuleDefinition {
     this.initialize,
     this.execute, {
     this.hasAwait = false,
+    this.json = false,
   });
 }
 
@@ -1044,6 +1049,7 @@ class JModuleGraph {
   final Map<String, JModuleDefinition> definitions;
   final _states = <String, JModuleState>{};
   final _namespaces = <String, JModuleNamespace>{};
+  final _metadata = <String, JObject>{};
   int _asyncOrder = 0;
   JModuleGraph(this.globals, this.definitions);
 
@@ -1073,11 +1079,41 @@ class JModuleGraph {
     return module;
   }
 
-  JPromise importModule(String owner, dynamic specifier) {
+  Uri moduleUrl(String owner) => Uri(scheme: 'htgc', host: 'local', path: '/$owner');
+
+  JObject meta(String key, String owner) => _metadata.putIfAbsent(
+    key, () => JObject.root({'url': moduleUrl(owner).toString()}),
+  );
+
+  String importType(dynamic options) {
+    if (identical(options, jUndefined)) return 'javascript';
+    if (!jIsObject(options)) {
+      throw JThrown(JError('TypeError', 'Import options must be an object'));
+    }
+    final attributes = jGet(options, 'with');
+    if (identical(attributes, jUndefined)) return 'javascript';
+    if (!jIsObject(attributes)) {
+      throw JThrown(JError('TypeError', 'Import attributes must be an object'));
+    }
+    final values = <String, String>{};
+    for (final key in jOwnKeys(attributes, enumerable: true, strings: true)) {
+      final value = jGet(attributes, key);
+      if (value is! String) {
+        throw JThrown(JError('TypeError', 'Import attribute values must be strings'));
+      }
+      values[key as String] = value;
+    }
+    if (values.isEmpty) return 'javascript';
+    if (values.length == 1 && values['type'] == 'json') return 'json';
+    throw JThrown(JError('TypeError', 'Unsupported import attributes'));
+  }
+
+  JPromise importModule(String owner, dynamic specifier, [dynamic options = jUndefined]) {
     final result = JPromise();
     String key;
     try {
       final text = jString(specifier);
+      final type = importType(options);
       final uri = Uri.parse(text);
       if (!(text.startsWith('./') ||
               text.startsWith('../') ||
@@ -1090,8 +1126,12 @@ class JModuleGraph {
           JError('TypeError', 'Unsupported module specifier: $text'),
         );
       }
-      final base = Uri(scheme: 'htgc', host: 'local', path: '/$owner');
-      key = base.resolveUri(uri).path.substring(1);
+      key = Uri.decodeComponent(moduleUrl(owner).resolveUri(uri).path.substring(1));
+      if (definitions[key] case final definition?) {
+        if (definition.json != (type == 'json')) {
+          throw JThrown(JError('TypeError', 'Module type mismatch: $text'));
+        }
+      }
     } catch (error) {
       result.reject(jExceptionValue(error));
       return result;
@@ -2594,6 +2634,9 @@ void installJSBuiltins(JScope scope) {
   installJSAtomics(scope);
   installJSRegExp(scope);
   installJSCollections(scope);
+  installJSIterators(scope);
+  scope.define('DisposableStack', jDisposableStack);
+  scope.define('AsyncDisposableStack', jAsyncDisposableStack);
   final json = JObject({
     'parse': jNative((a) => jJSONParse(jArg(a, 0), jArg(a, 1))),
     'rawJSON': jNamedFunction(
@@ -2785,37 +2828,61 @@ void installJSBuiltins(JScope scope) {
   );
 }
 
-class JIterator extends JObject {
-  final dynamic Function() step;
-  bool completed = false;
-  JIterator(this.step) {
-    symbols[jSymbols['iterator']!] = jNative((_) => this);
-    properties['next'] = jNative((_) {
-      if (completed) return JObject({'value': jUndefined, 'done': true});
-      final result = step();
-      if (jTruthy(jGet(result, 'done'))) completed = true;
-      return result;
+final _jBuiltinIteratorPrototypes = <String, JObject>{};
+
+JObject jBuiltinIteratorPrototype(String kind) =>
+    _jBuiltinIteratorPrototypes.putIfAbsent(kind, () {
+      final object = JObject({
+        'next': jBuiltinMethod('next', 0, (_, receiver) {
+          if (receiver is! JIterator || receiver.kind != kind) {
+            throw JThrown(JError('TypeError', 'Expected $kind'));
+          }
+          return receiver.next();
+        }),
+      })..prototype = jIteratorPrototype;
+      final tag = jSymbols['toStringTag']!;
+      object.symbols[tag] = kind;
+      jBuiltinProperties(object);
+      object.flags[tag]!.writable = false;
+      return object;
     });
+
+class JIterator extends JObject {
+  final JObject Function() step;
+  final String kind;
+  bool completed = false;
+  JIterator(this.step, {this.kind = 'Array Iterator'}) {
+    prototype = jBuiltinIteratorPrototype(kind);
+  }
+
+  JObject next() {
+    if (completed) return jIterationResult();
+    final result = step();
+    if (jTruthy(jGet(result, 'done'))) completed = true;
+    return result;
   }
 }
 
 JIterator jBuiltinIterator(dynamic value, [String mode = 'values']) {
   var index = 0;
-  final input = value is String
-      ? value.runes.map((r) => String.fromCharCode(r)).toList()
-      : value as List;
+  if (value is String) {
+    return JIterator(() {
+      if (index >= value.length) return jIterationResult();
+      final end = jAdvanceString(value, index, true);
+      final character = value.substring(index, end);
+      index = end;
+      return jIterationResult(character, false);
+    }, kind: 'String Iterator');
+  }
+  final input = value as List;
   return JIterator(() {
-    if (index >= input.length)
-      return JObject({'done': true, 'value': jUndefined});
+    if (index >= input.length) return jIterationResult();
     final i = index++;
-    return JObject({
-      'done': false,
-      'value': mode == 'keys'
-          ? i
-          : mode == 'entries'
-          ? [i, jGet(input, i)]
-          : jGet(input, i),
-    });
+    return jIterationResult(switch (mode) {
+      'keys' => i,
+      'entries' => [i, jGet(input, i)],
+      _ => jGet(input, i),
+    }, false);
   });
 }
 
@@ -2824,6 +2891,7 @@ class JIteratorRecord {
   bool done = false;
   dynamic current = jUndefined;
   JIteratorRecord(this.object) : next = jGet(object, 'next');
+  JIteratorRecord.direct(this.object, this.next);
   bool advance() {
     if (done) return false;
     try {
@@ -3215,7 +3283,7 @@ class JMap extends JObject {
         });
       }
       return JObject({'done': true, 'value': jUndefined});
-    });
+    }, kind: this is JSet ? 'Set Iterator' : 'Map Iterator');
   }
 }
 

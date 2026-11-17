@@ -42,6 +42,13 @@ def parse(source, path):
     return json.loads(result.stdout)
 
 
+RESOURCE_KINDS = ("using", "await using")
+
+
+def is_resource_declaration(node):
+    return node is not None and node["type"] == "VariableDeclaration" and node["kind"] in RESOURCE_KINDS
+
+
 class Compiler:
     def __init__(self, path):
         self.path, self.serial, self.scope, self.receiver = (
@@ -57,7 +64,9 @@ class Compiler:
         self.private_names = {}
         self.temps = []
         self.module_owner = None
+        self.module_key = None
         self.script_name = ""
+        self.resource_stack = None
 
     def temp(self):
         name = self.name("tmp")
@@ -75,8 +84,10 @@ class Compiler:
             return False
         if node.get("type") in ("FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"):
             return False
-        return node.get("type") == "AwaitExpression" or any(
-            Compiler.has_await(child) for child in node.values()
+        return (
+            node.get("type") == "AwaitExpression"
+            or node.get("type") == "VariableDeclaration" and node.get("kind") == "await using"
+            or any(Compiler.has_await(child) for child in node.values())
         )
 
     def async_body(self, code):
@@ -342,18 +353,23 @@ class Compiler:
         if t == "ImportExpression":
             if self.module_owner is None:
                 self.fail(n, "dynamic import requires a compiled module graph")
-            if n.get("options") is not None:
-                self.fail(n, "import attributes")
             return (
                 f'{self.scope}.modules(htgcModules).importModule('
-                f'{quote(self.module_owner)}, {self.expr(n["source"])})'
+                f'{quote(self.module_owner)}, {self.expr(n["source"])}, {self.expr(n.get("options"))})'
             )
         if t == "ClassExpression":
             return self.class_expression(n)
         if t == "Identifier":
             return f'{self.scope}.get({quote(n["name"])})'
-        if t == "MetaProperty" and n["meta"]["name"] == "new":
-            return self.new_target
+        if t == "MetaProperty":
+            if n["meta"]["name"] == "new":
+                return self.new_target
+            if self.module_key is None:
+                self.fail(n, "import.meta requires an HTML module script")
+            return (
+                f'{self.scope}.modules(htgcModules).meta('
+                f'{quote(self.module_key)}, {quote(self.module_owner)})'
+            )
         if t == "ThisExpression":
             return self.receiver
         if t == "Literal":
@@ -491,23 +507,77 @@ class Compiler:
         site = quote(f'{self.path}:{self.script_name}:{node["start"]}')
         return f'{self.scope}.template({site}, <dynamic>[{", ".join(cooked)}], <dynamic>[{", ".join(raw)}])'
 
-    def block_contents(self, nodes, *, hoist_vars=False):
-        # Function declarations are initialized before the surrounding statements.
-        code = [self.stmt(n) for n in nodes if n["type"] == "FunctionDeclaration"]
-        if hoist_vars:
-            code.extend(
-                f"{self.scope}.declareVar({quote(name)});"
-                for name in dict.fromkeys(self.var_names(nodes))
+    def wait_for_disposal(self, expression):
+        return f"await jAwait({expression});"
+
+    def resource_region(self, nodes, body):
+        resources = [
+            node["kind"] for node in nodes
+            if is_resource_declaration(node)
+        ]
+        if not resources:
+            return body()
+        previous = self.resource_stack
+        stack = self.resource_stack = self.name("resources")
+        pending, caught = self.name("pending"), self.name("error")
+        try:
+            code = body()
+        finally:
+            self.resource_stack = previous
+        cleanup = f"{stack}.dispose({pending});"
+        if "await using" in resources:
+            cleanup = (
+                f"if ({stack}.hasAsync) {{\n"
+                + self.wait_for_disposal(f"{stack}.disposeAsync({pending})")
+                + f"\n}} else {{ {cleanup} }}"
             )
-        code.extend(self.stmt(n) for n in nodes if n["type"] != "FunctionDeclaration")
-        return "\n".join(code)
+        return (
+            f"final {stack} = JResources();\nObject? {pending};\ntry {{\n{code}\n"
+            f"}} catch ({caught}) {{\n{pending} = {caught};\nrethrow;\n"
+            f"}} finally {{\n{cleanup}\n}}"
+        )
+
+    def bind_resource(self, pattern, value, kind):
+        asynchronous = str(kind == "await using").lower()
+        return self.bind(
+            pattern, f"{self.resource_stack}.add({value}, asynchronous: {asynchronous})", "const"
+        )
+
+    def reserve_resources(self, nodes):
+        return [
+            f"{self.scope}.reserve({quote(name)});"
+            for node in nodes
+            if is_resource_declaration(node)
+            for entry in node["declarations"]
+            for name in self.binding_names(entry["id"])
+        ]
+
+    def block_contents(self, nodes, *, hoist_vars=False):
+        def contents():
+            # Function declarations are initialized before the surrounding statements.
+            code = self.reserve_resources(nodes)
+            code.extend(self.stmt(n) for n in nodes if n["type"] == "FunctionDeclaration")
+            if hoist_vars:
+                code.extend(
+                    f"{self.scope}.declareVar({quote(name)});"
+                    for name in dict.fromkeys(self.var_names(nodes))
+                )
+            code.extend(self.stmt(n) for n in nodes if n["type"] != "FunctionDeclaration")
+            return "\n".join(code)
+        return self.resource_region(nodes, contents)
 
     def switch(self, node):
         cases = node["cases"]
-        if not cases:
-            return self.expr(node["discriminant"]) + ";"
-        value, selected = self.name("value"), self.name("case")
         discriminant = self.expr(node["discriminant"])
+        declarations = [stmt for case in cases for stmt in case["consequent"]]
+        return "{\n" + self.resource_region(
+            declarations, lambda: self.switch_body(cases, discriminant, declarations)
+        ) + "\n}"
+
+    def switch_body(self, cases, discriminant, declarations):
+        if not cases:
+            return discriminant + ";"
+        value, selected = self.name("value"), self.name("case")
         parent = self.scope
         self.scope = self.name()
         labels = [self.name("case") for _ in cases]
@@ -523,6 +593,7 @@ class Compiler:
             f"final {value} = {discriminant};",
             f"final {self.scope} = JScope({parent});",
         ]
+        code.extend(self.reserve_resources(declarations))
         code.extend(
             self.stmt(stmt)
             for case in cases
@@ -563,7 +634,10 @@ class Compiler:
 
     def loop_binding(self, target, value):
         if target["type"] == "VariableDeclaration":
-            return self.bind(target["declarations"][0]["id"], value, target["kind"])
+            pattern = target["declarations"][0]["id"]
+            if target["kind"] in RESOURCE_KINDS:
+                return self.bind_resource(pattern, value, target["kind"])
+            return self.bind(pattern, value, target["kind"])
         return self.bind(target, value, "assign")
 
     def stmt(self, n):
@@ -583,6 +657,11 @@ class Compiler:
         if t in ("EmptyStatement", "DebuggerStatement"):
             return ";"
         if t == "VariableDeclaration":
+            if n["kind"] in RESOURCE_KINDS:
+                return "\n".join(
+                    self.bind_resource(d["id"], self.expr(d["init"]), n["kind"])
+                    for d in n["declarations"]
+                )
             return "\n".join(
                 self.bind(d["id"], self.expr(d.get("init")), n["kind"])
                 for d in n["declarations"]
@@ -633,7 +712,10 @@ class Compiler:
             source = self.expr(n["right"])
             parent = self.scope
             self.scope = self.name()
-            init = self.loop_binding(n["left"], iterator)
+            iteration = self.resource_region(
+                [n["left"]],
+                lambda: self.loop_binding(n["left"], iterator) + "\n" + self.stmt(n["body"]),
+            )
             record = self.name("iterator")
             caught = self.name("error")
             factory = 'jGetAsyncIterator' if asynchronous else 'jGetIterator'
@@ -641,14 +723,19 @@ class Compiler:
                 return f'(await jAwait({expression}))' if asynchronous else expression
             body = (f'{{ final {record} = {factory}({source});\ntry {{\n'
                     f'{self.loop_label(n)}while ({wait(f"{record}.advance()")}) {{\nfinal {iterator} = {record}.current;\n'
-                    f'final {self.scope} = JScope({parent});\n{init}\n{self.stmt(n["body"])}\n}}'
+                    f'final {self.scope} = JScope({parent});\n{iteration}\n}}'
                     f'\n}} catch ({caught}) {{\n{wait(f"{record}.close(suppressErrors: {caught} is! JAsyncReturn)")};\nrethrow;\n}}'
                     f' finally {{ {wait(f"{record}.close()")}; }}\n}}')
             self.scope = parent
             return body
         if t == "ForStatement":
+            if not n.get("htgcResources") and is_resource_declaration(n.get("init")):
+                return "{\n" + self.resource_region(
+                    [n.get("init")], lambda: self.stmt({**n, "htgcResources": True})
+                ) + "\n}"
             parent = self.scope
             self.scope = self.name()
+            reservations = self.reserve_resources([n["init"]]) if n.get("init") else []
             init = (
                 self.stmt(n["init"])
                 if n.get("init") and n["init"]["type"] == "VariableDeclaration"
@@ -660,7 +747,7 @@ class Compiler:
             code = (
                 "{\n"
                 + f"final {self.scope} = JScope({parent});\n"
-                + init
+                + "\n".join([*reservations, init])
                 + "\n" + self.loop_label(n) + "for (; "
                 + condition
                 + "; "

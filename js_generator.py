@@ -1,5 +1,5 @@
 """Lower suspension points to Dart sync* continuations, not an AST interpreter."""
-from js_dart import Compiler, quote
+from js_dart import Compiler, RESOURCE_KINDS, is_resource_declaration, quote
 
 
 class GeneratorCompiler(Compiler):
@@ -7,9 +7,18 @@ class GeneratorCompiler(Compiler):
         super().__init__(parent.path)
         self.serial, self.scope, self.receiver = parent.serial, parent.scope, parent.receiver
         self.module_owner = parent.module_owner
+        self.module_key = parent.module_key
         self.script_name = parent.script_name
         self.private_names = parent.private_names
         self.active, self.prelude = False, []
+
+    def wait_for_disposal(self, expression):
+        if not self.active:
+            return super().wait_for_disposal(expression)
+        return (
+            f"yield JGeneratorStep({expression}, awaited: true);\n"
+            f"{self.generator}.resume();"
+        )
 
     def capture(self, callback):
         outer, self.prelude = self.prelude, []
@@ -109,6 +118,15 @@ class GeneratorCompiler(Compiler):
             strings = self.save(self.template_object(node))
             substitutions = [self.expr(value) for value in node['quasi']['expressions']]
             return self.save(f'{callee}.call(<dynamic>[{", ".join([strings, *substitutions])}])')
+        if kind == 'ImportExpression':
+            if self.module_owner is None:
+                self.fail(node, "dynamic import requires a compiled module graph")
+            source = self.expr(node["source"])
+            options = self.expr(node.get("options"))
+            return self.save(
+                f'{self.scope}.modules(htgcModules).importModule('
+                f'{quote(self.module_owner)}, {source}, {options})'
+            )
         if kind == 'MemberExpression':
             return self.member_value(node)
         if kind in ('CallExpression', 'NewExpression'):
@@ -197,7 +215,8 @@ class GeneratorCompiler(Compiler):
                 if node['kind'] == 'var' and declaration.get('init') is None:
                     continue
                 prefix, value = self.capture(lambda: self.expr(declaration.get('init')))
-                binding_prefix, binding = self.capture(lambda: self.bind(declaration['id'], value, node['kind']))
+                bind = self.bind_resource if node['kind'] in RESOURCE_KINDS else self.bind
+                binding_prefix, binding = self.capture(lambda: bind(declaration['id'], value, node['kind']))
                 code += [prefix, binding_prefix, binding]
             return '\n'.join(code)
         if kind == 'ForOfStatement':
@@ -206,24 +225,31 @@ class GeneratorCompiler(Compiler):
             record, item = self.name('giterator'), self.name('gitem')
             parent, self.scope = self.scope, self.name('gscope')
             left = node['left']
-            prefix, init = self.capture(lambda: self.loop_binding(left, item))
-            body = self.stmt(node['body'])
+            def iteration():
+                prefix, init = self.capture(lambda: self.loop_binding(left, item))
+                return f"{prefix}\n{init}\n{self.stmt(node['body'])}"
+            body = self.resource_region([left], iteration)
             scope, self.scope = self.scope, parent
             factory = 'jGetAsyncIterator' if asynchronous else 'jGetIterator'
             def wait(expression):
                 return f'yield JGeneratorStep({expression}, awaited: true);\n{self.generator}.resume();' if asynchronous else f'{expression};'
             advance = f'yield JGeneratorStep({record}.advance(), awaited: true);\nif (!jTruthy({self.generator}.resume())) break;' if asynchronous else f'if (!{record}.advance()) break;'
             return (f'{{ final {record} = {factory}({source});\ntry {{\n{self.loop_label(node)}while (true) {{\n{advance}\n'
-                    f'final {item} = {record}.current;\nfinal {scope} = JScope({parent});\n{prefix}\n{init}\n{body}\n}}\n'
+                    f'final {item} = {record}.current;\nfinal {scope} = JScope({parent});\n{body}\n}}\n'
                     f'}} catch (_error) {{\n{wait(f"{record}.close(suppressErrors: _error is! JAsyncReturn)")}\nrethrow;\n}} finally {{\n{wait(f"{record}.close()")}\n}}\n}}')
         if kind == 'IfStatement':
             condition = self.expr(node['test'])
             return f'if (jTruthy({condition})) {{\n{self.stmt(node["consequent"])}\n}}' + (f' else {{\n{self.stmt(node["alternate"])}\n}}' if node.get('alternate') else '')
+        if kind == 'ForStatement' and not node.get('htgcResources') and is_resource_declaration(node.get('init')):
+            return "{\n" + self.resource_region(
+                [node.get("init")], lambda: self.stmt({**node, "htgcResources": True})
+            ) + "\n}"
         if kind in ('ForStatement', 'WhileStatement', 'DoWhileStatement'):
             parent, self.scope = self.scope, self.name('gscope')
             initial = ''
             if kind == 'ForStatement' and node.get('init'):
-                initial = self.stmt(node['init']) if node['init']['type'] == 'VariableDeclaration' else self.stmt({'type':'ExpressionStatement','expression':node['init']})
+                initial = "\n".join(self.reserve_resources([node['init']]))
+                initial += self.stmt(node['init']) if node['init']['type'] == 'VariableDeclaration' else self.stmt({'type':'ExpressionStatement','expression':node['init']})
             update_prefix, update = self.capture(lambda: self.expr(node.get('update')))
             test_prefix, condition = self.capture(lambda: self.expr(node.get('test')) if node.get('test') else 'true')
             body = self.stmt(node['body'])

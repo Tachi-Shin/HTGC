@@ -15,6 +15,7 @@ class Module:
     exports: dict = field(default_factory=dict)
     stars: list = field(default_factory=list)
     statements: list = field(default_factory=list)
+    json_source: str | None = None
 
 
 AMBIGUOUS = object()
@@ -56,7 +57,7 @@ class DartModules:
                         # Missing dynamic imports reject at runtime, like host loading.
                         if path.is_file():
                             key = path.relative_to(root).as_posix()
-                            self.add(read(path), key, path, root, read, local)
+                            self.add(read(path), key, path, root, read, local, json_module=path.suffix == ".json")
             for child in ast.values():
                 self.collect_dynamic(child, owner, root, read, local)
 
@@ -68,11 +69,16 @@ class DartModules:
         self.collect_dynamic(ast, owner, root, read, local)
         return compiler.compile(ast, name)
 
-    def add(self, source, key, owner, root, read, local):
+    def add(self, source, key, owner, root, read, local, *, json_module=False):
         if key in self.modules:
             return
         module = self.modules[key] = Module(Compiler(key), f"htgcModule{len(self.modules)}")
         module.compiler.module_owner = owner.relative_to(root).as_posix()
+        module.compiler.module_key = key
+        if json_module:
+            module.json_source = source
+            module.exports["default"] = (None, DEFAULT)
+            return
         ast = parse(source, key)
         for node in ast["body"]:
             kind = node["type"]
@@ -84,13 +90,19 @@ class DartModules:
                 if (
                     not specifier.startswith(("./", "../", "/"))
                     or url.netloc or url.scheme or url.query or url.fragment
-                    or node.get("attributes") or node.get("assertions")
                 ):
                     module.compiler.fail(node, f"ローカルの静的モジュール指定子 {specifier!r}")
                 path = local(specifier, owner)
                 target = path.relative_to(root).as_posix()
+                attributes = {
+                    identifier(entry["key"]): entry["value"]["value"]
+                    for entry in node.get("attributes", [])
+                }
+                json_target = path.suffix == ".json"
+                if attributes != ({"type": "json"} if json_target else {}):
+                    module.compiler.fail(node, f"モジュールの import 属性 {specifier!r}")
                 if target not in self.modules:
-                    self.add(read(path), target, path, root, read, local)
+                    self.add(read(path), target, path, root, read, local, json_module=json_target)
                 module.dependencies[target] = None
             if kind == "ImportDeclaration":
                 for specifier in node["specifiers"]:
@@ -205,7 +217,7 @@ class DartModules:
                 f"scope.declareVar({quote(name)});"
                 for name in dict.fromkeys(compiler.var_names(nodes))
             )
-            execute = []
+            executable = []
             for node in nodes:
                 kind = node["type"]
                 if kind == "FunctionDeclaration":
@@ -216,15 +228,21 @@ class DartModules:
                             initialize.append(f"scope.reserve({quote(name)});")
                 elif kind == "ClassDeclaration":
                     initialize.append(f"scope.reserve({quote(identifier(node['id']))});")
-                execute.append(compiler.stmt(node))
+                executable.append(node)
+            execute = compiler.resource_region(
+                executable, lambda: "\n".join(compiler.stmt(node) for node in executable)
+            )
+            if module.json_source is not None:
+                initialize.append(f"scope.reserve({quote(DEFAULT)});")
+                execute = f"scope.define({quote(DEFAULT)}, jJSONParse({quote(module.json_source)}, jUndefined), constant: true);"
             functions.extend([
                 f"void {module.name}Init(JScope scope) {{\n" + "\n".join(initialize) + "\n}",
                 f"dynamic {module.name}Body(JScope scope) {{\n" + (
                     "return " + compiler.async_body(
-                        compiler.temp_declarations() + "\n".join(execute)
+                        compiler.temp_declarations() + execute
                         + "\nthrow JAsyncReturn(jUndefined);"
                     ) + ";" if compiler.asynchronous else
-                    compiler.temp_declarations() + "\n".join(execute) + "\nreturn jUndefined;"
+                    compiler.temp_declarations() + execute + "\nreturn jUndefined;"
                 ) + "\n}",
             ])
             imports = {
@@ -243,7 +261,8 @@ class DartModules:
             definitions.append(
                 f"  {quote(key)}: JModuleDefinition([{dependencies}], "
                 f"{bindings(imports)}, {bindings(dict(sorted(exports.items())))}, "
-                f"{module.name}Init, {module.name}Body, hasAwait: {str(compiler.asynchronous).lower()}),"
+                f"{module.name}Init, {module.name}Body, hasAwait: {str(compiler.asynchronous).lower()}, "
+                f"json: {str(module.json_source is not None).lower()}),"
             )
         return "\n" + "\n".join([
             *functions, "const htgcModules = <String, JModuleDefinition>{", *definitions, "};", "",

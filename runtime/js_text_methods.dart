@@ -58,6 +58,7 @@ Map<String, JFunction> jBuildStringMethods() {
       return text[i];
     });
   }
+  add('normalize', 0, (text, args) => jNormalize(text, jArg(args, 0)));
   add('concat', 1, (text, args) => text + args.map(jString).join());
   for (final name in [
     'includes',

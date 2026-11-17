@@ -332,26 +332,16 @@ JTypedArray jTypedReceiver(dynamic receiver) {
 
 JObject jTypedIterator(JTypedArray target, String mode) {
   var index = 0;
-  bool done = false;
-  final iterator = JObject();
-  iterator.properties['next'] = jBuiltin((a) {
-    if (!done) {
-      target.check();
-      if (index >= target.length) done = true;
-    }
-    if (done) return JObject({'value': jUndefined, 'done': true});
+  return JIterator(() {
+    target.check();
+    if (index >= target.length) return jIterationResult();
     final i = index++;
-    return JObject({
-      'value': mode == 'keys'
-          ? i.toDouble()
-          : mode == 'entries'
-          ? <dynamic>[i.toDouble(), target.at(i)]
-          : target.at(i),
-      'done': false,
-    });
+    return jIterationResult(
+      mode == 'keys' ? i.toDouble() :
+      mode == 'entries' ? <dynamic>[i.toDouble(), target.at(i)] : target.at(i),
+      false,
+    );
   });
-  iterator.symbols[jSymbols['iterator']!] = jBuiltin((a) => iterator);
-  return iterator;
 }
 
 void jAccessor(JObject prototype, String name, dynamic Function(dynamic) read) {
