@@ -4,6 +4,7 @@
 import argparse
 import fnmatch
 from pathlib import Path
+import re
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -170,6 +171,18 @@ Future<void> main() async {
     }
     return jUndefined;
   }));
+  scope.define('testExtendedCharacterClass', jBuiltin((a) {
+    final config = a[0], regex = jGet(config, 'regExp');
+    for (final key in ['matchStrings', 'nonMatchStrings']) {
+      for (final value in jIterable(jGet(config, key))) {
+        final matches = jInvoke(regex, 'test', [value]);
+        if (matches != (key == 'matchStrings')) {
+          throw StateError('Unexpected match for ${jString(value)} using ${jGet(config, 'expression')}');
+        }
+      }
+    }
+    return jUndefined;
+  }));
   scope.define('assert', assertFn);
   late final JFunction testError;
   testError = jNative((args) => JError('Test262Error', jString(jArg(args, 0)))..properties['constructor'] = testError);
@@ -232,7 +245,11 @@ def main():
         for path, harness in tests:
             name = str(path.relative_to(args.checkout / 'test'))
             try:
-                code = compile_script(path.read_text(encoding="utf-8"), path)
+                source = path.read_text(encoding="utf-8")
+                metadata = source.partition("/*---")[2].partition("---*/")[0]
+                if harness == BUILTIN_HARNESS and re.search(r"^flags:\s*\[[^\]]*\basync\b", metadata, re.M):
+                    harness = ASYNC_HARNESS
+                code = compile_script(source, path)
             except CompileError as error:
                 status, details = "UNSUPPORTED", str(error)
             else:

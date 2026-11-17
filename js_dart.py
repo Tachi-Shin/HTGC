@@ -232,7 +232,7 @@ class Compiler:
             f"JFunction(({args}, {receiver}) => {self.async_body(code)}, constructible: false)"
             if self.asynchronous else (
                 f"JFunction(({args}, {receiver}) {{\n{code}\n}}, constructible: false)"
-                if node["type"] == "ArrowFunctionExpression" else
+                if node["type"] == "ArrowFunctionExpression" or node.get("htgc_method") else
                 f"jFunction(({args}, {receiver}) {{\n{code}\n}})"
             )
         )
@@ -286,13 +286,17 @@ class Compiler:
                 f'{self.scope}.modules(htgcModules).importModule('
                 f'{quote(self.module_owner)}, {self.expr(n["source"])})'
             )
+        if t == "ClassExpression":
+            return self.class_expression(n)
         if t == "Identifier":
             return f'{self.scope}.get({quote(n["name"])})'
         if t == "ThisExpression":
             return self.receiver
         if t == "Literal":
             if "regex" in n:
-                return f'JRegex({quote(n["regex"]["pattern"])}, {quote(n["regex"]["flags"])})'
+                regex = n["regex"]
+                lowered = f', lowered: {quote(regex["lowered"])}' if "lowered" in regex else ""
+                return f'JRegex({quote(regex["pattern"])}, {quote(regex["flags"])}{lowered})'
             value = n.get("value")
             if "bigint" in n:
                 digits = n["bigint"].replace("_", "")
@@ -354,6 +358,8 @@ class Compiler:
             )
             callee = n["callee"]
             optional = str(n.get("optional", False)).lower()
+            if "htgcLoweredRegExp" in n:
+                return self.precompiled_regexp(n, self.expr(callee), args)
             if t == "NewExpression":
                 return f"jNew({self.expr(callee)}, {args})"
             if callee["type"] == "MemberExpression":
@@ -580,29 +586,48 @@ class Compiler:
                 self.fail(n)
             return ("break" if t == "BreakStatement" else "continue") + ";"
         if t == "ClassDeclaration":
-            methods = []
-            for m in n["body"]["body"]:
-                if (
-                    m["type"] != "MethodDefinition"
-                    or m["kind"] != "method"
-                    or m["static"]
-                    or m["computed"]
-                ):
-                    self.fail(m)
-                methods.append(
-                    quote(m["key"]["name"]) + ": " + self.function(m["value"])
-                )
-            return self.bind(
-                n["id"],
-                "JClass("
-                + self.expr(n.get("superClass"))
-                + ", {"
-                + ", ".join(methods)
-                + "})",
-            )
+            return self.bind(n["id"], self.class_expression(n))
         if t == "ThrowStatement":
             return "throw JThrown(" + self.expr(n["argument"]) + ");"
         self.fail(n)
+
+    def precompiled_regexp(self, node, callee, args):
+        constructing = str(node["type"] == "NewExpression").lower()
+        return (f'jCallPrecompiledRegExp({callee}, {args}, '
+                f'{quote(node["htgcLoweredRegExp"])}, constructing: {constructing})')
+
+    def class_expression(self, node):
+        for method in node["body"]["body"]:
+            if (method["type"] != "MethodDefinition" or method["kind"] == "constructor"
+                    or method["key"]["type"] == "PrivateIdentifier"):
+                self.fail(method, "class fields and explicit constructors")
+        if self.has_await(node):
+            self.fail(node, "await in class heritage or computed keys")
+        name = (node.get("id") or {}).get("name", "")
+        parent = self.scope
+        inner, constructor, base = self.name("classScope"), self.name("class"), self.name("base")
+        self.scope = inner
+        try:
+            superclass = node.get("superClass")
+            base_expression = "null" if superclass is None else self.expr(superclass)
+            code = [
+                f"final {inner} = JScope({parent});",
+                *([f"{inner}.reserve({quote(name)});"] if name else []),
+                f"final {base} = {base_expression};",
+                f'final {constructor} = jDefaultClass({quote(name)}, {base}, derived: {str(superclass is not None).lower()});',
+            ]
+            for method in node["body"]["body"]:
+                key = self.property_key(method)
+                function = self.function({**method["value"], "htgc_method": True})
+                mode = "init" if method["kind"] == "method" else method["kind"]
+                static = str(method["static"]).lower()
+                code.append(f"jDefineClassMethod({constructor}, {static}, {quote(mode)}, jPropertyKey({key}), {function});")
+            if name:
+                code.append(f"{inner}.define({quote(name)}, {constructor}, constant: true);")
+            code.append(f"return {constructor};")
+            return "(() {\n" + "\n".join(code) + "\n})()"
+        finally:
+            self.scope = parent
 
     def compile(self, ast, name):
         body = self.block_contents(ast["body"], hoist_vars=True)

@@ -359,16 +359,196 @@ void jAccessor(JObject prototype, String name, dynamic Function(dynamic) read) {
   prototype.flags[name] = JPropertyFlags(enumerable: false);
 }
 
+void jInstallSpeciesGetter(JFunction constructor) {
+  final key = jSymbols['species']!;
+  constructor.store(key, jUndefined);
+  constructor._accessors.add(key);
+  constructor.getters[key] = jNamedFunction(
+    JFunction((args, receiver) => receiver, constructible: false),
+    'get [Symbol.species]',
+    0,
+  );
+  constructor.flags[key] = JPropertyFlags(enumerable: false);
+}
+
+JFunction jSpeciesConstructor(JObject value, JFunction fallback) {
+  final constructor = jGet(value, 'constructor');
+  if (identical(constructor, jUndefined)) return fallback;
+  if (!jIsObject(constructor)) {
+    throw JThrown(JError('TypeError', 'Invalid constructor for Species'));
+  }
+  final species = jGet(constructor, jSymbols['species']);
+  if (jNullish(species)) return fallback;
+  if (species is! JFunction || !species.constructible) {
+    throw JThrown(JError('TypeError', 'Symbol.species must be a constructor'));
+  }
+  return species;
+}
+
+JTypedArray jTypedSpeciesCreate(
+  JTypedArray source,
+  List<dynamic> args, {
+  int? length,
+}) {
+  final constructor = jSpeciesConstructor(
+    source,
+    jTypedConstructors[source.kind]!,
+  );
+  final result = jNew(constructor, args);
+  if (result is! JTypedArray) {
+    throw JThrown(JError('TypeError', 'Species must construct a typed array'));
+  }
+  result.check();
+  if (length != null && result.length < length) {
+    throw JThrown(
+      JError('TypeError', 'Species returned a shorter typed array'),
+    );
+  }
+  if (source.kind.startsWith('Big') != result.kind.startsWith('Big')) {
+    throw JThrown(
+      JError('TypeError', 'Species changed the typed array content type'),
+    );
+  }
+  return result;
+}
+
+JArrayBuffer jBufferSpeciesSlice(
+  JArrayBuffer source,
+  List<dynamic> args,
+  JFunction fallback,
+) {
+  source.check();
+  final length = source.bytes.length;
+  final start = jRelativeIndex(jArg(args, 0), length);
+  final end = identical(jArg(args, 1), jUndefined)
+      ? length
+      : jRelativeIndex(args[1], length);
+  final count = math.max(end - start, 0);
+  final result = jNew(jSpeciesConstructor(source, fallback), [
+    count.toDouble(),
+  ]);
+  if (result is! JArrayBuffer ||
+      (result is JSharedArrayBuffer) != (source is JSharedArrayBuffer) ||
+      identical(result, source)) {
+    throw JThrown(JError('TypeError', 'Invalid buffer returned by Species'));
+  }
+  result.check();
+  if (result.bytes.length < count) {
+    throw JThrown(JError('TypeError', 'Species returned a shorter buffer'));
+  }
+  source.check();
+  if (start < source.bytes.length) {
+    result.bytes.setRange(
+      0,
+      math.min(count, source.bytes.length - start),
+      source.bytes,
+      start,
+    );
+  }
+  return result;
+}
+
+JTypedArray jTypedCreateByConstructor(dynamic constructor, int length) {
+  final result = jNew(constructor, [length.toDouble()]);
+  if (result is! JTypedArray) {
+    throw JThrown(JError('TypeError', 'Constructor must return a TypedArray'));
+  }
+  result.check();
+  if (result.length < length) {
+    throw JThrown(
+      JError('TypeError', 'Constructor returned a shorter TypedArray'),
+    );
+  }
+  return result;
+}
+
+JFunction jBuildTypedArrayConstructor() {
+  Never abstractConstructor() => throw JThrown(
+    JError('TypeError', 'TypedArray is an abstract constructor'),
+  );
+  final constructor = jNamedFunction(
+    JFunction(
+      (args, receiver) => abstractConstructor(),
+      construct: (args) => abstractConstructor(),
+    ),
+    'TypedArray',
+    0,
+  );
+  constructor.properties['prototype'] = jTypedArrayPrototype;
+  jInstallSpeciesGetter(constructor);
+  constructor.properties['of'] = jNamedFunction(
+    JFunction((args, receiver) {
+      final result = jTypedCreateByConstructor(receiver, args.length);
+      for (var i = 0; i < args.length; i++) {
+        result.write('$i', args[i], result);
+      }
+      return result;
+    }, constructible: false),
+    'of',
+    0,
+  );
+  constructor.properties['from'] = jNamedFunction(
+    JFunction((args, receiver) {
+      if (receiver is! JFunction || !receiver.constructible) {
+        throw JThrown(
+          JError('TypeError', 'TypedArray.from requires a constructor'),
+        );
+      }
+      final input = jArg(args, 0);
+      final mapper = jArg(args, 1);
+      if (!identical(mapper, jUndefined) && mapper is! JFunction) {
+        throw JThrown(JError('TypeError', 'Mapper is not callable'));
+      }
+      final iteratorMethod = jGet(input, jSymbols['iterator']);
+      final List<dynamic>? items;
+      final int length;
+      if (!jNullish(iteratorMethod)) {
+        final iterator = jCall(iteratorMethod, [], receiver: input);
+        if (!jIsObject(iterator)) {
+          throw JThrown(JError('TypeError', 'Iterator must be an object'));
+        }
+        final record = JIteratorRecord(iterator);
+        items = [];
+        while (record.advance()) {
+          items.add(record.current);
+        }
+        length = items.length;
+      } else {
+        items = null;
+        length = jLength(jGet(input, 'length'));
+      }
+      final result = jTypedCreateByConstructor(receiver, length);
+      for (var i = 0; i < length; i++) {
+        final item = items == null ? jGet(input, i) : items[i];
+        final value = mapper is JFunction
+            ? jCall(mapper, [item, i.toDouble()], receiver: jArg(args, 2))
+            : item;
+        result.write('$i', value, result);
+      }
+      return result;
+    }, constructible: false),
+    'from',
+    1,
+  );
+  jBuiltinProperties(constructor);
+  constructor.flags['prototype'] = JPropertyFlags(
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  );
+  return constructor;
+}
+
 void installJSBinary(JScope scope) {
   JArrayBuffer buffer(dynamic value) {
-    if (value is! JArrayBuffer)
+    if (value is! JArrayBuffer || value is JSharedArrayBuffer)
       throw JThrown(JError('TypeError', 'ArrayBuffer required'));
     return value;
   }
 
   final ab = JFunction(
     (a, r) => throw JThrown(JError('TypeError', 'ArrayBuffer requires new')),
-    construct: (a) {
+    constructWithTarget: jBuiltinAllocator(jArrayBufferPrototype, (a) {
       final length = jBufferSize(jArg(a, 0)), options = jArg(a, 1);
       final maximum = jIsObject(options)
           ? jGet(options, 'maxByteLength')
@@ -377,7 +557,7 @@ void installJSBinary(JScope scope) {
       if (max != null && max < length)
         throw JThrown(JError('RangeError', 'Length exceeds maxByteLength'));
       return JArrayBuffer(length, maximum: max);
-    },
+    }),
   );
   ab.properties.addAll({
     'prototype': jArrayBufferPrototype,
@@ -386,6 +566,7 @@ void installJSBinary(JScope scope) {
     ),
   });
   jArrayBufferPrototype.properties['constructor'] = ab;
+  jInstallSpeciesGetter(ab);
   jAccessor(
     jArrayBufferPrototype,
     'byteLength',
@@ -411,25 +592,10 @@ void installJSBinary(JScope scope) {
     b.bytes = next;
     return jUndefined;
   }, constructible: false);
-  jArrayBufferPrototype.properties['slice'] = JFunction((a, r) {
-    final b = buffer(r);
-    b.check();
-    final length = b.bytes.length;
-    final start = jRelativeIndex(jArg(a, 0), length),
-        end = identical(jArg(a, 1), jUndefined)
-            ? length
-            : jRelativeIndex(a[1], length);
-    b.check();
-    final result = JArrayBuffer(math.max(end - start, 0));
-    if (start < b.bytes.length)
-      result.bytes.setRange(
-        0,
-        math.min(result.bytes.length, b.bytes.length - start),
-        b.bytes,
-        start,
-      );
-    return result;
-  }, constructible: false);
+  jArrayBufferPrototype.properties['slice'] = JFunction(
+    (a, r) => jBufferSpeciesSlice(buffer(r), a, ab),
+    constructible: false,
+  );
   for (final fixed in [true, false])
     jArrayBufferPrototype.properties[fixed
         ? 'transferToFixedLength'
@@ -451,8 +617,13 @@ void installJSBinary(JScope scope) {
     }, constructible: false);
   final dv = JFunction(
     (a, r) => throw JThrown(JError('TypeError', 'DataView requires new')),
-    construct: (a) {
-      final b = buffer(jArg(a, 0)), offset = jIndex(jArg(a, 1));
+    constructWithTarget: jBuiltinAllocator(jDataViewPrototype, (a) {
+      final b = jArg(a, 0);
+      if (b is! JArrayBuffer)
+        throw JThrown(
+          JError('TypeError', 'ArrayBuffer or SharedArrayBuffer required'),
+        );
+      final offset = jIndex(jArg(a, 1));
       b.check();
       if (offset > b.bytes.length)
         throw JThrown(JError('RangeError', 'Offset outside buffer'));
@@ -463,7 +634,7 @@ void installJSBinary(JScope scope) {
       if (offset + (length ?? 0) > b.bytes.length)
         throw JThrown(JError('RangeError', 'View outside buffer'));
       return JDataView(b, offset, length);
-    },
+    }),
   );
   dv.properties['prototype'] = jDataViewPrototype;
   jDataViewPrototype.properties['constructor'] = dv;
@@ -510,6 +681,8 @@ void installJSBinary(JScope scope) {
         return jReadElement(v.buffer, v.offset + index, kind, endian);
       }, constructible: false);
   }
+  final typedArrayConstructor = jBuildTypedArrayConstructor();
+  jTypedArrayPrototype.properties['constructor'] = typedArrayConstructor;
   for (final kind in jElementSizes.keys) {
     final size = jElementSizes[kind]!;
     final proto = jTypedPrototypes.putIfAbsent(
@@ -518,7 +691,7 @@ void installJSBinary(JScope scope) {
     );
     final constructor = JFunction(
       (a, r) => throw JThrown(JError('TypeError', '$kind requires new')),
-      construct: (a) {
+      constructWithTarget: jBuiltinAllocator(proto, (a) {
         final input = jArg(a, 0);
         if (input is JArrayBuffer) {
           final offset = jIndex(jArg(a, 1));
@@ -562,27 +735,13 @@ void installJSBinary(JScope scope) {
           return jTypedFrom(kind, values);
         }
         return jTypedCreate(kind, jBufferSize(input));
-      },
+      }),
     );
     constructor.properties.addAll({
       'prototype': proto,
       'BYTES_PER_ELEMENT': size,
-      'of': jBuiltin((a) => jTypedFrom(kind, a)),
-      'from': jBuiltin((a) {
-        final input = jArg(a, 0), mapper = jArg(a, 1);
-        if (!identical(mapper, jUndefined) && mapper is! JFunction)
-          throw JThrown(JError('TypeError', 'Mapper is not callable'));
-        final values = !jNullish(jGet(input, jSymbols['iterator']))
-            ? jIterable(input).toList()
-            : jArrayLikeList(input);
-        return jTypedFrom(kind, [
-          for (var i = 0; i < values.length; i++)
-            mapper is JFunction
-                ? jCall(mapper, [values[i], i.toDouble()], receiver: jArg(a, 2))
-                : values[i],
-        ]);
-      }),
     });
+    constructor.prototype = typedArrayConstructor;
     proto.properties.addAll({
       'constructor': constructor,
       'BYTES_PER_ELEMENT': size,
@@ -695,32 +854,43 @@ void jInstallTypedMethods() {
     return jUndefined;
   });
   method('subarray', (a, t) {
-    final start = jRelativeIndex(jArg(a, 0), t.length),
-        end = identical(jArg(a, 1), jUndefined)
-            ? t.length
-            : jRelativeIndex(a[1], t.length);
-    return JTypedArray(
-      t.kind,
+    final length = t.length;
+    final start = jRelativeIndex(jArg(a, 0), length);
+    final openEnd = identical(jArg(a, 1), jUndefined);
+    final end = openEnd ? length : jRelativeIndex(a[1], length);
+    return jTypedSpeciesCreate(t, [
       t.buffer,
-      t.offset + start * t.size,
-      identical(jArg(a, 1), jUndefined) && t.fixedLength == null
-          ? null
-          : math.max(end - start, 0),
-    );
+      (t.offset + start * t.size).toDouble(),
+      if (!openEnd || t.fixedLength != null)
+        math.max(end - start, 0).toDouble(),
+    ]);
   });
   method('slice', (a, t) {
-    final start = jRelativeIndex(jArg(a, 0), t.length),
-        end = identical(jArg(a, 1), jUndefined)
-            ? t.length
-            : jRelativeIndex(a[1], t.length);
+    final length = t.length;
+    final start = jRelativeIndex(jArg(a, 0), length);
+    final end = identical(jArg(a, 1), jUndefined)
+        ? length
+        : jRelativeIndex(a[1], length);
+    final requested = math.max(end - start, 0);
+    final result = jTypedSpeciesCreate(t, [
+      requested.toDouble(),
+    ], length: requested);
+    if (requested == 0) return result;
     t.check();
-    final result = jTypedCreate(t.kind, math.max(end - start, 0));
-    result.buffer.bytes.setRange(
-      0,
-      result.length * t.size,
-      t.buffer.bytes,
-      t.offset + start * t.size,
-    );
+    final count = math.max(0, math.min(requested, t.length - start));
+    if (count == 0) return result;
+    if (result.kind == t.kind && !identical(t.buffer, result.buffer)) {
+      result.buffer.bytes.setRange(
+        result.offset,
+        result.offset + count * t.size,
+        t.buffer.bytes,
+        t.offset + start * t.size,
+      );
+    } else {
+      for (var i = 0; i < count; i++) {
+        result.write('$i', t.at(start + i), result);
+      }
+    }
     return result;
   });
   method('fill', (a, t) {
@@ -771,6 +941,9 @@ void jInstallTypedMethods() {
       if (callback is! JFunction)
         throw JThrown(JError('TypeError', 'Callback required'));
       final length = t.length, values = <dynamic>[];
+      final mappedArray = mode == 'map'
+          ? jTypedSpeciesCreate(t, [length.toDouble()], length: length)
+          : null;
       for (var step = 0; step < length; step++) {
         final i = mode.startsWith('findLast') ? length - 1 - step : step,
             value = t.at(i),
@@ -779,16 +952,24 @@ void jInstallTypedMethods() {
               i.toDouble(),
               t,
             ], receiver: jArg(a, 1));
-        if (mode == 'map') values.add(mapped);
+        if (mappedArray != null) mappedArray.write('$i', mapped, mappedArray);
         if (mode == 'filter' && jTruthy(mapped)) values.add(value);
         if (mode == 'some' && jTruthy(mapped)) return true;
         if (mode == 'every' && !jTruthy(mapped)) return false;
         if (mode.startsWith('find') && jTruthy(mapped))
           return mode.endsWith('Index') ? i.toDouble() : value;
       }
-      return mode == 'map' || mode == 'filter'
-          ? jTypedFrom(t.kind, values)
-          : mode == 'some'
+      if (mappedArray != null) return mappedArray;
+      if (mode == 'filter') {
+        final result = jTypedSpeciesCreate(t, [
+          values.length.toDouble(),
+        ], length: values.length);
+        for (var i = 0; i < values.length; i++) {
+          result.write('$i', values[i], result);
+        }
+        return result;
+      }
+      return mode == 'some'
           ? false
           : mode == 'every'
           ? true

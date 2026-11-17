@@ -12,6 +12,7 @@
   <main>
     <h1>バイナリデータの集計</h1>
     <p id="status">待機中</p>
+    <htgc-status></htgc-status>
     <p id="result"></p>
     <p id="date"></p>
     <button id="run" type="button">集計する</button>
@@ -24,15 +25,20 @@
         return true;
       }
     });
+    const readyStatus = '準備完了';
+    class StatusElement extends HTMLElement {
+      connectedCallback() { this.textContent = readyStatus; }
+    }
+    customElements.define('htgc-status', StatusElement);
+    class ResultBuffer extends SharedArrayBuffer {}
     async function* records() {
-      const buffer = new ArrayBuffer(8);
+      const buffer = new ResultBuffer(8);
+      const signed = new Uint16Array(buffer);
       const view = new DataView(buffer);
-      view.setUint16(0, 64, true);
-      view.setUint16(2, 128, true);
-      view.setUint16(4, 192, true);
-      view.setUint16(6, 256, true);
-      for (let offset = 0; offset < 8; offset += 2) {
-        yield await Promise.resolve(view.getUint16(offset, true));
+      const littleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+      for (let index = 0; index < 4; index++) {
+        Atomics.store(signed, index, (index + 1) * 64);
+        yield await Promise.resolve(view.getUint16(index * 2, littleEndian));
       }
     }
     document.getElementById('run').addEventListener('click', async () => {
@@ -40,7 +46,7 @@
       const values = [];
       for await (const value of records()) values.push(value);
       const data = new Uint16Array(values);
-      const match = /total=(?<value>\d+)/d.exec('total=' + data.reduce((sum, value) => sum + value, 0));
+      const match = /total=(?<value>[\p{ASCII}&&\p{Decimal_Number}]+)/dv.exec('total=' + data.reduce((sum, value) => sum + value, 0));
       state.result = '合計 ' + match.groups.value + ' / ' + data.join(',');
       state.date = new Date(Date.UTC(2026, 10, 16)).toISOString();
       state.status = '完了';

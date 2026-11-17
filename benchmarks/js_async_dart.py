@@ -29,6 +29,8 @@ Future<void> main() async {
 }
 '''
 NODE_HARNESS = '''
+// Atomics.waitAsync timeouts do not keep the Node event loop alive.
+const keepAlive = setTimeout(() => { throw new Error('Fixture did not finish'); }, 5000);
 let done;
 const finished = new Promise((resolve, reject) => { done = {resolve, reject}; });
 globalThis.$DONE = error => error === undefined ? done.resolve() : done.reject(error);
@@ -62,7 +64,7 @@ def main():
             generated.write_text(runtime + '\n' + compile_script(source, path) + HARNESS)
             native = run_generated(generated, args)
             reference = subprocess.run(['node', '--input-type=module'],
-                input=NODE_HARNESS + source + '\nawait finished;\n',
+                input=NODE_HARNESS + source + '\ntry { await finished; } finally { clearTimeout(keepAlive); }\n',
                 text=True, capture_output=True, timeout=15)
             if native.returncode or reference.returncode or native.stdout != reference.stdout:
                 print('FAIL', path.name)

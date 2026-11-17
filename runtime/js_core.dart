@@ -7,6 +7,7 @@ import 'dart:typed_data';
 part 'js_date.dart';
 part 'js_proxy.dart';
 part 'js_binary.dart';
+part 'js_atomics.dart';
 part 'js_regexp.dart';
 part 'js_generator.dart';
 
@@ -1272,14 +1273,85 @@ JFunction jNamedFunction(JFunction function, String name, int length) {
   return function;
 }
 
-class JClass extends JObject {
-  final dynamic base;
-  final Map<String, dynamic> methods;
-  JClass(this.base, this.methods);
+class JClass extends JFunction {
+  JClass(dynamic Function(List<dynamic>, dynamic) construct)
+    : super(
+        (args, receiver) => throw JThrown(
+          JError('TypeError', 'Class constructor requires new'),
+        ),
+        constructWithTarget: construct,
+      );
+
   void attach(JObject instance) {
-    if (base is JClass) (base as JClass).attach(instance);
-    instance.properties.addAll(methods);
+    instance.prototype = properties['prototype'] as JObject;
   }
+}
+
+JFunction jDefaultClass(String name, dynamic base, {required bool derived}) {
+  final constructor = base is JFunction && base.constructible ? base : null;
+  if (derived && base != null && constructor == null) {
+    throw JThrown(JError('TypeError', 'Class extends a non-constructor'));
+  }
+  final parentPrototype = !derived
+      ? jObjectPrototype
+      : constructor == null
+      ? null
+      : jGet(constructor, 'prototype');
+  if (parentPrototype != null && parentPrototype is! JObject) {
+    throw JThrown(JError('TypeError', 'Invalid superclass prototype'));
+  }
+  final prototype = JObject()..prototype = parentPrototype;
+  final classFunction = JClass((args, newTarget) {
+    if (constructor != null)
+      return jNew(constructor, args, newTarget: newTarget);
+    if (derived)
+      throw JThrown(JError('TypeError', 'No superclass constructor'));
+    return JObject()
+      ..prototype = jPrototypeFromConstructor(newTarget, jObjectPrototype);
+  });
+  if (constructor != null) classFunction.prototype = constructor;
+  classFunction.properties['prototype'] = prototype;
+  classFunction.flags['prototype'] = JPropertyFlags(
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  );
+  prototype.properties['constructor'] = classFunction;
+  prototype.flags['constructor'] = JPropertyFlags(enumerable: false);
+  return jNamedFunction(classFunction, name, 0);
+}
+
+JObject jPrototypeFromConstructor(dynamic newTarget, JObject fallback) {
+  final prototype = jGet(newTarget, 'prototype');
+  return prototype is JObject ? prototype : fallback;
+}
+
+JObject Function(List<dynamic>, dynamic) jBuiltinAllocator(
+  JObject fallback,
+  JObject Function(List<dynamic>) allocate,
+) => (args, newTarget) {
+  final prototype = jPrototypeFromConstructor(newTarget, fallback);
+  return allocate(args)..prototype = prototype;
+};
+
+void jDefineClassMethod(
+  JFunction constructor,
+  bool isStatic,
+  String kind,
+  Object key,
+  JFunction method,
+) {
+  final owner = isStatic
+      ? constructor
+      : constructor.properties['prototype'] as JObject;
+  final name = key is JSymbol ? '[${key.description ?? ''}]' : key as String;
+  jNameFunction(
+    method,
+    kind == 'init' ? name : '$kind $name',
+    (method.properties['length'] as num).toInt(),
+  );
+  jApplyObjectEntry(owner, (kind, key, method));
+  owner.flags[key] = JPropertyFlags(enumerable: false);
 }
 
 class JRef {
@@ -2070,13 +2142,6 @@ dynamic jNew(dynamic constructor, List<dynamic> args, {dynamic newTarget}) {
     if (!constructor.constructible) jProxyError('Not a constructor');
     return constructor.proxy.construct(args, newTarget);
   }
-  if (constructor is JClass) {
-    final result = constructor.base is JFunction
-        ? jNew(constructor.base, args)
-        : JObject();
-    constructor.attach(result);
-    return result;
-  }
   if (constructor is JFunction) {
     if (!constructor.constructible)
       throw JThrown(JError('TypeError', 'Not a constructor'));
@@ -2459,6 +2524,7 @@ void installJSBuiltins(JScope scope) {
   installJSObjects(scope);
   installJSProxies(scope);
   installJSBinary(scope);
+  installJSAtomics(scope);
   installJSRegExp(scope);
   installJSCollections(scope);
   scope.define(

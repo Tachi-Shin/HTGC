@@ -235,7 +235,7 @@ cp -R lib/main.dart.assets build/linux/x64/release/bundle/
 | --- | --- |
 | [WHATWG HTML](https://html.spec.whatwg.org/) | Flutterではフォームの一部、`dialog`、`details` のほか、`template.content` から断片を複製して挿入できます。ローカルの `iframe/srcdoc` と `object/embed` の文書・画像を扱います。テンプレートのShadow DOM構文、メディア要素、リモート埋め込み、sandboxポリシー、Workerは未対応です。 |
 | [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | Flutterの拡張変換は、名前付き・匿名・入れ子の `@layer`、レイヤー順序の宣言、ローカル `@import … layer()`、著者スタイルの `!important` と `revert-layer` に対応します。画面幅・高さ、カラーテーマ、動きを減らす設定などに応じたレイヤー順序と条件付きインポートにも対応します。ページ媒体、詳細な組版、全CSSプロパティの値文法は未対応です。 |
-| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。ローカルの動的 `import()`、トップレベル `await`、`async/await` とPromiseの基本操作にも対応します。BigIntとNumberの数値変換・演算、Symbol、通常オブジェクトの記述子・プロトタイプ操作、Map/Set/WeakMap/WeakSet、反復と分割代入、JSONの基本操作にも対応します。ジェネレーターと非同期反復、Proxy、ArrayBuffer/DataView/TypedArray、Date、RegExpも下記の範囲で扱います。import map、完全な関数・クラス・Realm、SharedArrayBuffer/Atomicsなどは未実装です。 |
+| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。ローカルの動的 `import()`、トップレベル `await`、`async/await` とPromiseの基本操作にも対応します。BigIntとNumberの数値変換・演算、Symbol、通常オブジェクトの記述子・プロトタイプ操作、Map/Set/WeakMap/WeakSet、反復と分割代入、JSONの基本操作にも対応します。ジェネレーターと非同期反復、Proxy、ArrayBuffer/DataView/TypedArray、Date、RegExpも下記の範囲で扱います。未実装・部分実装の内訳は[ECMA-262実装監査](docs/ecmascript.md)に記載しています。 |
 
 Flutterモジュールの指定子には `./logic.js`、`../shared.js`、`/shared.js` のようにパスを記述します。`/` は入口HTMLのディレクトリを表します。依存モジュールは変換時に収録され、同じ文書内では各モジュールを1回評価します。
 
@@ -339,7 +339,9 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 | ArrayBuffer / DataView | バッファ共有、resize、slice、transfer、transferToFixedLength、デタッチ判定、エンディアンを指定した整数・浮動小数点・BigIntの読み書き |
 | TypedArray | 符号付き／符号なし整数、Uint8Clamped、Float16/32/64、BigInt64/BigUint64、インデックス操作、from/of、反復、set/subarray/slice、検索・集計・map/filter、安定ソート、変更せずコピーを返す操作、可変長バッファ上のビュー |
 | Date | 時刻値、TimeClip、ISO形式と生成したUTC／ローカル形式の解析、UTC／ローカルのget/set、ISO・UTC文字列、JSON変換、無効日時、年0〜99の変換 |
-| RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し、RegExp.escape、compile |
+| RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し、RegExp.escape、compile。`v` はリテラルとパターン・フラグを文字列リテラルで渡す直接の `RegExp(...)` / `new RegExp(...)` を変換。 |
+| SharedArrayBufferとAtomics | 単一のFlutter isolate内でのバッファ共有、grow、slice、整数・BigIntの原子的な読み書き、waitAsyncのタイムアウトとnotify。FlutterのUIエージェントは同期waitを拒否。 |
+| 組み込み型の派生クラス | 既定コンストラクターのクラス宣言・クラス式。Date、RegExp、ArrayBuffer、SharedArrayBuffer、DataView、TypedArray各型の内部データと派生プロトタイプを保持。`slice` などのバッファ・TypedArray操作でSymbol.speciesを参照。 |
 
 5機能を組み合わせて、HTMLのボタンから非同期にバイナリデータを集計するサンプルは [benchmarks/ecmascript/index.html](benchmarks/ecmascript/index.html) にあります。
 
@@ -352,9 +354,9 @@ HTGC benchmarks/ecmascript/index.html -o ../portfolio-app/lib/main.dart
 これらはECMAScript全仕様の実装完了を意味しません。特に次の制限があります。
 
 - 完全な関数・クラス・Realm・厳密モードの差、ラベル付き制御構文、タグ付きテンプレート、動的Function/eval、ループの束縛や非同期ジョブの全ケースは未対応または未検証です。
-- Proxyで配列を包んだときの特殊な記述子・拡張禁止など、通常オブジェクトと異なる内部操作は未完です。組み込みコンストラクターに独自newTargetを渡すReflect.constructは拒否します。
-- TypedArrayなどのSpecies／サブクラス、共有メモリとAtomics、すべての副作用順序・メタデータの互換性は未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
-- RegExpの `v` フラグは未対応として診断します。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータ・重複する名前付きグループなど最新仕様との差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
+- Proxyで配列を包んだときの特殊な記述子・拡張禁止など、通常オブジェクトと異なる内部操作は未完です。上表の型では独自newTargetを渡すReflect.constructも扱います。その他の組み込みコンストラクターは未対応です。
+- 明示的なクラスコンストラクター、super、未対応の組み込み派生型、複数エージェント間の共有メモリ、すべての副作用順序・メタデータの互換性は未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
+- 実行時に組み立てた文字列からの `v` パターンは未対応です。変換対象の `v` はregexpu-coreでDartのRegExpが扱える形に書き換えます。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータ・重複する名前付きグループなど最新仕様との差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
 - Dateのタイムゾーン規則は実行環境に依存します。実装依存の旧式日付文字列すべての受理や、Intlによるロケール整形は保証しません。
 
 検証範囲と再実行手順は [benchmarks/README.md](benchmarks/README.md) に記載しています。Test262全体の合格を示すものではありません。
@@ -423,4 +425,4 @@ $project_root = (Get-Location).Path
 .\dist\HTGC.exe -Dart example/main.html
 ```
 
-配布するファイルは、macOS・Linuxでは `dist/HTGC`、Windowsでは `dist/HTGC.exe` です。上記では描画ランタイムとAcornを含むJavaScript解析用ファイルも同梱します。JavaScriptを含む入力の変換時には、実行するPCのPATHにNode.jsが必要です。Node.jsは生成アプリの実行時には使いません。生成されたDartをアプリとしてビルドするには、Flutter SDKと対象OSのビルド環境が必要です。
+配布するファイルは、macOS・Linuxでは `dist/HTGC`、Windowsでは `dist/HTGC.exe` です。上記では描画ランタイムとAcorn・regexpu-coreを含むJavaScript変換用ファイルも同梱します。JavaScriptを含む入力の変換時には、実行するPCのPATHにNode.jsが必要です。Node.jsは生成アプリの実行時には使いません。生成されたDartをアプリとしてビルドするには、Flutter SDKと対象OSのビルド環境が必要です。

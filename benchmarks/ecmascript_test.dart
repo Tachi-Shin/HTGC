@@ -23,6 +23,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('待機中', findRichText: true), findsOneWidget);
+      expect(find.text('準備完了', findRichText: true), findsOneWidget);
       await tester.tap(find.text('集計する', findRichText: true));
       await tester.pumpAndSettle();
       expect(find.text('完了', findRichText: true), findsOneWidget);

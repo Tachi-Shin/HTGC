@@ -214,7 +214,7 @@ void installJSDates(JScope scope) {
 
   final constructor = JFunction(
     (a, _) => jDateString(construct([]), 'toString'),
-    construct: construct,
+    constructWithTarget: jBuiltinAllocator(jDatePrototype, construct),
   );
   constructor.properties.addAll({
     'prototype': jDatePrototype,

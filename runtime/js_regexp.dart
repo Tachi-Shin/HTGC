@@ -28,35 +28,39 @@ class JRegex extends JObject {
   final List<int> captureIndices = [];
   final Map<String, int> names = {};
   String marker = 'HTGCpos';
-  JRegex(this.pattern, this.flagText) {
+  String? lowered;
+  bool get fullUnicode => flagText.contains('u') || flagText.contains('v');
+
+  JRegex(this.pattern, this.flagText, {this.lowered}) {
     final flags = flagText;
     prototype = jRegExpPrototype;
     if (flags.split('').any((c) => !'dgimsuvy'.contains(c)) ||
         flags.split('').toSet().length != flags.length ||
         flags.contains('u') && flags.contains('v'))
       throw JThrown(JError('SyntaxError', 'Invalid regular expression flags'));
-    if (flags.contains('v'))
+    if (flags.contains('v') && lowered == null)
       throw JThrown(
         JError(
           'SyntaxError',
-          'Unicode set notation is not implemented by this runtime',
+          'Runtime-created Unicode sets require a precompiled pattern',
         ),
       );
+    final matchingPattern = lowered ?? pattern;
     try {
       value = RegExp(
-        pattern,
+        matchingPattern,
         caseSensitive: !flags.contains('i'),
         multiLine: flags.contains('m'),
         dotAll: flags.contains('s'),
-        unicode: flags.contains('u'),
+        unicode: fullUnicode,
       );
       if (flags.contains('d'))
         value = RegExp(
-          instrument(),
+          instrument(matchingPattern),
           caseSensitive: !flags.contains('i'),
           multiLine: flags.contains('m'),
           dotAll: flags.contains('s'),
-          unicode: flags.contains('u'),
+          unicode: fullUnicode,
         );
     } on FormatException catch (e) {
       throw JThrown(JError('SyntaxError', e.message));
@@ -86,7 +90,7 @@ class JRegex extends JObject {
               ? r'\u2028'
               : r'\u2029';
         });
-  String instrument() {
+  String instrument(String pattern) {
     while (pattern.contains(marker)) marker += 'X';
     final tokens = <String>[], stack = <int>[], mapping = <int, int>{};
     var inClass = false, original = 0, native = 0;
@@ -452,6 +456,7 @@ dynamic jRegexSplit(JRegex regex, String input, dynamic limitValue) {
   final splitter = JRegex(
     regex.pattern,
     regex.flagText.contains('y') ? regex.flagText : '${regex.flagText}y',
+    lowered: regex.lowered,
   );
   if (input.isEmpty)
     return jRegexExec(splitter, input) == null ? <dynamic>[''] : out;
@@ -460,12 +465,12 @@ dynamic jRegexSplit(JRegex regex, String input, dynamic limitValue) {
     splitter.set('lastIndex', q.toDouble());
     final match = jRegexExec(splitter, input);
     if (match == null) {
-      q = jAdvanceString(input, q, regex.flagText.contains('u'));
+      q = jAdvanceString(input, q, regex.fullUnicode);
       continue;
     }
     final end = math.min(jLength(splitter.get('lastIndex')), input.length);
     if (end == p) {
-      q = jAdvanceString(input, q, regex.flagText.contains('u'));
+      q = jAdvanceString(input, q, regex.fullUnicode);
       continue;
     }
     out.add(input.substring(p, q));
@@ -482,7 +487,7 @@ dynamic jRegexSplit(JRegex regex, String input, dynamic limitValue) {
 }
 
 JObject jRegexMatchAll(JRegex source, String input) {
-  final regex = JRegex(source.pattern, source.flagText)
+  final regex = JRegex(source.pattern, source.flagText, lowered: source.lowered)
     ..set('lastIndex', jLength(source.get('lastIndex')).toDouble());
   final iterator = JObject();
   var done = false;
@@ -501,7 +506,7 @@ JObject jRegexMatchAll(JRegex source, String input) {
         jAdvanceString(
           input,
           jLength(regex.get('lastIndex')),
-          regex.flagText.contains('u'),
+          regex.fullUnicode,
         ).toDouble(),
       );
     return JObject({'value': result, 'done': false});
@@ -569,6 +574,30 @@ dynamic jStringRegExp(String operation, String input, List<dynamic> args) {
   return output.toString();
 }
 
+class JRegExpConstructor extends JFunction {
+  final dynamic Function(List<dynamic>, bool, String?) create;
+
+  JRegExpConstructor(this.create)
+    : super(
+        (args, receiver) => create(args, false, null),
+        constructWithTarget: jBuiltinAllocator(
+          jRegExpPrototype,
+          (args) => create(args, true, null) as JRegex,
+        ),
+      );
+}
+
+dynamic jCallPrecompiledRegExp(
+  dynamic target,
+  List<dynamic> args,
+  String lowered, {
+  required bool constructing,
+}) {
+  if (target is JRegExpConstructor)
+    return target.create(args, constructing, lowered);
+  return constructing ? jNew(target, args) : jCall(target, args);
+}
+
 void installJSRegExp(JScope scope) {
   JRegex receiver(dynamic r) {
     if (r is! JRegex)
@@ -576,8 +605,8 @@ void installJSRegExp(JScope scope) {
     return r;
   }
 
-  late final JFunction constructor;
-  dynamic create(List<dynamic> a, bool construct) {
+  late final JRegExpConstructor constructor;
+  dynamic create(List<dynamic> a, bool construct, String? precompiled) {
     final input = jArg(a, 0), flags = jArg(a, 1), isRegex = jIsRegExp(input);
     if (!construct &&
         isRegex &&
@@ -598,13 +627,17 @@ void installJSRegExp(JScope scope) {
               ? jString(jGet(input, 'flags'))
               : ''
         : jString(flags);
-    return JRegex(source, options);
+    final lowered =
+        input is JRegex &&
+            options.contains('v') &&
+            input.flagText.contains('v') &&
+            options.contains('i') == input.flagText.contains('i')
+        ? input.lowered
+        : null;
+    return JRegex(source, options, lowered: precompiled ?? lowered);
   }
 
-  constructor = JFunction(
-    (a, r) => create(a, false),
-    construct: (a) => create(a, true),
-  );
+  constructor = JRegExpConstructor(create);
   constructor.properties['prototype'] = jRegExpPrototype;
   jRegExpPrototype.properties['constructor'] = constructor;
   constructor.properties['escape'] = jNamedFunction(
@@ -666,13 +699,14 @@ void installJSRegExp(JScope scope) {
         JError('TypeError', 'Flags cannot accompany a RegExp in compile'),
       );
     final replacement = input is JRegex
-        ? JRegex(input.pattern, input.flagText)
+        ? JRegex(input.pattern, input.flagText, lowered: input.lowered)
         : JRegex(
             identical(input, jUndefined) ? '' : jString(input),
             identical(flags, jUndefined) ? '' : jString(flags),
           );
     regex.pattern = replacement.pattern;
     regex.flagText = replacement.flagText;
+    regex.lowered = replacement.lowered;
     regex.value = replacement.value;
     regex.captureIndices
       ..clear()

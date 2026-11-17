@@ -93,6 +93,9 @@ class GeneratorCompiler(Compiler):
         if kind == 'MemberExpression':
             return self.member_value(node)
         if kind in ('CallExpression', 'NewExpression'):
+            if "htgcLoweredRegExp" in node:
+                callee = self.expr(node["callee"])
+                return self.save(self.precompiled_regexp(node, callee, self.arguments(node["arguments"])))
             callee = node['callee']
             if kind == 'NewExpression':
                 target = self.expr(callee)
