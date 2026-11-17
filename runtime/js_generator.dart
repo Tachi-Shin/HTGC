@@ -175,7 +175,8 @@ JObject jBuildGeneratorFunctionPrototype(bool asynchronous) {
   final generator = asynchronous
       ? jAsyncGeneratorPrototype
       : jGeneratorPrototype;
-  final prototype = JObject({'prototype': generator});
+  final prototype = JObject({'prototype': generator})
+    ..prototype = jFunctionPrototype;
   prototype.flags['prototype'] = JPropertyFlags(
     enumerable: false,
     writable: false,

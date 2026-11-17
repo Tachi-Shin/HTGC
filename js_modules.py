@@ -80,6 +80,7 @@ class DartModules:
             module.exports["default"] = (None, DEFAULT)
             return
         ast = parse(source, key)
+        module.compiler.collect_constructor_aliases(ast)
         for node in ast["body"]:
             kind = node["type"]
             reference = node.get("source")

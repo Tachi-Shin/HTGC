@@ -457,3 +457,29 @@ language/eval-code/direct/var-env-func-strict-source.js
 built-ins/Function/S15.3.2.1_A2_T1.js
 built-ins/Function/S15.3.2.1_A2_T2.js
 built-ins/Function/S15.3.2.1_A2_T3.js
+
+# Direct eval completion values
+language/eval-code/direct/cptn-nrml-empty-block.js
+language/eval-code/direct/cptn-nrml-empty-do-while.js
+language/eval-code/direct/cptn-nrml-empty-for.js
+language/eval-code/direct/cptn-nrml-empty-if.js
+language/eval-code/direct/cptn-nrml-empty-switch.js
+language/eval-code/direct/cptn-nrml-empty-var.js
+language/eval-code/direct/cptn-nrml-empty-while.js
+
+# Statically known async and generator constructors
+built-ins/AsyncFunction/AsyncFunction-construct.js
+built-ins/AsyncFunction/AsyncFunction-name.js
+built-ins/AsyncFunction/AsyncFunctionPrototype-prototype.js
+built-ins/GeneratorFunction/name.js
+built-ins/GeneratorFunction/length.js
+built-ins/GeneratorFunction/invoked-as-constructor-no-arguments.js
+built-ins/GeneratorFunction/invoked-as-function-no-arguments.js
+built-ins/GeneratorFunction/invoked-as-function-single-argument.js
+built-ins/GeneratorFunction/invoked-as-function-multiple-arguments.js
+built-ins/AsyncGeneratorFunction/name.js
+built-ins/AsyncGeneratorFunction/length.js
+built-ins/AsyncGeneratorFunction/invoked-as-constructor-no-arguments.js
+built-ins/AsyncGeneratorFunction/invoked-as-function-no-arguments.js
+built-ins/AsyncGeneratorFunction/invoked-as-function-single-argument.js
+built-ins/AsyncGeneratorFunction/invoked-as-function-multiple-arguments.js

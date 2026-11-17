@@ -8,7 +8,10 @@
       eval('value += 1');
       return Function('x', 'return x * 3')(value);
     }
-    document.getElementById('status').textContent = String(calculate());
+    const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).constructor;
+    const generator = AsyncGeneratorFunction('yield 4;')();
+    const result = await generator.next();
+    document.getElementById('status').textContent = String(calculate() + result.value);
   </script>
 </body>
 </html>

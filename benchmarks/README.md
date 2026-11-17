@@ -43,7 +43,7 @@ git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
 python3 benchmarks/test262_dart.py ../test262
 ```
 
-Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の100件に、Proxy.get 18件、GeneratorPrototype 59件、Date.toISOString 17件、RegExp.exec 13件、ArrayBuffer.resize 10件を追加し、さらにAtomics.waitAsync 20件、SharedArrayBuffer.grow 14件、RegExpのUnicode集合9件を加えた260件に、Math.sumPrecise 10件、Uint8Array.fromBase64 13件、JSON.rawJSON 10件を追加した293件に、Iteratorとリソース管理の96件、zip・zipKeyed・includes・joinの131件、宣言とループの束縛21件、固定文字列のeval・Function 9件を加えた計550件を、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` と `test262_extended.txt` に列挙しています。
+Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の100件に、Proxy.get 18件、GeneratorPrototype 59件、Date.toISOString 17件、RegExp.exec 13件、ArrayBuffer.resize 10件を追加し、さらにAtomics.waitAsync 20件、SharedArrayBuffer.grow 14件、RegExpのUnicode集合9件を加えた260件に、Math.sumPrecise 10件、Uint8Array.fromBase64 13件、JSON.rawJSON 10件を追加した293件に、Iteratorとリソース管理の96件、zip・zipKeyed・includes・joinの131件、宣言とループの束縛21件、固定文字列のeval・関数コンストラクター31件を加えた計572件を、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` と `test262_extended.txt` に列挙しています。
 
 BigIntの試験では、2〜36進数の文字列化、整数変換と構文エラー、`asIntN/asUintN` の算術・型変換・副作用の順序、プロトタイプと関数の記述子、呼び出し時の例外を検証します。BigIntの全試験ではなく、複数Realm、Functionの継承、スクリプトのグローバル `this`、Dateと組み合わせた変換などは対象外です。
 

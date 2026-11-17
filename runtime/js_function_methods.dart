@@ -102,7 +102,8 @@ bool jOrdinaryHasInstance(JFunction function, dynamic instance) {
 }
 
 class JDynamicFunctionConstructor extends JFunction {
-  JDynamicFunctionConstructor()
+  final String kind;
+  JDynamicFunctionConstructor([this.kind = 'normal'])
     : super(
         (_, __) => throw JThrown(
           JError('TypeError', 'Dynamic Function source is not compiled'),
@@ -135,9 +136,22 @@ dynamic jCompiledFunction(
   List<dynamic> args,
   dynamic Function() body, {
   required bool construct,
+  String kind = 'normal',
+  dynamic receiver = jUndefined,
 }) {
-  if (callee is JDynamicFunctionConstructor) return body();
-  return construct ? jNew(callee, args) : jCall(callee, args);
+  if (callee is JDynamicFunctionConstructor && callee.kind == kind)
+    return body();
+  return construct
+      ? jNew(callee, args)
+      : jCall(callee, args, receiver: receiver);
+}
+
+final JObject jAsyncFunctionPrototype = JObject()
+  ..prototype = jFunctionPrototype;
+
+JFunction jAsyncFunction(JFunction function) {
+  function.prototype = jAsyncFunctionPrototype;
+  return function;
 }
 
 void installJSFunctionPrototype(JScope scope) {
@@ -152,6 +166,34 @@ void installJSFunctionPrototype(JScope scope) {
   jFunctionPrototype.properties['constructor'] = function;
   jFunctionPrototype.flags['constructor'] = JPropertyFlags(enumerable: false);
   scope.define('Function', function);
+  for (final (kind, name, prototype) in <(String, String, JObject)>[
+    ('async', 'AsyncFunction', jAsyncFunctionPrototype),
+    ('generator', 'GeneratorFunction', jGeneratorFunctionPrototype),
+    (
+      'asyncGenerator',
+      'AsyncGeneratorFunction',
+      jAsyncGeneratorFunctionPrototype,
+    ),
+  ]) {
+    final constructor = jNamedFunction(
+      JDynamicFunctionConstructor(kind),
+      name,
+      1,
+    );
+    constructor.properties['prototype'] = prototype;
+    constructor.flags['prototype'] = JPropertyFlags(
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    );
+    prototype.properties['constructor'] = constructor;
+    prototype.flags['constructor'] = JPropertyFlags(
+      writable: false,
+      enumerable: false,
+    );
+    prototype.symbols[jSymbols['toStringTag']!] = name;
+    jBuiltinProperties(prototype);
+  }
 }
 
 JObject jArgumentsObject(List<dynamic> args) {

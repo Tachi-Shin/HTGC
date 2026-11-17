@@ -10,6 +10,7 @@ class GeneratorCompiler(Compiler):
         self.module_key = parent.module_key
         self.script_name = parent.script_name
         self.private_names = parent.private_names
+        self.constructor_aliases = parent.constructor_aliases
         self.active, self.prelude = False, []
 
     def wait_for_disposal(self, expression):
@@ -137,7 +138,8 @@ class GeneratorCompiler(Compiler):
                 is_eval = (kind == 'CallExpression' and name == 'eval' and arguments
                            and arguments[0]['type'] == 'Literal'
                            and isinstance(arguments[0].get('value'), str))
-                is_function = (name == 'Function' and all(
+                constructor_kind = self.function_constructor_kind(callee)
+                is_function = (constructor_kind is not None and all(
                     argument['type'] == 'Literal' and isinstance(argument.get('value'), str)
                     for argument in arguments))
                 if is_eval or is_function:
@@ -146,13 +148,28 @@ class GeneratorCompiler(Compiler):
                     self.active = False
                     try:
                         compiled = (self.compiled_eval(arguments[0]['value']) if is_eval
-                                    else self.compiled_function(arguments))
+                                    else self.compiled_function(arguments, constructor_kind))
                     finally:
                         self.active = True
                     if is_eval:
                         return self.save(f'jCompiledEval({target}, {values}, {compiled})')
                     construct = str(kind == 'NewExpression').lower()
-                    return self.save(f'jCompiledFunction({target}, {values}, {compiled}, construct: {construct})')
+                    return self.save(f'jCompiledFunction({target}, {values}, {compiled}, construct: {construct}, kind: {quote(constructor_kind)})')
+            constructor_kind = self.function_constructor_kind(callee)
+            if (constructor_kind is not None and callee['type'] == 'MemberExpression'
+                    and not node.get('optional') and not callee.get('optional')
+                    and all(argument['type'] == 'Literal' and isinstance(argument.get('value'), str)
+                            for argument in arguments)):
+                target = self.member_value(callee, True)
+                values = self.arguments(arguments)
+                self.active = False
+                try:
+                    compiled = self.compiled_function(arguments, constructor_kind)
+                finally:
+                    self.active = True
+                construct = str(kind == 'NewExpression').lower()
+                return self.save(f'jCompiledFunction({target}.function, {values}, {compiled}, '
+                                 f'construct: {construct}, kind: {quote(constructor_kind)}, receiver: {target}.receiver)')
             if "htgcLoweredRegExp" in node:
                 callee = self.expr(node["callee"])
                 return self.save(self.precompiled_regexp(node, callee, self.arguments(node["arguments"])))

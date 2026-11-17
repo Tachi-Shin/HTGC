@@ -18,7 +18,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('21', findRichText: true), findsOneWidget);
+    expect(find.text('25', findRichText: true), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

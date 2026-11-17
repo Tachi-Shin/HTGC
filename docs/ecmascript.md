@@ -5,7 +5,7 @@
 | 仕様の領域 | 未実装、または一部だけ実装している機能 |
 | --- | --- |
 | 実行コンテキスト、Realm、Agent | Realmごとのintrinsic・プロトタイプ・エラーとグローバル環境の分離、スクリプトとモジュールで異なるグローバル束縛、複数Agentとメモリモデル |
-| 宣言と関数 | スクリプトの非strictモード、非strictの引数オブジェクトと仮引数の連動、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunctionコンストラクターとeval |
+| 宣言と関数 | スクリプトの非strictモード、非strictの引数オブジェクトと仮引数の連動、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunction/AsyncGeneratorFunctionコンストラクターとeval |
 | クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
 | 式と文 | with、細部の評価順と例外。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
 | モジュール | ソースフェーズ、実行時の外部モジュール読み込み、ホストローダーとの連携と複数環境での評価。ローカルのモジュールグラフ、import.meta、JSONモジュールとtype属性は一部対応済み |
@@ -31,4 +31,6 @@
 
 ブロック・関数・switch内のlet／const／classの宣言前参照と、for・for…in・for…ofの束縛を拡充しました。for (let …) の初期化式・条件式・更新式・本体のクロージャーは対応する反復の束縛を保持します。未宣言識別子のtypeofも処理します。グローバル環境、非strictモード、全ての宣言競合や束縛の仕様は引き続き未完です。
 
-固定文字列の `eval` は変換時に解析し、直接呼び出し元のスコープにアクセスするDartコードを生成します。固定文字列の `Function` は大域スコープを参照する通常関数として変換します。評価値が文字列でない `eval` は引数を返します。任意の実行時文字列、間接eval、Functionへの動的な引数、評価完了値の全パターン、非strictなevalの変数環境、AsyncFunction／GeneratorFunction／AsyncGeneratorFunctionの動的コンストラクターは未実装です。
+固定文字列の `eval` は変換時に解析し、直接呼び出し元のスコープにアクセスするDartコードを生成します。固定文字列の `Function` は大域スコープを参照する通常関数として変換します。評価値が文字列でない `eval` は引数を返します。任意の実行時文字列、間接eval、Functionへの動的な引数、評価完了値の全パターン、非strictなevalの変数環境は未実装です。AsyncFunction／GeneratorFunction／AsyncGeneratorFunctionは、コンストラクターを関数式から直接取得するか、変数に代入し、固定文字列を渡す場合に変換できます。
+
+直接evalにおける空の文・ブロック、条件分岐、ループ、switch、try/finallyの評価完了値を拡充しました。スクリプトの全構文に対する完了値の適合性は未検証です。

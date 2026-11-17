@@ -67,6 +67,8 @@ class Compiler:
         self.module_key = None
         self.script_name = ""
         self.resource_stack = None
+        self.eval_completion = None
+        self.constructor_aliases = {"Function": "normal"}
 
     def temp(self):
         name = self.name("tmp")
@@ -258,6 +260,13 @@ class Compiler:
         return self.function_value(node)
 
     def function_value(self, node):
+        previous, self.eval_completion = self.eval_completion, None
+        try:
+            return self.function_body(node)
+        finally:
+            self.eval_completion = previous
+
+    def function_body(self, node):
         if node.get("generator"):
             from js_generator import compile_generator
             return self.function_metadata(compile_generator(self, node), node)
@@ -300,7 +309,7 @@ class Compiler:
             body.append(f'throw JAsyncReturn({value});' if self.asynchronous else f'return {value};')
         code = self.temp_declarations() + "\n".join(body)
         result = (
-            f"JFunction(({args}, {receiver}) => {self.async_body(code)}, constructible: false)"
+            f"jAsyncFunction(JFunction(({args}, {receiver}) => {self.async_body(code)}, constructible: false))"
             if self.asynchronous else (
                 f"JFunction(({args}, {receiver}) {{\n{code}\n}}, constructible: false)"
                 if node["type"] == "ArrowFunctionExpression" or node.get("htgc_method") else
@@ -347,6 +356,7 @@ class Compiler:
             ast = parse(source, f"{self.path}:eval")
         except CompileError:
             return '() { throw JThrown(JError("SyntaxError", "Invalid eval source")); }'
+        self.collect_constructor_aliases(ast)
         nodes = ast["body"]
         if self.has_await(nodes) or any(
             node["type"] in ("ImportDeclaration", "ExportNamedDeclaration", "ExportDefaultDeclaration", "ExportAllDeclaration")
@@ -355,21 +365,57 @@ class Compiler:
             return '() { throw JThrown(JError("SyntaxError", "Invalid eval source")); }'
         parent, self.scope = self.scope, self.name("eval")
         scope = self.scope
-        if nodes and nodes[-1]["type"] == "ExpressionStatement":
-            body = self.block_contents(nodes[:-1], hoist_vars=True)
-            result = self.expr(nodes[-1]["expression"])
-        else:
+        previous, self.eval_completion = self.eval_completion, self.name("completion")
+        completion = self.eval_completion
+        try:
             body = self.block_contents(nodes, hoist_vars=True)
-            result = 'jUndefined'
-        self.scope = parent
-        return f'() {{ final {scope} = JScope({parent});\n{body}\nreturn {result}; }}'
+        finally:
+            self.scope, self.eval_completion = parent, previous
+        return (f'() {{ final {scope} = JScope({parent});\n'
+                f'dynamic {completion} = jUndefined;\n{body}\nreturn {completion}; }}')
 
-    def compiled_function(self, arguments):
+    def function_constructor_kind(self, callee):
+        if callee["type"] == "Identifier":
+            return self.constructor_aliases.get(callee["name"])
+        if (callee["type"] != "MemberExpression" or callee.get("computed")
+                or callee["property"].get("name") != "constructor"):
+            return None
+        value = callee["object"]
+        if (value["type"] == "CallExpression" and value["callee"].get("type") == "MemberExpression"
+                and value["callee"]["object"].get("name") == "Object"
+                and value["callee"]["property"].get("name") == "getPrototypeOf"
+                and len(value["arguments"]) == 1):
+            value = value["arguments"][0]
+        if value["type"] not in ("FunctionExpression", "ArrowFunctionExpression"):
+            return None
+        if value.get("generator"):
+            return "asyncGenerator" if value.get("async") else "generator"
+        return "async" if value.get("async") else "normal"
+
+    def collect_constructor_aliases(self, ast):
+        def visit(node):
+            if isinstance(node, list):
+                for child in node:
+                    visit(child)
+            elif isinstance(node, dict):
+                if node.get("type") == "VariableDeclarator" and node["id"]["type"] == "Identifier" and node.get("init"):
+                    kind = self.function_constructor_kind(node["init"])
+                    if kind is not None:
+                        self.constructor_aliases[node["id"]["name"]] = kind
+                for value in node.values():
+                    visit(value)
+        visit(ast)
+
+    def compiled_function(self, arguments, kind="normal"):
         parameters = ','.join(item['value'] for item in arguments[:-1])
         body = arguments[-1]['value'] if arguments else ''
-        source = f'(function anonymous({parameters}\n) {{\n{body}\n}})'
+        prefix = "async " if kind in ("async", "asyncGenerator") else ""
+        star = "*" if kind in ("generator", "asyncGenerator") else ""
+        source = f'({prefix}function{star} anonymous({parameters}\n) {{\n{body}\n}})'
         try:
-            function = parse(source, f"{self.path}:Function")['body'][0]['expression']
+            ast = parse(source, f"{self.path}:Function")
+            self.collect_constructor_aliases(ast)
+            function = ast['body'][0]['expression']
         except CompileError:
             return '() { throw JThrown(JError("SyntaxError", "Invalid Function source")); }'
         parent, self.scope = self.scope, self.name('global')
@@ -490,10 +536,24 @@ class Compiler:
                         and arguments[0]["type"] == "Literal"
                         and isinstance(arguments[0].get("value"), str)):
                     return f'jCompiledEval({self.expr(callee)}, {args}, {self.compiled_eval(arguments[0]["value"])})'
-                if (name == "Function" and all(item["type"] == "Literal" and
+                constructor_kind = self.function_constructor_kind(callee)
+                if (constructor_kind is not None and all(item["type"] == "Literal" and
                         isinstance(item.get("value"), str) for item in arguments)):
                     construct = str(t == "NewExpression").lower()
-                    return f'jCompiledFunction({self.expr(callee)}, {args}, {self.compiled_function(arguments)}, construct: {construct})'
+                    return (f'jCompiledFunction({self.expr(callee)}, {args}, '
+                            f'{self.compiled_function(arguments, constructor_kind)}, '
+                            f'construct: {construct}, kind: {quote(constructor_kind)})')
+            constructor_kind = self.function_constructor_kind(callee)
+            if (constructor_kind is not None and callee["type"] == "MemberExpression"
+                    and not n.get("optional") and not callee.get("optional")
+                    and all(item["type"] == "Literal" and isinstance(item.get("value"), str)
+                            for item in n["arguments"])):
+                callsite = self.temp()
+                construct = str(t == "NewExpression").lower()
+                return (f'(({callsite} = {self.member(callee, call=True)}).skipped ? jShortCircuit : '
+                        f'jCompiledFunction({callsite}.function, {args}, '
+                        f'{self.compiled_function(n["arguments"], constructor_kind)}, '
+                        f'construct: {construct}, kind: {quote(constructor_kind)}, receiver: {callsite}.receiver))')
             if "htgcLoweredRegExp" in n:
                 return self.precompiled_regexp(n, self.expr(callee), args)
             if t == "NewExpression":
@@ -752,6 +812,11 @@ class Compiler:
 
     def stmt(self, n):
         t = n["type"]
+        if (self.eval_completion and not n.get("htgcEvalNoReset") and t in (
+                "IfStatement", "ForStatement", "ForInStatement", "ForOfStatement",
+                "WhileStatement", "DoWhileStatement", "SwitchStatement", "TryStatement")):
+            return (f"{{ {self.eval_completion} = jUndefined;\n"
+                    + self.stmt({**n, "htgcEvalNoReset": True}) + "\n}")
         if t == "LabeledStatement":
             labels = [n["label"]["name"]]
             body = n["body"]
@@ -763,7 +828,9 @@ class Compiler:
                 return self.stmt(labeled)
             return f'{self.loop_label(labeled)}{{\n{self.stmt(body)}\n}}'
         if t == "ExpressionStatement":
-            return self.expr(n["expression"]) + ";"
+            expression = self.expr(n["expression"])
+            return (f"{self.eval_completion} = {expression};" if self.eval_completion
+                    else expression + ";")
         if t in ("EmptyStatement", "DebuggerStatement"):
             return ";"
         if t == "VariableDeclaration":
@@ -901,7 +968,11 @@ class Compiler:
                 code += self.stmt(handler["body"]) + "\n}"
                 self.scope = parent
             if n.get("finalizer") is not None:
-                code += " finally " + self.stmt(n["finalizer"])
+                completion, self.eval_completion = self.eval_completion, None
+                try:
+                    code += " finally " + self.stmt(n["finalizer"])
+                finally:
+                    self.eval_completion = completion
             return code
         if t in ("BreakStatement", "ContinueStatement"):
             label = " " + self.dart_label(n["label"]["name"]) if n.get("label") else ""
@@ -1008,6 +1079,7 @@ class Compiler:
 
     def compile(self, ast, name):
         self.script_name = name
+        self.collect_constructor_aliases(ast)
         body = self.block_contents(ast["body"], hoist_vars=True)
         return (
             f'// JavaScript source: {self.path.replace(chr(10)," ")}\nvoid {name}(JScope scope) {{\n'
