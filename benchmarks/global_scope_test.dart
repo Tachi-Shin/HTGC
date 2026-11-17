@@ -20,7 +20,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('17:true:9:undefined:true:9', findRichText: true), findsOneWidget);
+    expect(find.text('17:true:9:undefined:true:9:9:7', findRichText: true), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

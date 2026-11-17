@@ -112,14 +112,10 @@ class JDynamicFunctionConstructor extends JFunction {
 }
 
 class JEvalFunction extends JFunction {
-  JEvalFunction()
-    : super((args, _) {
-        final value = jArg(args, 0);
-        if (value is! String) return value;
-        throw JThrown(
-          JError('TypeError', 'Dynamic eval source is not compiled'),
-        );
-      }, constructible: false);
+  JEvalFunction(JScope root)
+    : super((args, _) => jRuntimeEval(
+        jArg(args, 0), root.scriptGlobalScope, root.globalThisValue,
+      ), constructible: false);
 }
 
 dynamic jCompiledEval(
@@ -158,7 +154,7 @@ JFunction jAsyncFunction(JFunction function) {
 
 void installJSFunctionPrototype(JScope scope) {
   final function = jNamedFunction(JDynamicFunctionConstructor(), 'Function', 1);
-  scope.define('eval', jNamedFunction(JEvalFunction(), 'eval', 1));
+  scope.define('eval', jNamedFunction(JEvalFunction(scope), 'eval', 1));
   function.properties['prototype'] = jFunctionPrototype;
   function.flags['prototype'] = JPropertyFlags(
     writable: false,

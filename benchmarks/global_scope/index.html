@@ -30,6 +30,10 @@
       return (0, eval)('shared + localLexical');
     }
     document.getElementById('status').textContent += ':' + String(checkIndirect());
+    let source = 'shared + localLexical';
+    document.getElementById('status').textContent += ':' + String((0, eval)(source));
+    function checkDynamic() { let local = 5; return eval('local' + ' + 2'); }
+    document.getElementById('status').textContent += ':' + String(checkDynamic());
   </script>
 </body>
 </html>

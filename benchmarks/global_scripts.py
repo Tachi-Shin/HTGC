@@ -15,6 +15,7 @@ SCRIPTS = [
     'globalThis.shared=3; console.log(sum(), lexical, globalThis.lexical, globalThis.sum===sum);',
     'globalThis.external=4; external+=2; console.log(globalThis.external);',
     'console.log(Function("return lexical")());',
+    'let source = "lexical + shared"; console.log((0, eval)(source));',
     'let lexical=9;',
     'var lexical=9;',
     'let undefined;',

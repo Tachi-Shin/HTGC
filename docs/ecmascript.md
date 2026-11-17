@@ -5,7 +5,7 @@
 | 仕様の領域 | 未実装、または一部だけ実装している機能 |
 | --- | --- |
 | 実行コンテキスト、Realm、Agent | Realmごとのintrinsic・プロトタイプ・エラーの分離、グローバル宣言の競合やホスト仕様の残り、複数Agentとメモリモデル。globalThisとWindowの同一性、通常スクリプト間のvar・関数・字句束縛の共有、モジュールの字句束縛の分離は対応 |
-| 宣言と関数 | スクリプトの非strictモード、非strictの引数オブジェクトと仮引数の連動、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunction/AsyncGeneratorFunctionコンストラクターとeval |
+| 宣言と関数 | スクリプトの非strictモード、非strictの引数オブジェクトと仮引数の連動、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunction/AsyncGeneratorFunctionコンストラクターとevalの構文・意味の大部分。実行時evalは一部の式に対応 |
 | クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
 | 式と文 | with、細部の評価順と例外。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
 | モジュール | ソースフェーズ、実行時の外部モジュール読み込み、ホストローダーとの連携と複数環境での評価。ローカルのモジュールグラフ、import.meta、JSONモジュールとtype属性は一部対応済み |
@@ -21,17 +21,17 @@
 
 実装の参照元は [V8のTypedArray構築とSpecies](https://github.com/v8/v8/blob/main/src/builtins/typed-array-createtypedarray.tq)、 [V8の文字クラス集合パーサー](https://chromium.googlesource.com/v8/v8.git/+/refs/heads/lkgr/src/regexp/regexp-parser.cc)、[regexpu-core](https://github.com/mathiasbynens/regexpu-core)、[QuickJS](https://github.com/bellard/quickjs/blob/master/quickjs.c)、適合試験は [Test262](https://github.com/tc39/test262) です。regexpu-coreは変換機としてビルド時に使用します。
 
-2026-11-17の追加実装は、引き続きJavaScriptからネイティブDartを生成します。変換時に固定の文字列で渡される直接evalと通常のFunction生成は一部対応しています。実行時に作られる文字列は未対応です。タグ付きテンプレートの同一性は実行スコープごとに保存します。ロケール系のメソッドにはDartの文字変換や基本の文字列化を使うため、ECMA-402のIntlと同じ書式・照合・言語別処理は保証しません。配列の追加メソッドはDart上の既存の配列表現を使用するため、全配列メソッドのSpeciesや配列の記述子は引き続き未完です。
+2026-11-17の追加実装は、引き続きJavaScriptからネイティブDartを生成します。変換時に固定の文字列で渡される直接evalと通常のFunction生成は一部対応しています。実行時に作られる文字列のevalは、限定した式に対応しています。タグ付きテンプレートの同一性は実行スコープごとに保存します。ロケール系のメソッドにはDartの文字変換や基本の文字列化を使うため、ECMA-402のIntlと同じ書式・照合・言語別処理は保証しません。配列の追加メソッドはDart上の既存の配列表現を使用するため、全配列メソッドのSpeciesや配列の記述子は引き続き未完です。
 
 2026-11-17の追加分では、イテレーターの共通プロトタイプ、Iterator.from／concat、同期ヘルパー、using／await usingとDisposableStack系、ローカルJSONモジュール、import.meta、String.normalizeを追加しました。正規化データはUnicode 17.0.0のUCDに基づき、生成スクリプトは `tools/generate_normalization.py`、利用条件は `runtime/UNICODE-LICENSE.txt` にあります。
 
-`import.meta.url` はHTGCの入力ルートを基準とした `htgc://local/` URLです。JSONモジュールは変換時に対象ファイルを収集します。動的importでは変換済みモジュールを利用し、`with: {type: 'json'}` を検証します。複数Realm、動的なコード評価、変換後に追加されたモジュールの読み込み、複数Agentの共有メモリなどは引き続き未実装です。Iterator・リソース管理の仕様全体に対する適合性検証も継続中です。
+`import.meta.url` はHTGCの入力ルートを基準とした `htgc://local/` URLです。JSONモジュールは変換時に対象ファイルを収集します。動的importでは変換済みモジュールを利用し、`with: {type: 'json'}` を検証します。複数Realm、動的なコード評価の大部分、変換後に追加されたモジュールの読み込み、複数Agentの共有メモリなどは引き続き未実装です。Iterator・リソース管理の仕様全体に対する適合性検証も継続中です。
 
 同期Iteratorの `zip`／`zipKeyed` は仕様ドラフトの `shortest`、`longest`、`strict` モードとpaddingに対応します。非同期ジェネレーターは `Symbol.asyncDispose` で終了できます。追加のTest262は同梱ハーネスで実行できるケースを選択しています。
 
 ブロック・関数・switch内のlet／const／classの宣言前参照と、for・for…in・for…ofの束縛を拡充しました。for (let …) の初期化式・条件式・更新式・本体のクロージャーは対応する反復の束縛を保持します。未宣言識別子のtypeofも処理します。グローバル環境、非strictモード、全ての宣言競合や束縛の仕様は引き続き未完です。
 
-固定文字列の `eval` は変換時に解析し、直接呼び出し元のスコープにアクセスするDartコードを生成します。固定文字列の `Function` は大域スコープを参照する通常関数として変換します。評価値が文字列でない `eval` は引数を返します。任意の実行時文字列、間接eval、Functionへの動的な引数、評価完了値の全パターン、非strictなevalの変数環境は未実装です。AsyncFunction／GeneratorFunction／AsyncGeneratorFunctionは、コンストラクターを関数式から直接取得するか、変数に代入し、固定文字列を渡す場合に変換できます。
+固定文字列の `eval` は変換時に解析し、直接呼び出し元のスコープにアクセスするDartコードを生成します。固定文字列の `Function` は大域スコープを参照する通常関数として変換します。評価値が文字列でない `eval` は引数を返します。任意の実行時文字列、Functionへの動的な引数、評価完了値の全パターン、非strictなevalの変数環境は未実装です。AsyncFunction／GeneratorFunction／AsyncGeneratorFunctionは、コンストラクターを関数式から直接取得するか、変数に代入し、固定文字列を渡す場合に変換できます。
 
 直接evalにおける空の文・ブロック、条件分岐、ループ、switch、try/finallyの評価完了値を拡充しました。スクリプトの全構文に対する完了値の適合性は未検証です。
 
@@ -39,4 +39,6 @@
 
 `WeakRef` と `FinalizationRegistry` はDartの弱参照とファイナライザーを使用します。参照対象の回収と後始末の実行時機はDartのGCとホストに依存し、ECMAScriptのジョブ境界やGCに関わる全条件は未検証です。
 
-固定文字列の間接evalは `(0, eval)(...)`、`eval?.(...)`、`obj.eval(...)`、`const alias = eval` のような別名からの呼び出しに対応し、呼び出し元のローカル変数ではなくグローバル環境を参照します。実行時に作られる文字列や動的に渡される別名からの呼び出し、非strict evalのvar宣言の全動作は未対応です。
+固定文字列の間接evalは `(0, eval)(...)`、`eval?.(...)`、`obj.eval(...)`、`const alias = eval` のような別名からの呼び出しに対応し、呼び出し元のローカル変数ではなくグローバル環境を参照します。実行時文字列では下記の式だけを扱います。非strict evalのvar宣言の全動作は未対応です。
+
+実行時文字列の `eval` は簡易パーサーで数値・基本的な文字列・真偽値・null・識別子・this、括弧、単項演算、算術・比較・論理演算、識別子への代入とセミコロン区切りの式を扱います。直接evalは呼び出し元のスコープ、間接evalはグローバルスコープを参照します。入力全体を解析してから評価し、未対応構文にはSyntaxErrorを返します。宣言、関数呼び出し、プロパティ参照を含む多くの構文や非strictの挙動は未実装であり、完全なECMAScriptパーサーではありません。

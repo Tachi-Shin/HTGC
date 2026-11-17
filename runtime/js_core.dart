@@ -14,6 +14,7 @@ part 'js_array_methods.dart';
 part 'js_text_methods.dart';
 part 'js_math_methods.dart';
 part 'js_function_methods.dart';
+part 'js_runtime_eval.dart';
 part 'js_byte_encoding.dart';
 part 'js_iteration_helpers.dart';
 part 'js_iterator_zip.dart';
@@ -395,6 +396,7 @@ class JScope {
   final Map<String, dynamic Function()> _imports = {};
   JModuleGraph? _modules;
   JObject? _globalObject;
+  JScope? _scriptScope;
   final _templates = <String, JTemplateArray>{};
   JTemplateArray template(
     String site,
@@ -404,9 +406,12 @@ class JScope {
       parent?.template(site, cooked, raw) ??
       _templates.putIfAbsent(site, () => JTemplateArray(cooked, raw: raw));
   JScope([this.parent]) : isGlobalScript = false;
-  JScope.script(this.parent) : isGlobalScript = true;
+  JScope.script(this.parent) : isGlobalScript = true {
+    root._scriptScope = this;
+  }
   JScope get root => parent?.root ?? this;
   JScope get globalScope => isGlobalScript ? this : (parent?.globalScope ?? this);
+  JScope get scriptGlobalScope => root._scriptScope ?? root;
   dynamic get globalThisValue => root._globalObject ?? jUndefined;
   dynamic get scriptThis => isGlobalScript ? root._globalObject : jUndefined;
   JModuleGraph modules(Map<String, JModuleDefinition> definitions) =>

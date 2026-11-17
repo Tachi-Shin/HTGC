@@ -577,6 +577,8 @@ class Compiler:
                         and arguments[0]["type"] == "Literal"
                         and isinstance(arguments[0].get("value"), str)):
                     return f'jCompiledEval({self.expr(callee)}, {args}, {self.compiled_eval(arguments[0]["value"])})'
+                if t == "CallExpression" and name == "eval":
+                    return f'jDirectRuntimeEval({self.expr(callee)}, {args}, {self.scope}, {self.receiver})'
                 constructor_kind = self.function_constructor_kind(callee)
                 if (constructor_kind is not None and all(item["type"] == "Literal" and
                         isinstance(item.get("value"), str) for item in arguments)):

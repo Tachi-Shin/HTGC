@@ -60,7 +60,7 @@ cd ../portfolio-app
 flutter test test/ui_bridge_test.dart test/css_conditions_test.dart
 ```
 
-`js_async_dart.py` は26組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。ジェネレーター129、Proxy42、バイナリデータ68、Date63、RegExp70の計372アサーションを追加し、さらにAtomics、派生型・Species、RegExpのUnicode集合の試験を実行します。Node.jsは比較用で、生成アプリには使いません。`Promise.try`、`Promise.withResolvers`、Float16Array、RegExp.escape、RegExpのvフラグとAtomics.pauseに加え、Base64変換とMapのgetOrInsertに対応したNode.jsが必要です（26.13.1で検証）。
+`js_async_dart.py` は27組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。ジェネレーター129、Proxy42、バイナリデータ68、Date63、RegExp70の計372アサーションを追加し、さらにAtomics、派生型・Species、RegExpのUnicode集合の試験を実行します。Node.jsは比較用で、生成アプリには使いません。`Promise.try`、`Promise.withResolvers`、Float16Array、RegExp.escape、RegExpのvフラグとAtomics.pauseに加え、Base64変換とMapのgetOrInsertに対応したNode.jsが必要です（26.13.1で検証）。
 
 Flutterテストでは、トップレベル `await` の完了後と非同期クリック処理後に表示が更新されることも確認します。CSSテストは幅320・800・1000pxとテーマ・動きの設定を切り替えて、条件付きレイヤー順序とインポート、メディア範囲比較、`@supports` を検証します。
 
