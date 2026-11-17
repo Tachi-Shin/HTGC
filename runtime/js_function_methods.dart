@@ -125,10 +125,12 @@ class JEvalFunction extends JFunction {
 dynamic jCompiledEval(
   dynamic callee,
   List<dynamic> args,
-  dynamic Function() body,
+  dynamic Function() body, {
+  dynamic receiver = jUndefined,
+}
 ) {
   if (callee is JEvalFunction) return body();
-  return jCall(callee, args);
+  return jCall(callee, args, receiver: receiver);
 }
 
 dynamic jCompiledFunction(

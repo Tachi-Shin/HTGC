@@ -407,6 +407,7 @@ class JScope {
   JScope.script(this.parent) : isGlobalScript = true;
   JScope get root => parent?.root ?? this;
   JScope get globalScope => isGlobalScript ? this : (parent?.globalScope ?? this);
+  dynamic get globalThisValue => root._globalObject ?? jUndefined;
   dynamic get scriptThis => isGlobalScript ? root._globalObject : jUndefined;
   JModuleGraph modules(Map<String, JModuleDefinition> definitions) =>
       isGlobalScript || parent == null

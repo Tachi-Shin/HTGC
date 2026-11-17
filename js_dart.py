@@ -70,6 +70,7 @@ class Compiler:
         self.resource_stack = None
         self.eval_completion = None
         self.constructor_aliases = {"Function": "normal"}
+        self.eval_aliases = set()
 
     def temp(self):
         name = self.name("tmp")
@@ -352,9 +353,9 @@ class Compiler:
             )
         return False
 
-    def compiled_eval(self, source):
+    def compiled_eval(self, source, *, indirect=False):
         try:
-            ast = parse(source, f"{self.path}:eval")
+            ast = parse(source, f"{self.path}:eval", source_type="script" if indirect else "module")
         except CompileError:
             return '() { throw JThrown(JError("SyntaxError", "Invalid eval source")); }'
         self.collect_constructor_aliases(ast)
@@ -367,12 +368,20 @@ class Compiler:
         parent, self.scope = self.scope, self.name("eval")
         scope = self.scope
         previous, self.eval_completion = self.eval_completion, self.name("completion")
+        old_receiver, old_target, old_home = self.receiver, self.new_target, self.home
+        if indirect:
+            self.receiver = f'{scope}.globalScope.globalThisValue'
+            self.new_target, self.home = 'jUndefined', None
         completion = self.eval_completion
         try:
             body = self.block_contents(nodes, hoist_vars=True)
+        except CompileError:
+            return '() { throw JThrown(JError("TypeError", "Unsupported eval source")); }'
         finally:
-            self.scope, self.eval_completion = parent, previous
-        return (f'() {{ final {scope} = JScope({parent});\n'
+            self.scope, self.eval_completion, self.receiver = parent, previous, old_receiver
+            self.new_target, self.home = old_target, old_home
+        environment = f'{parent}.globalScope' if indirect else parent
+        return (f'() {{\n// ignore: unused_local_variable\nfinal {scope} = JScope({environment});\n'
                 f'dynamic {completion} = jUndefined;\n{body}\nreturn {completion}; }}')
 
     def function_constructor_kind(self, callee):
@@ -403,6 +412,12 @@ class Compiler:
                     kind = self.function_constructor_kind(node["init"])
                     if kind is not None:
                         self.constructor_aliases[node["id"]["name"]] = kind
+                    init = node["init"]
+                    if (init.get("type") == "Identifier" and init.get("name") == "eval") or (
+                        init.get("type") == "MemberExpression"
+                        and (init["property"].get("value") if init.get("computed") else init["property"].get("name")) == "eval"
+                    ):
+                        self.eval_aliases.add(node["id"]["name"])
                 for value in node.values():
                     visit(value)
         visit(ast)
@@ -530,6 +545,31 @@ class Compiler:
                     self.fail(n, "super() outside a class constructor")
                 return f'{self.construction}.callSuper({args})'
             optional = str(n.get("optional", False)).lower()
+            arguments = n["arguments"]
+            literal_eval = (t == "CallExpression" and arguments
+                            and arguments[0]["type"] == "Literal"
+                            and isinstance(arguments[0].get("value"), str))
+            indirect_eval = (
+                callee["type"] == "SequenceExpression"
+                and callee["expressions"][-1].get("name") == "eval"
+            ) or (
+                callee["type"] == "Identifier" and callee["name"] == "eval"
+                and n.get("optional")
+            ) or (
+                callee["type"] == "Identifier" and callee["name"] != "eval" and callee["name"] in self.eval_aliases
+            ) or (
+                callee["type"] == "MemberExpression" and
+                (callee["property"].get("value") if callee.get("computed")
+                 else callee["property"].get("name")) == "eval"
+            )
+            if literal_eval and indirect_eval:
+                callsite = (self.member(callee, call=True, optional_call=n.get("optional", False))
+                            if callee["type"] == "MemberExpression"
+                            else f'JCallSite({self.expr(callee)}, optional: {optional})')
+                temp = self.temp()
+                return (f'(({temp} = {callsite}).skipped ? jShortCircuit : '
+                        f'jCompiledEval({temp}.function, {args}, '
+                        f'{self.compiled_eval(arguments[0]["value"], indirect=True)}, receiver: {temp}.receiver))')
             if callee["type"] == "Identifier" and not n.get("optional"):
                 name = callee["name"]
                 arguments = n["arguments"]

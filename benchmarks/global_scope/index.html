@@ -21,10 +21,15 @@
     const target = {};
     const token = {};
     const ref = new WeakRef(target);
-    const registry = new FinalizationRegistry(() => {});
+    const registry = new FinalizationRegistry(held => held);
     registry.register(target, 'held', token);
     document.getElementById('status').textContent +=
       ':' + String(ref.deref() === target && registry.unregister(token));
+    function checkIndirect() {
+      let shared = 50;
+      return (0, eval)('shared + localLexical');
+    }
+    document.getElementById('status').textContent += ':' + String(checkIndirect());
   </script>
 </body>
 </html>
