@@ -120,9 +120,36 @@ class JGenerator extends JObject {
   }
 }
 
+final JObject jAsyncIteratorPrototype = () {
+  final prototype = JObject();
+  prototype.symbols[jSymbols['asyncIterator']!] = jBuiltinMethod(
+    '[Symbol.asyncIterator]',
+    0,
+    (_, receiver) => receiver,
+  );
+  prototype.symbols[jSymbols['asyncDispose']!] = jBuiltinMethod(
+    '[Symbol.asyncDispose]',
+    0,
+    (_, receiver) {
+      try {
+        final method = jGet(jRequireCoercible(receiver), 'return');
+        if (jNullish(method)) return jPromiseResolve(jUndefined);
+        final result = jCall(method, [], receiver: receiver);
+        return jPromiseResolve(result).then(jBuiltin((_) => jUndefined));
+      } catch (error) {
+        return JPromise()..reject(jExceptionValue(error));
+      }
+    },
+  );
+  jBuiltinProperties(prototype);
+  return prototype;
+}();
+
 JObject jBuildGeneratorPrototype(bool asynchronous) {
   final prototype = JObject();
-  if (!asynchronous) prototype.prototype = jIteratorPrototype;
+  prototype.prototype = asynchronous
+      ? jAsyncIteratorPrototype
+      : jIteratorPrototype;
   for (final mode in ['next', 'return', 'throw']) {
     final function = JFunction((args, receiver) {
       if (receiver is! JGenerator || receiver.asynchronous != asynchronous) {
@@ -134,10 +161,6 @@ JObject jBuildGeneratorPrototype(bool asynchronous) {
     }, constructible: false);
     jNameFunction(function, mode, 1);
     prototype.properties[mode] = function;
-  }
-  if (asynchronous) {
-    prototype.symbols[jSymbols['asyncIterator']!] =
-        JFunction((a, r) => r, constructible: false);
   }
   prototype.symbols[jSymbols['toStringTag']!] = asynchronous
       ? 'AsyncGenerator'

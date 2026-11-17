@@ -16,6 +16,7 @@ part 'js_math_methods.dart';
 part 'js_function_methods.dart';
 part 'js_byte_encoding.dart';
 part 'js_iteration_helpers.dart';
+part 'js_iterator_zip.dart';
 part 'js_disposal.dart';
 part 'js_normalization.dart';
 part 'js_unicode_data.dart';
@@ -1892,6 +1893,13 @@ void installJSPrimitiveWrappers(JScope scope) {
     jBuiltinProperties(prototype);
     jNameFunction(constructor, isString ? 'String' : 'Boolean', 1);
   }
+  jStringPrototype.symbols[jSymbols['iterator']!] = JFunction((_, receiver) {
+    final value = receiver is JBox ? receiver.value : receiver;
+    if (value is! String) {
+      throw JThrown(JError('TypeError', 'String iterator requires a string'));
+    }
+    return jBuiltinIterator(value);
+  }, constructible: false);
   jStringPrototype.properties.addAll(jStringMethods);
   jBuiltinProperties(jStringPrototype);
   jStringPrototype.properties['length'] = 0;

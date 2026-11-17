@@ -56,6 +56,7 @@ class JIteratorHelper extends JObject {
   final void Function(bool) close;
   bool completed = false;
   bool running = false;
+  bool started = false;
 
   JIteratorHelper(this.step, this.close) {
     prototype = jIteratorHelperPrototype;
@@ -71,6 +72,7 @@ class JIteratorHelper extends JObject {
     checkRunning();
     if (completed) return jIterationResult();
     running = true;
+    started = true;
     try {
       final result = step();
       completed = jTruthy(jGet(result, 'done'));
@@ -88,7 +90,7 @@ class JIteratorHelper extends JObject {
     checkRunning();
     if (!completed) {
       completed = true;
-      running = true;
+      running = started;
       try {
         close(false);
       } finally {
@@ -275,6 +277,61 @@ dynamic jConsumeIterator(String name, dynamic receiver, List<dynamic> args) {
   };
 }
 
+dynamic jIteratorIncludes(dynamic receiver, List<dynamic> args) {
+  jIteratorObject(receiver);
+  var count = jArg(args, 1);
+  if (identical(count, jUndefined)) count = 0;
+  try {
+    if (count is! num ||
+        count.isNaN ||
+        (count.isFinite && count != count.truncateToDouble())) {
+      throw JThrown(JError('TypeError', 'Invalid number of skipped elements'));
+    }
+    if (count < 0 || (count.isFinite && count > 9007199254740991)) {
+      throw JThrown(JError('RangeError', 'Invalid number of skipped elements'));
+    }
+  } catch (_) {
+    JIteratorRecord.direct(receiver, jUndefined).close(suppressErrors: true);
+    rethrow;
+  }
+  final source = JIteratorRecord(receiver);
+  var skipped = 0.0;
+  while (source.advance()) {
+    if (skipped < count) {
+      skipped++;
+    } else if (jSameValue(source.current, jArg(args, 0), zero: true)) {
+      source.close();
+      return true;
+    }
+  }
+  return false;
+}
+
+String jIteratorJoin(dynamic receiver, dynamic separator) {
+  jIteratorObject(receiver);
+  late final String delimiter;
+  try {
+    delimiter = identical(separator, jUndefined) ? ',' : jString(separator);
+  } catch (_) {
+    JIteratorRecord.direct(receiver, jUndefined).close(suppressErrors: true);
+    rethrow;
+  }
+  final source = JIteratorRecord(receiver);
+  final result = StringBuffer();
+  var first = true;
+  try {
+    while (source.advance()) {
+      if (!first) result.write(delimiter);
+      first = false;
+      if (!jNullish(source.current)) result.write(jString(source.current));
+    }
+  } catch (_) {
+    source.close(suppressErrors: true);
+    rethrow;
+  }
+  return result.toString();
+}
+
 JObject jIteratorFrom(dynamic value) {
   final record = jIteratorFlattenable(value, allowString: true);
   for (
@@ -349,6 +406,16 @@ JObject _jBuildIteratorPrototype() {
         1,
         (args, receiver) => jLazyIterator(name, receiver, jArg(args, 0)),
       ),
+    'includes': jBuiltinMethod(
+      'includes',
+      1,
+      (args, receiver) => jIteratorIncludes(receiver, args),
+    ),
+    'join': jBuiltinMethod(
+      'join',
+      1,
+      (args, receiver) => jIteratorJoin(receiver, jArg(args, 0)),
+    ),
     'chunks': jBuiltinMethod(
       'chunks',
       1,
@@ -443,6 +510,16 @@ void installJSIterators(JScope scope) {
       (args, _) => jIteratorFrom(jArg(args, 0)),
     ),
     'concat': jBuiltinMethod('concat', 0, (args, _) => jIteratorConcat(args)),
+    'zip': jBuiltinMethod(
+      'zip',
+      1,
+      (args, _) => jIteratorZip(jArg(args, 0), jArg(args, 1), keyed: false),
+    ),
+    'zipKeyed': jBuiltinMethod(
+      'zipKeyed',
+      1,
+      (args, _) => jIteratorZip(jArg(args, 0), jArg(args, 1), keyed: true),
+    ),
   });
   jBuiltinProperties(jIteratorConstructor);
   jIteratorConstructor.flags['prototype'] = JPropertyFlags(

@@ -43,7 +43,7 @@ git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
 python3 benchmarks/test262_dart.py ../test262
 ```
 
-Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の100件に、Proxy.get 18件、GeneratorPrototype 59件、Date.toISOString 17件、RegExp.exec 13件、ArrayBuffer.resize 10件を追加し、さらにAtomics.waitAsync 20件、SharedArrayBuffer.grow 14件、RegExpのUnicode集合9件を加えた260件に、Math.sumPrecise 10件、Uint8Array.fromBase64 13件、JSON.rawJSON 10件を追加した293件に、Iteratorとリソース管理の96件を加えた計389件を、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` と `test262_extended.txt` に列挙しています。
+Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の100件に、Proxy.get 18件、GeneratorPrototype 59件、Date.toISOString 17件、RegExp.exec 13件、ArrayBuffer.resize 10件を追加し、さらにAtomics.waitAsync 20件、SharedArrayBuffer.grow 14件、RegExpのUnicode集合9件を加えた260件に、Math.sumPrecise 10件、Uint8Array.fromBase64 13件、JSON.rawJSON 10件を追加した293件に、Iteratorとリソース管理の96件、zip・zipKeyed・includes・joinの131件を加えた計520件を、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` と `test262_extended.txt` に列挙しています。
 
 BigIntの試験では、2〜36進数の文字列化、整数変換と構文エラー、`asIntN/asUintN` の算術・型変換・副作用の順序、プロトタイプと関数の記述子、呼び出し時の例外を検証します。BigIntの全試験ではなく、複数Realm、Functionの継承、スクリプトのグローバル `this`、Dateと組み合わせた変換などは対象外です。
 
@@ -60,7 +60,7 @@ cd ../portfolio-app
 flutter test test/ui_bridge_test.dart test/css_conditions_test.dart
 ```
 
-`js_async_dart.py` は20組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。ジェネレーター129、Proxy42、バイナリデータ68、Date63、RegExp70の計372アサーションを追加し、さらにAtomics、派生型・Species、RegExpのUnicode集合の試験を実行します。Node.jsは比較用で、生成アプリには使いません。`Promise.try`、`Promise.withResolvers`、Float16Array、RegExp.escape、RegExpのvフラグとAtomics.pauseに加え、Base64変換とMapのgetOrInsertに対応したNode.jsが必要です（26.13.1で検証）。
+`js_async_dart.py` は21組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。ジェネレーター129、Proxy42、バイナリデータ68、Date63、RegExp70の計372アサーションを追加し、さらにAtomics、派生型・Species、RegExpのUnicode集合の試験を実行します。Node.jsは比較用で、生成アプリには使いません。`Promise.try`、`Promise.withResolvers`、Float16Array、RegExp.escape、RegExpのvフラグとAtomics.pauseに加え、Base64変換とMapのgetOrInsertに対応したNode.jsが必要です（26.13.1で検証）。
 
 Flutterテストでは、トップレベル `await` の完了後と非同期クリック処理後に表示が更新されることも確認します。CSSテストは幅320・800・1000pxとテーマ・動きの設定を切り替えて、条件付きレイヤー順序とインポート、メディア範囲比較、`@supports` を検証します。
 
@@ -193,3 +193,5 @@ dart benchmarks/normalization.dart /path/to/NormalizationTest.txt
 ```
 
 `benchmarks/module_e2e/` をHTGCで `lib/module_e2e.dart` に変換し、`benchmarks/module_e2e_test.dart` をFlutterプロジェクトの `test/` に配置して実行すると、JSON importと非同期解放を含むスクリプトの画面更新を確認できます。
+
+`benchmarks/iterator_zip/` のHTMLを `lib/iterator_zip.dart` に変換し、`benchmarks/iterator_zip_test.dart` をFlutterプロジェクトの `test/` に配置して実行すると、zip・zipKeyedと非同期イテレーターの後始末を確認できます。
