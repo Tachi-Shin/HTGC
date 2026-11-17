@@ -423,3 +423,26 @@ built-ins/Iterator/prototype/join/results-empty-separator.js
 built-ins/Iterator/prototype/join/results-no-separator.js
 built-ins/Iterator/prototype/join/results-nonempty-separator.js
 built-ins/Iterator/prototype/join/separator-tostring.js
+
+# Lexical temporal dead zones and loop bindings
+language/statements/let/block-local-closure-get-before-initialization.js
+language/statements/let/block-local-closure-set-before-initialization.js
+language/statements/let/block-local-use-before-initialization-in-declaration-statement.js
+language/statements/let/block-local-use-before-initialization-in-prior-statement.js
+language/statements/let/function-local-closure-get-before-initialization.js
+language/statements/let/function-local-closure-set-before-initialization.js
+language/statements/let/function-local-use-before-initialization-in-declaration-statement.js
+language/statements/let/function-local-use-before-initialization-in-prior-statement.js
+language/statements/let/global-closure-get-before-initialization.js
+language/statements/let/global-closure-set-before-initialization.js
+language/statements/let/global-use-before-initialization-in-declaration-statement.js
+language/statements/let/global-use-before-initialization-in-prior-statement.js
+language/statements/for/head-let-fresh-binding-per-iteration.js
+language/statements/for/scope-head-lex-open.js
+language/statements/for/scope-head-lex-close.js
+language/statements/for/scope-body-lex-boundary.js
+language/expressions/typeof/unresolvable-reference.js
+language/statements/for-in/head-let-bound-names-fordecl-tdz.js
+language/statements/for-in/head-const-bound-names-fordecl-tdz.js
+language/statements/for-of/head-let-bound-names-fordecl-tdz.js
+language/statements/for-of/head-const-bound-names-fordecl-tdz.js

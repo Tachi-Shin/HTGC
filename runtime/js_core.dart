@@ -442,6 +442,22 @@ class JScope {
     throw JThrown(JError('ReferenceError', '$name is not defined'));
   }
 
+  JScope copyIteration(List<String> names) {
+    final copy = JScope(parent);
+    for (final name in names) {
+      copy.define(name, get(name));
+    }
+    return copy;
+  }
+
+  dynamic getForTypeof(String name) {
+    if (_values.containsKey(name) || _imports.containsKey(name)) return get(name);
+    if (parent != null) return parent!.getForTypeof(name);
+    if (name == 'NaN') return double.nan;
+    if (name == 'Infinity') return double.infinity;
+    return jUndefined;
+  }
+
   dynamic put(String name, dynamic value) {
     if (_values.containsKey(name)) {
       if (identical(_values[name], _jUninitialized)) {

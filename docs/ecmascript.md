@@ -5,7 +5,7 @@
 | 仕様の領域 | 未実装、または一部だけ実装している機能 |
 | --- | --- |
 | 実行コンテキスト、Realm、Agent | Realmごとのintrinsic・プロトタイプ・エラーとグローバル環境の分離、スクリプトとモジュールで異なるグローバル束縛、複数Agentとメモリモデル |
-| 宣言と関数 | スクリプトの非strictモード、非strictの引数オブジェクトと仮引数の連動、宣言の巻き上げ・TDZ・反復ごとの束縛、Function/GeneratorFunction/AsyncFunctionコンストラクター、eval |
+| 宣言と関数 | スクリプトの非strictモード、非strictの引数オブジェクトと仮引数の連動、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、Function/GeneratorFunction/AsyncFunctionコンストラクター、eval |
 | クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
 | 式と文 | with、細部の評価順と例外。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
 | モジュール | ソースフェーズ、実行時の外部モジュール読み込み、ホストローダーとの連携と複数環境での評価。ローカルのモジュールグラフ、import.meta、JSONモジュールとtype属性は一部対応済み |
@@ -28,3 +28,5 @@
 `import.meta.url` はHTGCの入力ルートを基準とした `htgc://local/` URLです。JSONモジュールは変換時に対象ファイルを収集します。動的importでは変換済みモジュールを利用し、`with: {type: 'json'}` を検証します。複数Realm、動的なコード評価、変換後に追加されたモジュールの読み込み、複数Agentの共有メモリなどは引き続き未実装です。Iterator・リソース管理の仕様全体に対する適合性検証も継続中です。
 
 同期Iteratorの `zip`／`zipKeyed` は仕様ドラフトの `shortest`、`longest`、`strict` モードとpaddingに対応します。非同期ジェネレーターは `Symbol.asyncDispose` で終了できます。追加のTest262は同梱ハーネスで実行できるケースを選択しています。
+
+ブロック・関数・switch内のlet／const／classの宣言前参照と、for・for…in・for…ofの束縛を拡充しました。for (let …) の初期化式・条件式・更新式・本体のクロージャーは対応する反復の束縛を保持します。未宣言識別子のtypeofも処理します。グローバル環境、非strictモード、全ての宣言競合や束縛の仕様は引き続き未完です。

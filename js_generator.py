@@ -204,6 +204,51 @@ class GeneratorCompiler(Compiler):
         prefix, body = self.capture(lambda: self.statement(node))
         return prefix + '\n' + body
 
+    def loop_source(self, node):
+        if not self.active:
+            return super().loop_source(node)
+        left = node['left']
+        if left['type'] != 'VariableDeclaration' or left['kind'] == 'var':
+            return self.expr(node['right'])
+        parent, self.scope = self.scope, self.name('ghead')
+        scope = self.scope
+        reservations = '\n'.join(self.reserve_lexical([left]))
+        prefix, value = self.capture(lambda: self.expr(node['right']))
+        self.scope = parent
+        self.prelude.append(f'final {scope} = JScope({parent});\n{reservations}\n{prefix}')
+        return value
+
+    def lexical_for_generator(self, node):
+        parent = self.scope
+        initial, control = self.name('ginitial'), self.name('gcontrol')
+        update_scope, test_scope, body_scope = (
+            self.name('gupdate'), self.name('gtest'), self.name('giteration')
+        )
+        names = list(dict.fromkeys(
+            name for declaration in node['init']['declarations']
+            for name in self.binding_names(declaration['id'])
+        ))
+        name_list = '<String>[' + ', '.join(quote(name) for name in names) + ']'
+        self.scope = initial
+        init = '\n'.join([*self.reserve_lexical([node['init']]), self.stmt(node['init'])])
+        self.scope = update_scope
+        update_prefix, update = self.capture(lambda: self.expr(node.get('update')))
+        self.scope = test_scope
+        test_prefix, test = self.capture(lambda: self.expr(node['test']) if node.get('test') else 'true')
+        self.scope = body_scope
+        body = self.stmt(node['body'])
+        self.scope = parent
+        first = self.name('gfirst')
+        return (
+            f'{{\nfinal {initial} = JScope({parent});\n{init}\n'
+            f'var {control} = {initial}.copyIteration({name_list});\n'
+            f'var {first} = true;\n{self.loop_label(node)}while (true) {{\n'
+            f'if (!{first}) {{\nfinal {update_scope} = {control}.copyIteration({name_list});\n'
+            f'{control} = {update_scope};\n{update_prefix}\n{update};\n}}\n'
+            f'{first} = false;\nfinal {test_scope} = {control};\n{test_prefix}\n'
+            f'if (!jTruthy({test})) break;\nfinal {body_scope} = {control};\n{body}\n}}\n}}'
+        )
+
     def statement(self, node):
         kind = node['type']
         if kind == 'ReturnStatement' and self.generator_async:
@@ -221,13 +266,14 @@ class GeneratorCompiler(Compiler):
             return '\n'.join(code)
         if kind == 'ForOfStatement':
             asynchronous = node.get('await', False)
-            source = self.expr(node['right'])
+            source = self.loop_source(node)
             record, item = self.name('giterator'), self.name('gitem')
             parent, self.scope = self.scope, self.name('gscope')
             left = node['left']
             def iteration():
                 prefix, init = self.capture(lambda: self.loop_binding(left, item))
-                return f"{prefix}\n{init}\n{self.stmt(node['body'])}"
+                reservations = "\n".join(self.reserve_lexical([left]))
+                return f"{reservations}\n{prefix}\n{init}\n{self.stmt(node['body'])}"
             body = self.resource_region([left], iteration)
             scope, self.scope = self.scope, parent
             factory = 'jGetAsyncIterator' if asynchronous else 'jGetIterator'
@@ -240,6 +286,9 @@ class GeneratorCompiler(Compiler):
         if kind == 'IfStatement':
             condition = self.expr(node['test'])
             return f'if (jTruthy({condition})) {{\n{self.stmt(node["consequent"])}\n}}' + (f' else {{\n{self.stmt(node["alternate"])}\n}}' if node.get('alternate') else '')
+        if (kind == 'ForStatement' and node.get('init')
+                and node['init']['type'] == 'VariableDeclaration' and node['init']['kind'] == 'let'):
+            return self.lexical_for_generator(node)
         if kind == 'ForStatement' and not node.get('htgcResources') and is_resource_declaration(node.get('init')):
             return "{\n" + self.resource_region(
                 [node.get("init")], lambda: self.stmt({**node, "htgcResources": True})
@@ -248,7 +297,7 @@ class GeneratorCompiler(Compiler):
             parent, self.scope = self.scope, self.name('gscope')
             initial = ''
             if kind == 'ForStatement' and node.get('init'):
-                initial = "\n".join(self.reserve_resources([node['init']]))
+                initial = "\n".join(self.reserve_lexical([node['init']]))
                 initial += self.stmt(node['init']) if node['init']['type'] == 'VariableDeclaration' else self.stmt({'type':'ExpressionStatement','expression':node['init']})
             update_prefix, update = self.capture(lambda: self.expr(node.get('update')))
             test_prefix, condition = self.capture(lambda: self.expr(node.get('test')) if node.get('test') else 'true')

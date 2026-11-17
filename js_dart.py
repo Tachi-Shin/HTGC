@@ -460,6 +460,8 @@ class Compiler:
                 return f'(({temp} = {callsite}).skipped ? jShortCircuit : {temp}.call({args}))'
             return f"jCall({self.expr(callee)}, {args}, optional: {optional})"
         if t == "UnaryExpression":
+            if n["operator"] == "typeof" and n["argument"]["type"] == "Identifier":
+                return f'jUnary("typeof", {self.scope}.getForTypeof({quote(n["argument"]["name"])}))'
             if n["operator"] == "delete" and n["argument"]["type"] == "MemberExpression":
                 target = n["argument"]
                 return f'jDelete({self.expr(target["object"])}, {self.key(target)}, strict: true)'
@@ -543,19 +545,22 @@ class Compiler:
             pattern, f"{self.resource_stack}.add({value}, asynchronous: {asynchronous})", "const"
         )
 
-    def reserve_resources(self, nodes):
-        return [
-            f"{self.scope}.reserve({quote(name)});"
-            for node in nodes
-            if is_resource_declaration(node)
-            for entry in node["declarations"]
-            for name in self.binding_names(entry["id"])
-        ]
+    def reserve_lexical(self, nodes):
+        names = []
+        for node in nodes:
+            if not node:
+                continue
+            if node["type"] == "VariableDeclaration" and node["kind"] != "var":
+                for entry in node["declarations"]:
+                    names.extend(self.binding_names(entry["id"]))
+            elif node["type"] == "ClassDeclaration":
+                names.append(node["id"]["name"])
+        return [f"{self.scope}.reserve({quote(name)});" for name in names]
 
     def block_contents(self, nodes, *, hoist_vars=False):
         def contents():
             # Function declarations are initialized before the surrounding statements.
-            code = self.reserve_resources(nodes)
+            code = self.reserve_lexical(nodes)
             code.extend(self.stmt(n) for n in nodes if n["type"] == "FunctionDeclaration")
             if hoist_vars:
                 code.extend(
@@ -593,7 +598,7 @@ class Compiler:
             f"final {value} = {discriminant};",
             f"final {self.scope} = JScope({parent});",
         ]
-        code.extend(self.reserve_resources(declarations))
+        code.extend(self.reserve_lexical(declarations))
         code.extend(
             self.stmt(stmt)
             for case in cases
@@ -639,6 +644,64 @@ class Compiler:
                 return self.bind_resource(pattern, value, target["kind"])
             return self.bind(pattern, value, target["kind"])
         return self.bind(target, value, "assign")
+
+    def loop_source(self, node):
+        left = node["left"]
+        if left["type"] != "VariableDeclaration" or left["kind"] == "var":
+            return self.expr(node["right"])
+        parent = self.scope
+        self.scope = self.name("head")
+        scope = self.scope
+        reservations = "\n".join(self.reserve_lexical([left]))
+        source = self.expr(node["right"])
+        self.scope = parent
+        asynchronous = self.has_await(node["right"])
+        result = (f"(() {'async ' if asynchronous else ''}{{\n"
+                  f"final {scope} = JScope({parent});\n{reservations}\nreturn {source};\n}})()")
+        return f"(await {result})" if asynchronous else result
+
+    def lexical_for(self, node):
+        parent = self.scope
+        initial, control = self.name("initial"), self.name("control")
+        condition_scope, update_scope, body_scope = (
+            self.name("condition"), self.name("update"), self.name("iteration")
+        )
+        names = list(dict.fromkeys(
+            name for declaration in node["init"]["declarations"]
+            for name in self.binding_names(declaration["id"])
+        ))
+        name_list = "<String>[" + ", ".join(quote(name) for name in names) + "]"
+        self.scope = initial
+        initial_code = "\n".join([
+            *self.reserve_lexical([node["init"]]), self.stmt(node["init"])
+        ])
+        self.scope = condition_scope
+        condition = "true" if not node.get("test") else "jTruthy(" + self.expr(node["test"]) + ")"
+        self.scope = update_scope
+        update = self.expr(node.get("update"))
+        self.scope = body_scope
+        body = self.stmt(node["body"])
+        self.scope = parent
+        condition_async = self.has_await(node.get("test"))
+        update_async = self.has_await(node.get("update"))
+        condition_call = (
+            f"(() {'async ' if condition_async else ''}{{ final {condition_scope} = {control}; "
+            f"return {condition}; }})()"
+        )
+        update_call = (
+            f"(() {'async ' if update_async else ''}{{ final {update_scope} = {control}.copyIteration({name_list}); "
+            f"{control} = {update_scope}; {update}; }})()"
+        )
+        if condition_async:
+            condition_call = f"(await {condition_call})"
+        if update_async:
+            update_call = f"(await {update_call})"
+        return (
+            f"{{\nfinal {initial} = JScope({parent});\n{initial_code}\n"
+            f"var {control} = {initial}.copyIteration({name_list});\n"
+            f"{self.loop_label(node)}for (; {condition_call}; {update_call}) {{\n"
+            f"final {body_scope} = {control};\n{body}\n}}\n}}"
+        )
 
     def stmt(self, n):
         t = n["type"]
@@ -696,25 +759,29 @@ class Compiler:
             )
         if t == "ForInStatement":
             item = self.name("key")
-            source = self.expr(n["right"])
+            source = self.loop_source(n)
             parent = self.scope
             self.scope = self.name()
             init = self.loop_binding(n["left"], item)
+            reservations = "\n".join(self.reserve_lexical([n["left"]]))
             body = self.stmt(n["body"])
             child, self.scope = self.scope, parent
             return (f'{self.loop_label(n)}for (final {item} in jForInKeys({source})) {{\n'
-                    f'final {child} = JScope({parent});\n{init}\n{body}\n}}')
+                    f'final {child} = JScope({parent});\n{reservations}\n{init}\n{body}\n}}')
         if t == "ForOfStatement":
             asynchronous = n.get("await", False)
             if asynchronous and not self.asynchronous:
                 self.fail(n, 'for await outside async function/module')
             iterator = self.name("item")
-            source = self.expr(n["right"])
+            source = self.loop_source(n)
             parent = self.scope
             self.scope = self.name()
             iteration = self.resource_region(
                 [n["left"]],
-                lambda: self.loop_binding(n["left"], iterator) + "\n" + self.stmt(n["body"]),
+                lambda: "\n".join([
+                    *self.reserve_lexical([n["left"]]),
+                    self.loop_binding(n["left"], iterator), self.stmt(n["body"]),
+                ]),
             )
             record = self.name("iterator")
             caught = self.name("error")
@@ -729,13 +796,16 @@ class Compiler:
             self.scope = parent
             return body
         if t == "ForStatement":
+            init = n.get("init")
+            if init and init["type"] == "VariableDeclaration" and init["kind"] == "let":
+                return self.lexical_for(n)
             if not n.get("htgcResources") and is_resource_declaration(n.get("init")):
                 return "{\n" + self.resource_region(
                     [n.get("init")], lambda: self.stmt({**n, "htgcResources": True})
                 ) + "\n}"
             parent = self.scope
             self.scope = self.name()
-            reservations = self.reserve_resources([n["init"]]) if n.get("init") else []
+            reservations = self.reserve_lexical([n["init"]]) if n.get("init") else []
             init = (
                 self.stmt(n["init"])
                 if n.get("init") and n["init"]["type"] == "VariableDeclaration"

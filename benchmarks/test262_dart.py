@@ -260,6 +260,15 @@ def main():
             try:
                 source = path.read_text(encoding="utf-8")
                 metadata = source.partition("/*---")[2].partition("---*/")[0]
+                negative = re.search(r"^negative:\s*\n\s*phase:\s*runtime\s*\n\s*type:\s*(\w+)", metadata, re.M)
+                if negative:
+                    expected = negative.group(1)
+                    harness = harness.replace(
+                        '  htgcScript(scope);',
+                        '  try { htgcScript(scope); throw StateError("Expected exception"); } '
+                        'on JThrown catch (error) { '
+                        f'if (jGet(error.value, "name") != "{expected}") rethrow; }}',
+                    )
                 if harness == BUILTIN_HARNESS and re.search(r"^flags:\s*\[[^\]]*\basync\b", metadata, re.M):
                     harness = ASYNC_HARNESS
                 code = compile_script(source, path)
