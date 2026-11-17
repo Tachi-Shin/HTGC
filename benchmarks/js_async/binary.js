@@ -1,0 +1,30 @@
+let checks=0;
+function eq(a,b){checks++;if(!Object.is(a,b))throw new Error('binary check '+checks+': '+String(a)+' != '+String(b));}
+function error(f,name){let caught='';try{f();}catch(e){caught=e.name;}eq(caught,name);}
+const buffer=new ArrayBuffer(16);const u8=new Uint8Array(buffer);const view=new DataView(buffer);
+eq(buffer.byteLength,16);eq(ArrayBuffer.isView(u8),true);eq(ArrayBuffer.isView(view),true);eq(ArrayBuffer.isView(buffer),false);
+view.setUint32(0,0x12345678);eq(u8.slice(0,4).join(','),'18,52,86,120');eq(view.getUint32(0,true),0x78563412);
+view.setInt16(1,-2,true);eq(view.getInt16(1,true),-2);view.setFloat64(8,-0,true);eq(view.getFloat64(8,true),-0);
+view.setBigUint64(0,18446744073709551615n);eq(view.getBigInt64(0),-1n);eq(view.getBigUint64(0),18446744073709551615n);
+error(()=>view.getUint32(14),'RangeError');error(()=>new Uint32Array(buffer,1),'RangeError');
+eq(new Int8Array([128,255,256,-129]).join(','),'-128,-1,0,127');eq(new Uint8ClampedArray([-1,0.5,1.5,2.5,255.9,NaN]).join(','),'0,0,2,2,255,0');
+eq(new Uint32Array([-1,4294967297]).join(','),'4294967295,1');eq(new BigInt64Array([18446744073709551615n])[0],-1n);
+error(()=>new BigInt64Array([1]),'TypeError');error(()=>new Int32Array([1n]),'TypeError');
+const half=new Float16Array([1+2**-11,1+3*2**-11,2**-25,3*2**-25,65520,-0]);
+eq(half[0],1);eq(half[1],1+2**-9);eq(half[2],0);eq(half[3],2**-23);eq(half[4],Infinity);eq(half[5],-0);
+let a=new Uint8Array([1,2,3,4]);a.set(a.subarray(0,3),1);eq(a.join(','),'1,1,2,3');a.copyWithin(0,2);eq(a.join(','),'2,3,2,3');
+eq(a.map(x=>x*2).join(','),'4,6,4,6');eq(a.filter(x=>x===3).join(','),'3,3');eq(a.reduce((sum,x)=>sum+x,0),10);
+eq(a.every(x=>x>0),true);eq(a.some(x=>x===2),true);eq(a.findLastIndex(x=>x===2),2);eq(a.at(-1),3);
+eq(a.toReversed().join(','),'3,2,3,2');eq(a.with(0,9).join(','),'9,3,2,3');eq(a.join(','),'2,3,2,3');
+eq(new Float64Array([NaN,2,-0,0,-2]).sort().join(','),'-2,0,0,2,NaN');
+eq(new Float64Array([NaN]).includes(NaN),true);eq(new Float64Array([NaN]).indexOf(NaN),-1);
+eq(Uint16Array.from('123',x=>Number(x)+1).join(','),'2,3,4');eq(Int16Array.of(-1,2).join(','),'-1,2');
+eq([...a].join(','),'2,3,2,3');eq([...a.keys()].join(','),'0,1,2,3');eq(Object.keys(a).join(','),'0,1,2,3');
+eq(Reflect.defineProperty(a,'0',{value:8}),true);eq(a[0],8);eq(Reflect.defineProperty(a,'0',{configurable:false}),false);eq(Reflect.deleteProperty(a,'0'),false);
+a[-1]=9;a['-0']=9;eq(a[-1],undefined);eq(a['-0'],undefined);eq(a[0],8);
+const rab=new ArrayBuffer(8,{maxByteLength:16});const tracking=new Uint16Array(rab);const fixed=new Uint16Array(rab,2,2);const dv=new DataView(rab,2);
+eq(rab.resizable,true);eq(rab.maxByteLength,16);tracking[3]=17;rab.resize(4);eq(tracking.length,2);eq(fixed.length,0);eq(dv.byteLength,2);
+rab.resize(12);eq(tracking.length,6);eq(fixed.length,2);eq(tracking[3],0);error(()=>rab.resize(17),'RangeError');
+tracking[0]=22;const moved=rab.transferToFixedLength(6);eq(rab.detached,true);eq(rab.byteLength,0);eq(tracking.length,0);eq(moved.byteLength,6);eq(new Uint16Array(moved)[0],22);eq(moved.resizable,false);
+error(()=>dv.getUint8(0),'TypeError');error(()=>tracking.slice(),'TypeError');
+console.log('binary: '+checks+' checks');$DONE();

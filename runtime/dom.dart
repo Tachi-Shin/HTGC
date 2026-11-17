@@ -167,11 +167,19 @@ class JDomRuntime {
         return jUndefined;
       }),
     });
+    final htmlElement = JFunction(
+      (args, receiver) => throw JThrown(JError('TypeError', 'HTMLElement requires new')),
+      constructWithTarget: jBuiltinAllocator(
+        jObjectPrototype,
+        (args) => wrap(dom.Element.tag('htgc-element')),
+      ),
+    );
+    htmlElement.properties['prototype'] = JObject();
     final globals = <String, dynamic>{
       'document': wrap(document),
       'window': window,
       'localStorage': localStorage,
-      'HTMLElement': jNative((a) => wrap(dom.Element.tag('htgc-element'))),
+      'HTMLElement': htmlElement,
       'customElements': JObject({
         'define': jNative((a) {
           final name = jString(a[0]);
