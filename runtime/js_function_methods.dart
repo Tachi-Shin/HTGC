@@ -103,19 +103,20 @@ bool jOrdinaryHasInstance(JFunction function, dynamic instance) {
 
 class JDynamicFunctionConstructor extends JFunction {
   final String kind;
-  JDynamicFunctionConstructor([this.kind = 'normal'])
-    : super(
-        (_, __) => throw JThrown(
-          JError('TypeError', 'Dynamic Function source is not compiled'),
-        ),
-      );
+  JDynamicFunctionConstructor(JScope scope, [this.kind = 'normal'])
+    : super((args, _) => jRuntimeFunction(scope, args, kind));
 }
 
 class JEvalFunction extends JFunction {
   JEvalFunction(JScope root)
-    : super((args, _) => jRuntimeEval(
-        jArg(args, 0), root.scriptGlobalScope, root.globalThisValue,
-      ), constructible: false);
+    : super(
+        (args, _) => jRuntimeEval(
+          jArg(args, 0),
+          root.scriptGlobalScope,
+          root.globalThisValue,
+        ),
+        constructible: false,
+      );
 }
 
 dynamic jCompiledEval(
@@ -123,8 +124,7 @@ dynamic jCompiledEval(
   List<dynamic> args,
   dynamic Function() body, {
   dynamic receiver = jUndefined,
-}
-) {
+}) {
   if (callee is JEvalFunction) return body();
   return jCall(callee, args, receiver: receiver);
 }
@@ -153,7 +153,11 @@ JFunction jAsyncFunction(JFunction function) {
 }
 
 void installJSFunctionPrototype(JScope scope) {
-  final function = jNamedFunction(JDynamicFunctionConstructor(), 'Function', 1);
+  final function = jNamedFunction(
+    JDynamicFunctionConstructor(scope),
+    'Function',
+    1,
+  );
   scope.define('eval', jNamedFunction(JEvalFunction(scope), 'eval', 1));
   function.properties['prototype'] = jFunctionPrototype;
   function.flags['prototype'] = JPropertyFlags(
@@ -174,7 +178,7 @@ void installJSFunctionPrototype(JScope scope) {
     ),
   ]) {
     final constructor = jNamedFunction(
-      JDynamicFunctionConstructor(kind),
+      JDynamicFunctionConstructor(scope, kind),
       name,
       1,
     );

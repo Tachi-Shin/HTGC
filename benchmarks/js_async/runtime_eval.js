@@ -32,4 +32,13 @@ function test() {
   console.log(eval(nonString) === nonString);
 }
 test();
+let params = 'a,b';
+let body = 'return a + b;';
+console.log(Function(params, body)(3, 4));
+body = 'return globalNumber';
+console.log(new Function(body)());
+body = 'return this.value';
+console.log(Function(body).call({value: 15}));
+body = 'return arguments[1]';
+console.log(Function(body)(1, 8));
 $DONE();

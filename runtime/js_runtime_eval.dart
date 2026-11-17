@@ -272,3 +272,79 @@ dynamic jDirectRuntimeEval(
 ) => callee is JEvalFunction
     ? jRuntimeEval(jArg(args, 0), scope, thisValue)
     : jCall(callee, args);
+
+// Runtime Function currently accepts identifier parameters and a single return
+// expression. Validate before constructing; unsupported bodies never execute.
+JFunction jRuntimeFunction(JScope root, List<dynamic> args, String kind) {
+  if (kind != 'normal') {
+    throw JThrown(JError('TypeError', 'Unsupported dynamic function kind'));
+  }
+  final strings = [for (final arg in args) jString(arg)];
+  final parameters = strings.length < 2
+      ? ''
+      : strings.take(strings.length - 1).join(',');
+  final body = strings.isEmpty ? '' : strings.last;
+  final names = parameters.trim().isEmpty
+      ? <String>[]
+      : parameters.split(',').map((s) => s.trim()).toList();
+  const reserved = {
+    'this',
+    'null',
+    'true',
+    'false',
+    'return',
+    'class',
+    'function',
+    'new',
+    'let',
+    'const',
+    'var',
+    'if',
+    'for',
+    'while',
+    'throw',
+    'super',
+    'import',
+    'export',
+  };
+  for (final name in names) {
+    if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name) ||
+        reserved.contains(name)) {
+      throw JThrown(JError('SyntaxError', 'Unsupported Function parameters'));
+    }
+  }
+  var expression = body.trim();
+  final returns = RegExp(r'^return(?:\s|;|$)').hasMatch(expression);
+  if (returns) expression = expression.substring(6).trim();
+  if (expression.endsWith(';'))
+    expression = expression.substring(0, expression.length - 1).trim();
+  final validation = _RuntimeEvalParser(
+    expression,
+    JScope(root.scriptGlobalScope),
+    jUndefined,
+  );
+  final parsed = validation.parse();
+  if (parsed.length > 1)
+    throw JThrown(JError('SyntaxError', 'Unsupported Function body'));
+  final function = jFunction((actual, receiver, newTarget) {
+    final local = JScope(root.scriptGlobalScope);
+    for (final name in names.toSet())
+      local.define(name, jArg(actual, names.lastIndexOf(name)));
+    if (!names.contains('arguments'))
+      local.define('arguments', jArgumentsObject(actual));
+    final statements = _RuntimeEvalParser(
+      expression,
+      local,
+      jNullish(receiver) ? root.globalThisValue : receiver,
+    ).parse();
+    dynamic value = jUndefined;
+    for (final statement in statements) value = statement();
+    return returns ? value : jUndefined;
+  });
+  return jNamedFunction(
+    function,
+    'anonymous',
+    names.length,
+    source: 'function anonymous($parameters\n) {\n$body\n}',
+  );
+}
