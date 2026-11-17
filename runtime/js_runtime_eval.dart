@@ -7,7 +7,9 @@ typedef _EvalRead = dynamic Function();
 class _EvalExpr {
   final _EvalRead read;
   final dynamic Function(dynamic)? write;
-  _EvalExpr(this.read, [this.write]);
+  final JRef Function()? reference;
+  final JCallSite Function()? callSite;
+  _EvalExpr(this.read, [this.write, this.reference, this.callSite]);
 }
 
 class _RuntimeEvalParser {
@@ -18,7 +20,7 @@ class _RuntimeEvalParser {
   int at = 0;
   _RuntimeEvalParser(this.source, this.scope, this.thisValue) {
     final token = RegExp(
-      r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[()+\-*/%<>=!~;]''',
+      r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[()\[\].,+\-*/%<>=!~;]''',
     );
     var pos = 0;
     while (pos < source.length) {
@@ -95,14 +97,64 @@ class _RuntimeEvalParser {
     }
     if (min == 0 && take('=')) {
       final target = left.write;
-      if (target == null) _unsupported();
+      final reference = left.reference;
+      if (target == null && reference == null) _unsupported();
       final right = expression();
-      left = _EvalExpr(() => target(right.read()));
+      left = _EvalExpr(() {
+        final ref = reference?.call();
+        return ref != null ? ref.write(right.read()) : target!(right.read());
+      });
     }
     return left;
   }
 
   _EvalExpr primary() {
+    var value = atom();
+    while (true) {
+      final previous = value;
+      if (peek == '.' || peek == '[') {
+        late _EvalExpr key;
+        if (take('[')) {
+          key = expression();
+          expect(']');
+        } else {
+          expect('.');
+          final name = peek;
+          if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name))
+            _unsupported();
+          at++;
+          key = _EvalExpr(() => name);
+        }
+        JRef reference() {
+          final object = previous.read();
+          final property = jPropertyKey(key.read());
+          return JRef.member(object, property);
+        }
+
+        value = _EvalExpr(() => reference().read(), null, reference, () {
+          final object = previous.read();
+          final property = jPropertyKey(key.read());
+          return JCallSite.member(object, property);
+        });
+      } else if (take('(')) {
+        final args = <_EvalExpr>[];
+        if (!take(')')) {
+          do {
+            args.add(expression());
+          } while (take(',') && peek != ')');
+          expect(')');
+        }
+        value = _EvalExpr(() {
+          final call = previous.callSite?.call() ?? JCallSite(previous.read());
+          return call.call([for (final arg in args) arg.read()]);
+        });
+      } else {
+        return value;
+      }
+    }
+  }
+
+  _EvalExpr atom() {
     final token = peek;
     if (token.isEmpty) _unsupported();
     if (take('(')) {
@@ -126,7 +178,8 @@ class _RuntimeEvalParser {
             'void',
             'typeof',
           }.contains(peek) &&
-          RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek)) {
+          RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek) &&
+          !const {'.', '[', '('}.contains(tokens[at + 1])) {
         final name = tokens[at++];
         return _EvalExpr(() => jUnary('typeof', scope.getForTypeof(name)));
       }
