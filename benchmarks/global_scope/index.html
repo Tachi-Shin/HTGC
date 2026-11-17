@@ -36,7 +36,7 @@
     document.getElementById('status').textContent += ':' + String(checkDynamic());
     let functionBody = 'return shared + localLexical';
     document.getElementById('status').textContent += ':' + String(Function(functionBody)());
-    source = 'shared > 0 ? readValue() : 0';
+    source = 'let result = shared > 0 ? readValue() : 0; result';
     document.getElementById('status').textContent += ':' + String(eval(source));
   </script>
 </body>

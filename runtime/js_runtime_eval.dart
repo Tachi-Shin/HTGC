@@ -31,6 +31,8 @@ THE SOFTWARE.
 
 // A deliberately small runtime parser. Parse the complete input before running
 // any expression so unsupported syntax cannot cause partial side effects.
+final _jRuntimeEmpty = Object();
+
 typedef _EvalRead = dynamic Function();
 
 class _EvalExpr {
@@ -47,6 +49,7 @@ class _RuntimeEvalParser {
   final dynamic thisValue;
   final List<String> tokens = [];
   int at = 0;
+  final lexicalNames = <String>{};
   _RuntimeEvalParser(this.source, this.scope, this.thisValue) {
     final token = RegExp(
       r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[()\[\].,:?&|^+\-*/%<>=!~;]''',
@@ -122,10 +125,62 @@ class _RuntimeEvalParser {
     final statements = <_EvalRead>[];
     while (peek.isNotEmpty) {
       if (take(';')) continue;
-      statements.add(expression().read);
+      if (peek == 'let' || peek == 'const') {
+        final constant = tokens[at++] == 'const';
+        final declarations = <_EvalRead>[];
+        do {
+          final name = peek;
+          if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name) ||
+              const {
+                'let',
+                'const',
+                'var',
+                'return',
+                'this',
+                'true',
+                'false',
+                'null',
+                'function',
+                'class',
+                'new',
+                'if',
+                'else',
+                'for',
+                'while',
+                'throw',
+                'import',
+                'export',
+                'super',
+                'delete',
+                'void',
+                'typeof',
+              }.contains(name) ||
+              !lexicalNames.add(name))
+            _unsupported();
+          at++;
+          final initialized = take('=');
+          if (constant && !initialized) _unsupported();
+          final initializer = initialized
+              ? expression()
+              : _EvalExpr(() => jUndefined);
+          declarations.add(
+            () => scope.define(name, initializer.read(), constant: constant),
+          );
+        } while (take(','));
+        statements.add(() {
+          for (final declaration in declarations) declaration();
+          return _jRuntimeEmpty;
+        });
+      } else {
+        statements.add(expression().read);
+      }
       if (peek.isNotEmpty) expect(';');
     }
     return statements;
+  }
+
+  void instantiate() {
+    for (final name in lexicalNames) scope.reserve(name);
   }
 
   _EvalExpr expression([int min = 0]) {
@@ -312,14 +367,13 @@ class _RuntimeEvalParser {
 
 dynamic jRuntimeEval(dynamic value, JScope scope, dynamic thisValue) {
   if (value is! String) return value;
-  final statements = _RuntimeEvalParser(
-    value,
-    JScope(scope),
-    thisValue,
-  ).parse();
+  final parser = _RuntimeEvalParser(value, JScope(scope), thisValue);
+  final statements = parser.parse();
+  parser.instantiate();
   dynamic result = jUndefined;
   for (final statement in statements) {
-    result = statement();
+    final value = statement();
+    if (!identical(value, _jRuntimeEmpty)) result = value;
   }
   return result;
 }
@@ -384,7 +438,7 @@ JFunction jRuntimeFunction(JScope root, List<dynamic> args, String kind) {
     jUndefined,
   );
   final parsed = validation.parse();
-  if (parsed.length > 1)
+  if (parsed.length > 1 || validation.lexicalNames.isNotEmpty)
     throw JThrown(JError('SyntaxError', 'Unsupported Function body'));
   final function = jFunction((actual, receiver, newTarget) {
     final local = JScope(root.scriptGlobalScope);

@@ -42,6 +42,18 @@ function test() {
   source = 'obj.value ||= rhs()';
   order = '';
   console.log(eval(source), order);
+  for (const expression of [
+    'let temp = value + 1; temp * 2',
+    'const temp = 3, other = temp + 1; other',
+    '1; let temp;',
+    'let temp = temp',
+    'const temp = 1; temp = 2',
+    'value = 99; let temp; let temp;',
+  ]) {
+    try { console.log(eval(expression)); }
+    catch (error) { console.log(error.name); }
+  }
+  console.log(value, typeof temp);
   const nonString = {};
   console.log(eval(nonString) === nonString);
 }
