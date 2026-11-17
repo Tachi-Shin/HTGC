@@ -101,16 +101,48 @@ bool jOrdinaryHasInstance(JFunction function, dynamic instance) {
   return false;
 }
 
+class JDynamicFunctionConstructor extends JFunction {
+  JDynamicFunctionConstructor()
+    : super(
+        (_, __) => throw JThrown(
+          JError('TypeError', 'Dynamic Function source is not compiled'),
+        ),
+      );
+}
+
+class JEvalFunction extends JFunction {
+  JEvalFunction()
+    : super((args, _) {
+        final value = jArg(args, 0);
+        if (value is! String) return value;
+        throw JThrown(
+          JError('TypeError', 'Dynamic eval source is not compiled'),
+        );
+      }, constructible: false);
+}
+
+dynamic jCompiledEval(
+  dynamic callee,
+  List<dynamic> args,
+  dynamic Function() body,
+) {
+  if (callee is JEvalFunction) return body();
+  return jCall(callee, args);
+}
+
+dynamic jCompiledFunction(
+  dynamic callee,
+  List<dynamic> args,
+  dynamic Function() body, {
+  required bool construct,
+}) {
+  if (callee is JDynamicFunctionConstructor) return body();
+  return construct ? jNew(callee, args) : jCall(callee, args);
+}
+
 void installJSFunctionPrototype(JScope scope) {
-  final function = jNamedFunction(
-    JFunction(
-      (args, receiver) => throw JThrown(
-        JError('TypeError', 'HTGC does not compile runtime source strings'),
-      ),
-    ),
-    'Function',
-    1,
-  );
+  final function = jNamedFunction(JDynamicFunctionConstructor(), 'Function', 1);
+  scope.define('eval', jNamedFunction(JEvalFunction(), 'eval', 1));
   function.properties['prototype'] = jFunctionPrototype;
   function.flags['prototype'] = JPropertyFlags(
     writable: false,

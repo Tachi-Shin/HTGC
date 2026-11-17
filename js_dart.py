@@ -342,6 +342,42 @@ class Compiler:
             )
         return False
 
+    def compiled_eval(self, source):
+        try:
+            ast = parse(source, f"{self.path}:eval")
+        except CompileError:
+            return '() { throw JThrown(JError("SyntaxError", "Invalid eval source")); }'
+        nodes = ast["body"]
+        if self.has_await(nodes) or any(
+            node["type"] in ("ImportDeclaration", "ExportNamedDeclaration", "ExportDefaultDeclaration", "ExportAllDeclaration")
+            for node in nodes
+        ):
+            return '() { throw JThrown(JError("SyntaxError", "Invalid eval source")); }'
+        parent, self.scope = self.scope, self.name("eval")
+        scope = self.scope
+        if nodes and nodes[-1]["type"] == "ExpressionStatement":
+            body = self.block_contents(nodes[:-1], hoist_vars=True)
+            result = self.expr(nodes[-1]["expression"])
+        else:
+            body = self.block_contents(nodes, hoist_vars=True)
+            result = 'jUndefined'
+        self.scope = parent
+        return f'() {{ final {scope} = JScope({parent});\n{body}\nreturn {result}; }}'
+
+    def compiled_function(self, arguments):
+        parameters = ','.join(item['value'] for item in arguments[:-1])
+        body = arguments[-1]['value'] if arguments else ''
+        source = f'(function anonymous({parameters}\n) {{\n{body}\n}})'
+        try:
+            function = parse(source, f"{self.path}:Function")['body'][0]['expression']
+        except CompileError:
+            return '() { throw JThrown(JError("SyntaxError", "Invalid Function source")); }'
+        parent, self.scope = self.scope, self.name('global')
+        scope = self.scope
+        expression = self.function(function)
+        self.scope = parent
+        return f'() {{ final {scope} = {parent}.root; return {expression}; }}'
+
     def expr(self, n):
         if n is None:
             return "jUndefined"
@@ -447,6 +483,17 @@ class Compiler:
                     self.fail(n, "super() outside a class constructor")
                 return f'{self.construction}.callSuper({args})'
             optional = str(n.get("optional", False)).lower()
+            if callee["type"] == "Identifier" and not n.get("optional"):
+                name = callee["name"]
+                arguments = n["arguments"]
+                if (t == "CallExpression" and name == "eval" and arguments
+                        and arguments[0]["type"] == "Literal"
+                        and isinstance(arguments[0].get("value"), str)):
+                    return f'jCompiledEval({self.expr(callee)}, {args}, {self.compiled_eval(arguments[0]["value"])})'
+                if (name == "Function" and all(item["type"] == "Literal" and
+                        isinstance(item.get("value"), str) for item in arguments)):
+                    construct = str(t == "NewExpression").lower()
+                    return f'jCompiledFunction({self.expr(callee)}, {args}, {self.compiled_function(arguments)}, construct: {construct})'
             if "htgcLoweredRegExp" in n:
                 return self.precompiled_regexp(n, self.expr(callee), args)
             if t == "NewExpression":

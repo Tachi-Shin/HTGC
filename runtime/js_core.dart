@@ -1,4 +1,4 @@
-// HTGC JavaScript semantics implemented in Dart. No JavaScript engine or eval.
+// HTGC JavaScript semantics implemented in Dart.
 import 'dart:math' as math;
 import 'dart:async';
 import 'dart:convert';
@@ -401,6 +401,7 @@ class JScope {
       parent?.template(site, cooked, raw) ??
       _templates.putIfAbsent(site, () => JTemplateArray(cooked, raw: raw));
   JScope([this.parent]);
+  JScope get root => parent?.root ?? this;
   JModuleGraph modules(Map<String, JModuleDefinition> definitions) =>
       parent?.modules(definitions) ??
       (_modules ??= JModuleGraph(this, definitions));

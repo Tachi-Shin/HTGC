@@ -446,3 +446,14 @@ language/statements/for-in/head-let-bound-names-fordecl-tdz.js
 language/statements/for-in/head-const-bound-names-fordecl-tdz.js
 language/statements/for-of/head-let-bound-names-fordecl-tdz.js
 language/statements/for-of/head-const-bound-names-fordecl-tdz.js
+
+# Statically compiled direct eval and Function sources
+language/eval-code/direct/non-string-primitive.js
+language/eval-code/direct/cptn-nrml-empty-empty.js
+language/eval-code/direct/cptn-nrml-expr-prim.js
+language/eval-code/direct/this-value-func-strict-caller.js
+language/eval-code/direct/lex-env-distinct-let.js
+language/eval-code/direct/var-env-func-strict-source.js
+built-ins/Function/S15.3.2.1_A2_T1.js
+built-ins/Function/S15.3.2.1_A2_T2.js
+built-ins/Function/S15.3.2.1_A2_T3.js

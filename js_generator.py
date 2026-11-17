@@ -130,6 +130,29 @@ class GeneratorCompiler(Compiler):
         if kind == 'MemberExpression':
             return self.member_value(node)
         if kind in ('CallExpression', 'NewExpression'):
+            callee = node['callee']
+            arguments = node['arguments']
+            if callee['type'] == 'Identifier' and not node.get('optional'):
+                name = callee['name']
+                is_eval = (kind == 'CallExpression' and name == 'eval' and arguments
+                           and arguments[0]['type'] == 'Literal'
+                           and isinstance(arguments[0].get('value'), str))
+                is_function = (name == 'Function' and all(
+                    argument['type'] == 'Literal' and isinstance(argument.get('value'), str)
+                    for argument in arguments))
+                if is_eval or is_function:
+                    target = self.expr(callee)
+                    values = self.arguments(arguments)
+                    self.active = False
+                    try:
+                        compiled = (self.compiled_eval(arguments[0]['value']) if is_eval
+                                    else self.compiled_function(arguments))
+                    finally:
+                        self.active = True
+                    if is_eval:
+                        return self.save(f'jCompiledEval({target}, {values}, {compiled})')
+                    construct = str(kind == 'NewExpression').lower()
+                    return self.save(f'jCompiledFunction({target}, {values}, {compiled}, construct: {construct})')
             if "htgcLoweredRegExp" in node:
                 callee = self.expr(node["callee"])
                 return self.save(self.precompiled_regexp(node, callee, self.arguments(node["arguments"])))
