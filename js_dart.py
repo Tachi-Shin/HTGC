@@ -1,6 +1,7 @@
 """Lower JavaScript syntax to Dart operations; never evaluate input JavaScript."""
 
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -8,8 +9,22 @@ import subprocess
 from frontend import CompileError
 
 
+def runtime_source():
+    """Inline Dart library parts into the single-file generated runtime."""
+    root = Path(__file__).parent / "runtime"
+    source = (root / "js_core.dart").read_text(encoding="utf-8")
+    parts = re.findall(r"^part '([^']+)';$", source, flags=re.M)
+    source = re.sub(r"^part '[^']+';\n", "", source, flags=re.M)
+    for part in parts:
+        text = (root / part).read_text(encoding="utf-8")
+        source += "\n" + re.sub(r"^part of '[^']+';\n", "", text, flags=re.M)
+    return source
+
+
 def quote(value):
-    return json.dumps(value, ensure_ascii=False).replace("$", r"\$")
+    # Escape lone UTF-16 surrogates as well as non-ASCII characters. Test262
+    # strings may contain isolated surrogates that cannot be written as UTF-8.
+    return json.dumps(value, ensure_ascii=True).replace("$", r"\$")
 
 
 def parse(source, path):
@@ -185,7 +200,8 @@ class Compiler:
 
     def function(self, node):
         if node.get("generator"):
-            self.fail(node, "generator function")
+            from js_generator import compile_generator
+            return self.function_metadata(compile_generator(self, node), node)
         old_scope, old_this = self.scope, self.receiver
         old_async, old_temps = self.asynchronous, self.temps
         self.asynchronous, self.temps = node.get("async", False), []
@@ -222,7 +238,16 @@ class Compiler:
         )
         self.scope, self.receiver = old_scope, old_this
         self.asynchronous, self.temps = old_async, old_temps
-        return result
+        return self.function_metadata(result, node)
+
+    def function_metadata(self, expression, node):
+        length = 0
+        for param in node['params']:
+            if param['type'] in ('AssignmentPattern', 'RestElement'):
+                break
+            length += 1
+        name = (node.get('id') or {}).get('name', '')
+        return f'jNamedFunction({expression}, {quote(name)}, {length})'
 
     def returns(self, node):
         if node["type"] in ("ReturnStatement", "ThrowStatement"):
@@ -473,8 +498,9 @@ class Compiler:
                 + (" else " + self.stmt(n["alternate"]) if n.get("alternate") else "")
             )
         if t == "ForOfStatement":
-            if n.get("await"):
-                self.fail(n)
+            asynchronous = n.get("await", False)
+            if asynchronous and not self.asynchronous:
+                self.fail(n, 'for await outside async function/module')
             iterator = self.name("item")
             source = self.expr(n["right"])
             parent = self.scope
@@ -486,11 +512,14 @@ class Compiler:
                 init = f'jAssign({self.ref(left)}, "=", () => {iterator});'
             record = self.name("iterator")
             caught = self.name("error")
-            body = (f'{{ final {record} = jGetIterator({source});\ntry {{\n'
-                    f'while ({record}.advance()) {{\nfinal {iterator} = {record}.current;\n'
+            factory = 'jGetAsyncIterator' if asynchronous else 'jGetIterator'
+            def wait(expression):
+                return f'(await jAwait({expression}))' if asynchronous else expression
+            body = (f'{{ final {record} = {factory}({source});\ntry {{\n'
+                    f'while ({wait(f"{record}.advance()")}) {{\nfinal {iterator} = {record}.current;\n'
                     f'final {self.scope} = JScope({parent});\n{init}\n{self.stmt(n["body"])}\n}}'
-                    f'\n}} catch ({caught}) {{\n{record}.close(suppressErrors: {caught} is! JAsyncReturn);\nrethrow;\n}}'
-                    f' finally {{ {record}.close(); }}\n}}')
+                    f'\n}} catch ({caught}) {{\n{wait(f"{record}.close(suppressErrors: {caught} is! JAsyncReturn)")};\nrethrow;\n}}'
+                    f' finally {{ {wait(f"{record}.close()")}; }}\n}}')
             self.scope = parent
             return body
         if t == "ForStatement":

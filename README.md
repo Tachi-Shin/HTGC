@@ -235,7 +235,7 @@ cp -R lib/main.dart.assets build/linux/x64/release/bundle/
 | --- | --- |
 | [WHATWG HTML](https://html.spec.whatwg.org/) | Flutterではフォームの一部、`dialog`、`details` のほか、`template.content` から断片を複製して挿入できます。ローカルの `iframe/srcdoc` と `object/embed` の文書・画像を扱います。テンプレートのShadow DOM構文、メディア要素、リモート埋め込み、sandboxポリシー、Workerは未対応です。 |
 | [W3C CSS仕様一覧](https://www.w3.org/Style/CSS/specs.en.html) | Flutterの拡張変換は、名前付き・匿名・入れ子の `@layer`、レイヤー順序の宣言、ローカル `@import … layer()`、著者スタイルの `!important` と `revert-layer` に対応します。画面幅・高さ、カラーテーマ、動きを減らす設定などに応じたレイヤー順序と条件付きインポートにも対応します。ページ媒体、詳細な組版、全CSSプロパティの値文法は未対応です。 |
-| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。ローカルの動的 `import()`、トップレベル `await`、`async/await` とPromiseの基本操作にも対応します。BigIntとNumberの数値変換・演算、Symbol、通常オブジェクトの記述子・プロトタイプ操作、Map/Set/WeakMap/WeakSet、反復と分割代入、JSONの基本操作にも対応します。import map、ジェネレーター、非同期イテレーター、Proxy、TypedArrayや組み込みオブジェクトの完全な互換性は未実装です。 |
+| [ECMA-262](https://tc39.es/ecma262/) | Acornで構文解析し、対応する式・文をDartに変換します。Flutterでは `<script type="module">` からローカルファイルを静的に `import/export` できます。名前付き・既定・名前空間のインポート、再エクスポート、循環参照とライブバインディングに対応します。ローカルの動的 `import()`、トップレベル `await`、`async/await` とPromiseの基本操作にも対応します。BigIntとNumberの数値変換・演算、Symbol、通常オブジェクトの記述子・プロトタイプ操作、Map/Set/WeakMap/WeakSet、反復と分割代入、JSONの基本操作にも対応します。ジェネレーターと非同期反復、Proxy、ArrayBuffer/DataView/TypedArray、Date、RegExpも下記の範囲で扱います。import map、完全な関数・クラス・Realm、SharedArrayBuffer/Atomicsなどは未実装です。 |
 
 Flutterモジュールの指定子には `./logic.js`、`../shared.js`、`/shared.js` のようにパスを記述します。`/` は入口HTMLのディレクトリを表します。依存モジュールは変換時に収録され、同じ文書内では各モジュールを1回評価します。
 
@@ -294,7 +294,7 @@ JavaScriptのNumberはDartの `double`、BigIntはDartの `BigInt` を使って�
 - `Math` の丸め・符号・32ビット演算、単精度への丸め、基本的な三角関数・指数・対数、`pow`、`hypot` を実装しています。`hypot` は値をスケーリングして途中のオーバーフロー・アンダーフローを避けます。
 - 通常のユーザー定義関数を `new` で呼ぶと、`prototype` を参照したインスタンスを作り、`this` を渡します。アロー関数への `new` は例外になります。関数・クラス・サブクラス全体の完全互換性を示すものではありません。
 
-BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保を避けるため1,000万ビットの実装上限を設けています。必要な結果が上限を超える場合は `RangeError` になります。10以外の基数でのNumberの文字列化は、ECMA-262で実装依存とされる丸めを含み、すべての入力でV8と同じ文字列になることは保証しません。Intlによるロケール整形、Date・RegExp・TypedArray・Proxyなどの完全実装は引き続き未達です。
+BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保を避けるため1,000万ビットの実装上限を設けています。必要な結果が上限を超える場合は `RangeError` になります。10以外の基数でのNumberの文字列化は、ECMA-262で実装依存とされる丸めを含み、すべての入力でV8と同じ文字列になることは保証しません。Intlによるロケール整形や、全組み込みオブジェクトの完全な互換性は未達です。
 
 ### Flutterの埋め込み文書
 
@@ -325,7 +325,39 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 - `for...of`、spread、`Array.from`、配列の分割代入は `Symbol.iterator` を使います。break・return・例外・分割代入の終了時には、必要に応じてイテレーターの `return()` を呼びます。既定値・rest・computedキーを持つ分割代入の宣言にも対応します。
 - `JSON.parse` のreviver、`JSON.stringify` のreplacer・インデント・`toJSON`・循環参照エラーを実装しています。
 
-これらは組み込みオブジェクト全体の準拠を意味しません。配列の特殊なプロパティ記述子やfreeze/seal、完全な組み込みプロトタイプと関数メタデータ、サブクラス・Species、Proxy、TypedArray、Date/RegExpの全操作、JSONの数値精度とreviverのsource context、非同期イテレーターなどは残っています。対応する通常オブジェクト向けの操作を配列にもそのまま適用できるとは限りません。
+これらは組み込みオブジェクト全体の準拠を意味しません。配列の特殊なプロパティ記述子やfreeze/seal、完全な組み込みプロトタイプと関数メタデータ、サブクラス・Species、JSONのreviverのsource contextなどは残っています。Proxy・TypedArray・Date・RegExp・非同期反復の対応範囲は次の表を参照してください。対応する通常オブジェクト向けの操作を配列にもそのまま適用できるとは限りません。
+
+### ジェネレーター・Proxy・バイナリデータ・日時・正規表現
+
+生成されるDartソースには、次の実行時処理も含まれます。ジェネレーターの中断位置とローカル変数はDartの `sync*` の継続で保持し、JavaScriptのASTを実行時に解釈しません。ランタイムの分割ファイルは生成時にインライン化されるため、配布するDartソースは引き続き1ファイルです。
+
+| 機能 | 実装した操作 |
+| --- | --- |
+| ジェネレーター | `function*`、`yield`、`yield*`、`next(value)`、`throw(value)`、`return(value)`、再入の拒否、catch/finally内の中断、条件式・ループ・分割代入の初期値の中断 |
+| 非同期反復 | `async function*`、await、Promise値のyield、要求のキュー処理、同期／非同期イテレーターへの委譲、`for await...of`、break/return/throw時の後始末 |
+| Proxy | 13種類のトラップ、通常オブジェクト・関数への転送、固定プロパティと拡張不可状態に対する不変条件、`Proxy.revocable`、通常のユーザー定義コンストラクターに対する `Reflect.construct` とnewTarget |
+| ArrayBuffer / DataView | バッファ共有、resize、slice、transfer、transferToFixedLength、デタッチ判定、エンディアンを指定した整数・浮動小数点・BigIntの読み書き |
+| TypedArray | 符号付き／符号なし整数、Uint8Clamped、Float16/32/64、BigInt64/BigUint64、インデックス操作、from/of、反復、set/subarray/slice、検索・集計・map/filter、安定ソート、変更せずコピーを返す操作、可変長バッファ上のビュー |
+| Date | 時刻値、TimeClip、ISO形式と生成したUTC／ローカル形式の解析、UTC／ローカルのget/set、ISO・UTC文字列、JSON変換、無効日時、年0〜99の変換 |
+| RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し、RegExp.escape、compile |
+
+5機能を組み合わせて、HTMLのボタンから非同期にバイナリデータを集計するサンプルは [benchmarks/ecmascript/index.html](benchmarks/ecmascript/index.html) にあります。
+
+```sh
+HTGC benchmarks/ecmascript/index.html -o ../portfolio-app/lib/main.dart
+```
+
+通常の関数・ジェネレーター関数・アロー関数に `name` と `length` を付け、ジェネレーターを `new` で呼んだ場合はTypeErrorにします。Date/RegExpを含む通常のprototypeチェーンと、カスタム `Symbol.hasInstance` による `instanceof` 判定を扱います。
+
+これらはECMAScript全仕様の実装完了を意味しません。特に次の制限があります。
+
+- 完全な関数・クラス・Realm・厳密モードの差、ラベル付き制御構文、タグ付きテンプレート、動的Function/eval、ループの束縛や非同期ジョブの全ケースは未対応または未検証です。
+- Proxyで配列を包んだときの特殊な記述子・拡張禁止など、通常オブジェクトと異なる内部操作は未完です。組み込みコンストラクターに独自newTargetを渡すReflect.constructは拒否します。
+- TypedArrayなどのSpecies／サブクラス、共有メモリとAtomics、すべての副作用順序・メタデータの互換性は未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
+- RegExpの `v` フラグは未対応として診断します。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータ・重複する名前付きグループなど最新仕様との差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
+- Dateのタイムゾーン規則は実行環境に依存します。実装依存の旧式日付文字列すべての受理や、Intlによるロケール整形は保証しません。
+
+検証範囲と再実行手順は [benchmarks/README.md](benchmarks/README.md) に記載しています。Test262全体の合格を示すものではありません。
 
 ### 条件付きCSSレイヤー
 

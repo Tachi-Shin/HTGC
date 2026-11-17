@@ -2,6 +2,7 @@
 """Run a focused set of Test262 scripts after lowering them to Dart."""
 
 import argparse
+import fnmatch
 from pathlib import Path
 import subprocess
 import sys
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from frontend import CompileError
-from js_dart import compile_script
+from js_dart import compile_script, runtime_source
 
 
 # Selected synchronous exception scripts and asynchronous await scripts.
@@ -137,10 +138,14 @@ Future<void> main() async {
     if (!same(a[0], a[1])) throw StateError('${jString(a[0])} != ${jString(a[1])}');
     return jUndefined;
   });
+  assertFn.properties['notSameValue'] = jNative((a) {
+    if (same(a[0], a[1])) throw StateError('Unexpected same value: ${jString(a[0])}');
+    return jUndefined;
+  });
   assertFn.properties['compareArray'] = jNative((a) {
-    final left = a[0] as List, right = a[1] as List;
-    if (left.length != right.length ||
-        List.generate(left.length, (i) => same(left[i], right[i])).contains(false)) {
+    final left = a[0], right = a[1], length = jLength(jGet(a[0],'length'));
+    if (length != jLength(jGet(right,'length')) ||
+        List.generate(length, (i) => same(jGet(left,i), jGet(right,i))).contains(false)) {
       throw StateError('${jString(left)} != ${jString(right)}');
     }
     return jUndefined;
@@ -206,16 +211,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", type=Path, help="path to a Test262 checkout")
     parser.add_argument("--dart", default="dart", help="Dart SDK executable")
+    parser.add_argument("--filter", default="*", help="test path glob")
     args = parser.parse_args()
     tests = [(args.checkout / "test/language/statements/try" / name, HARNESS) for name in TESTS]
     tests += [(args.checkout / "test/language/expressions/await" / name, ASYNC_HARNESS)
               for name in ASYNC_TESTS]
     tests += [(args.checkout / "test/built-ins" / name, BUILTIN_HARNESS)
               for name in (*BUILTIN_TESTS, *NUMERIC_TESTS)]
+    tests += [(args.checkout / "test" / name, BUILTIN_HARNESS)
+              for name in (ROOT / 'benchmarks/test262_extended.txt').read_text().splitlines()
+              if name and not name.startswith('#')]
+    tests = [(path, harness) for path, harness in tests
+             if fnmatch.fnmatch(str(path.relative_to(args.checkout / 'test')), args.filter)]
     missing = [str(path) for path, _ in tests if not path.is_file()]
     if missing:
         parser.error(f"Test262 files missing: {', '.join(missing)}")
-    runtime = (ROOT / "runtime/js_core.dart").read_text(encoding="utf-8")
+    runtime = runtime_source()
     counts = {"PASS": 0, "FAIL": 0, "UNSUPPORTED": 0}
     with TemporaryDirectory(prefix="htgc-test262-") as temporary:
         for path, harness in tests:

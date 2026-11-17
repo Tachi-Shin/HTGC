@@ -1,0 +1,36 @@
+let checks=0;
+function eq(a,b){checks++;if(!Object.is(a,b))throw new Error('proxy check '+checks+': '+String(a)+' != '+String(b));}
+function error(f,name){let caught='';try{f();}catch(e){caught=e.name;}eq(caught,name);}
+const target={x:2,get doubled(){return this.x*2;}};let seen=[];
+const p=new Proxy(target,{get(t,k,r){seen.push('get:'+String(k));return Reflect.get(t,k,r);},set(t,k,v,r){seen.push('set:'+String(k));return Reflect.set(t,k,v,r);}});
+eq(p.doubled,4);p.x=3;eq(target.x,3);eq(seen.join(','),'get:doubled,get:x,set:x');
+eq('x' in p,true);eq(Object.keys(p).join(','),'x,doubled');eq(Object.getOwnPropertyDescriptor(p,'x').value,3);
+Object.defineProperty(p,'y',{value:5,configurable:true});eq(target.y,5);eq(delete p.y,true);eq('y' in target,false);
+const symbol=Symbol('key');target[symbol]=7;eq(p[symbol],7);
+let applied=new Proxy(function(a,b){return this.x+a+b;},{apply(t,r,a){return Reflect.apply(t,r,a)*2;}});eq(applied.call({x:1},2,3),12);
+const constructor=new Proxy(function(){},{construct(t,a,newTarget){eq(newTarget,constructor);return {x:a[0]};}});eq(new constructor(8).x,8);
+error(()=>new (new Proxy(()=>1,{construct(){return {};}}))(),'TypeError');error(()=>new (new Proxy(function(){},{construct(){return 1;}}))(),'TypeError');
+error(()=>Proxy({},{}),'TypeError');error(()=>new Proxy(1,{}),'TypeError');
+const fixed=Object.defineProperty({},'x',{value:1});
+error(()=>new Proxy(fixed,{get(){return 2;}}).x,'TypeError');
+error(()=>Reflect.set(new Proxy(fixed,{set(){return true;}}),'x',2),'TypeError');
+error(()=>Reflect.has(new Proxy(fixed,{has(){return false;}}),'x'),'TypeError');
+error(()=>Reflect.deleteProperty(new Proxy(fixed,{deleteProperty(){return true;}}),'x'),'TypeError');
+error(()=>Reflect.ownKeys(new Proxy(fixed,{ownKeys(){return [];}})),'TypeError');
+error(()=>Object.getOwnPropertyDescriptor(new Proxy(fixed,{getOwnPropertyDescriptor(){return undefined;}}),'x'),'TypeError');
+error(()=>Reflect.ownKeys(new Proxy({},{ownKeys(){return ['x','x'];}})),'TypeError');
+error(()=>Reflect.ownKeys(new Proxy({},{ownKeys(){return [1];}})),'TypeError');
+error(()=>Object.getOwnPropertyDescriptor(new Proxy({},{getOwnPropertyDescriptor(){return {value:1};}}),'x'),'TypeError');
+error(()=>Reflect.defineProperty(new Proxy({},{defineProperty(){return true;}}),'x',{value:1,configurable:false}),'TypeError');
+const sealed=Object.preventExtensions({x:1});
+error(()=>Object.getPrototypeOf(new Proxy(sealed,{getPrototypeOf(){return null;}})),'TypeError');
+error(()=>Object.setPrototypeOf(new Proxy(sealed,{setPrototypeOf(){return true;}}),null),'TypeError');
+error(()=>Object.isExtensible(new Proxy(sealed,{isExtensible(){return true;}})),'TypeError');
+error(()=>Object.preventExtensions(new Proxy({},{preventExtensions(){return true;}})),'TypeError');
+const rev=Proxy.revocable({x:1},{});eq(rev.proxy.x,1);rev.revoke();rev.revoke();error(()=>rev.proxy.x,'TypeError');error(()=>Object.keys(rev.proxy),'TypeError');
+const fnRev=Proxy.revocable(()=>1,{});eq(fnRev.proxy(),1);fnRev.revoke();error(()=>fnRev.proxy(),'TypeError');eq(typeof fnRev.proxy,'function');
+function Original(x){this.x=x;}function Alternate(){};
+const forwarding=new Proxy(Original,{});const instance=Reflect.construct(forwarding,[42],Alternate);eq(instance.x,42);eq(Object.getPrototypeOf(instance),Alternate.prototype);
+const mutated={};eq(Object.isExtensible(new Proxy(mutated,{isExtensible(t){Object.preventExtensions(t);return false;}})),false);
+eq(Array.isArray(new Proxy([],{})),true);const arrayRev=Proxy.revocable([],{});arrayRev.revoke();error(()=>Array.isArray(arrayRev.proxy),'TypeError');
+console.log('proxy: '+checks+' checks');$DONE();

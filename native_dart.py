@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from native_frontend import load_site
 from native_events import emit_handler
-from js_dart import quote
+from js_dart import quote, runtime_source
 from js_modules import DartModules
 
 
@@ -16,7 +16,7 @@ def generate(entry, *, includes=(), asset_name="htgc.assets"):
     imports = []
     bodies = []
     for name in ["js_core", "dom", "css", "flutter"]:
-        source = (Path(__file__).parent / "runtime" / f"{name}.dart").read_text(
+        source = runtime_source() if name == "js_core" else (Path(__file__).parent / "runtime" / f"{name}.dart").read_text(
             encoding="utf-8"
         )
 

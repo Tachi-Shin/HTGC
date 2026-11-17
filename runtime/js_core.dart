@@ -4,6 +4,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:collection';
 import 'dart:typed_data';
+part 'js_date.dart';
+part 'js_proxy.dart';
+part 'js_binary.dart';
+part 'js_regexp.dart';
+part 'js_generator.dart';
 
 class JUndefined {
   const JUndefined();
@@ -564,14 +569,28 @@ class JObject {
     }
     if (own(key) && !(flags[key]?.writable ?? true) || receiver is! JObject)
       return false;
-    if (receiver.own(key)) {
-      if (receiver.accessor(key) || !(receiver.flags[key]?.writable ?? true))
+    final existing = jDescriptor(receiver, key);
+    if (existing is JObject) {
+      if (existing.own('get') || !jTruthy(existing.get('writable')))
         return false;
-    } else if (!receiver.extensible) {
-      return false;
+      return jDefineProperty(
+        receiver,
+        key,
+        JObject({'value': value}),
+        normalized: true,
+      );
     }
-    receiver.store(key, value);
-    return true;
+    return jDefineProperty(
+      receiver,
+      key,
+      JObject({
+        'value': value,
+        'writable': true,
+        'enumerable': true,
+        'configurable': true,
+      }),
+      normalized: true,
+    );
   }
 
   bool remove(Object key) {
@@ -604,6 +623,19 @@ List<Object> jOwnKeys(
   bool enumerable = false,
   bool strings = false,
 }) {
+  final proxy = jProxyState(value);
+  if (proxy != null)
+    return proxy.keys().where((key) {
+      if (strings && key is! String) return false;
+      if (!enumerable) return true;
+      final descriptor = proxy.descriptor(key);
+      return descriptor is JObject && descriptor.get('enumerable') == true;
+    }).toList();
+  if (value is JTypedArray)
+    return [
+      for (var i = 0; i < value.length; i++) '$i',
+      ...jOrdinaryTypedKeys(value, enumerable: enumerable, strings: strings),
+    ];
   if (jNullish(value))
     throw JThrown(
       JError('TypeError', 'Cannot convert null or undefined to object'),
@@ -615,6 +647,8 @@ List<Object> jOwnKeys(
       for (var i = 0; i < value.length; i++)
         if (value is! List || !identical(value[i], _jHole)) '$i',
       if (!enumerable) 'length',
+      if (value is JArray)
+        ...jOwnKeys(value.extra, enumerable: enumerable, strings: strings),
     ];
   if (value is! JObject) return [];
   final indices = <int>[];
@@ -646,6 +680,7 @@ bool jHasOwn(dynamic object, Object key) {
   if (object is JModuleNamespace) return object.exports.containsKey(key);
   if (object is JObject) return object.own(key);
   if (object is List || object is String) {
+    if (object is JArray && object.extra.own(key)) return true;
     if (key == 'length') return true;
     final index = int.tryParse(key is String ? key : '');
     return index != null &&
@@ -658,6 +693,8 @@ bool jHasOwn(dynamic object, Object key) {
 }
 
 bool jHasProperty(dynamic object, Object key) {
+  final proxy = jProxyState(object);
+  if (proxy != null) return proxy.has(key);
   if (jHasOwn(object, key)) return true;
   if (object is JObject)
     return object.prototype != null && jHasProperty(object.prototype, key);
@@ -708,6 +745,10 @@ bool jDefineProperty(
   final descriptor = normalized
       ? input as JObject
       : jNormalizeDescriptor(input);
+  final proxy = jProxyState(object);
+  if (proxy != null) return proxy.define(key, descriptor);
+  if (object is JTypedArray && jTypedIndex(key) != null)
+    return object.defineIndex(key, descriptor);
   bool has(String name) => descriptor.own(name);
   dynamic field(String name) => descriptor.raw(name);
   final hasGet = has('get'), hasSet = has('set');
@@ -764,6 +805,10 @@ bool jDefineProperty(
 }
 
 dynamic jDescriptor(dynamic value, Object key) {
+  final proxy = jProxyState(value);
+  if (proxy != null) return proxy.descriptor(key);
+  if (value is JArray && value.extra.own(key))
+    return jDescriptor(value.extra, key);
   if (!jHasOwn(value, key)) return jUndefined;
   if (value is! JObject)
     return JObject({
@@ -789,6 +834,8 @@ dynamic jDescriptor(dynamic value, Object key) {
 bool jSetPrototype(JObject object, dynamic prototype) {
   if (prototype != null && prototype is! JObject)
     throw JThrown(JError('TypeError', 'Invalid prototype'));
+  final proxy = jProxyState(object);
+  if (proxy != null) return proxy.setPrototype(prototype);
   if (identical(object.prototype, prototype)) return true;
   if (!object.extensible) return false;
   for (JObject? cursor = prototype; cursor != null; cursor = cursor.prototype) {
@@ -823,11 +870,16 @@ final JObject jObjectPrototype = JObject.root({
   'toString': JFunction((a, receiver) {
     if (receiver == null) return '[object Null]';
     if (identical(receiver, jUndefined)) return '[object Undefined]';
+    final array = jIsArray(receiver);
     final tag = jGet(receiver, jSymbols['toStringTag']);
     return '[object ${tag is String
         ? tag
-        : receiver is List
+        : array
         ? 'Array'
+        : receiver is JDate
+        ? 'Date'
+        : receiver is JRegex
+        ? 'RegExp'
         : receiver is JFunction
         ? 'Function'
         : 'Object'}]';
@@ -837,26 +889,30 @@ final JObject jObjectPrototype = JObject.root({
 typedef JObjectEntry = (String, Object, dynamic);
 JObject jObjectLiteral(List<JObjectEntry> entries) {
   final object = JObject();
-  for (final (kind, key, value) in entries) {
-    if (kind == 'get' || kind == 'set') {
-      if (!object.accessor(key)) {
-        object.getters.remove(key);
-        object.setters.remove(key);
-      }
-      object.store(key, jUndefined);
-      object._accessors.add(key);
-      (kind == 'get' ? object.getters : object.setters)[key] =
-          value as JFunction;
-    } else if (kind == 'prototype') {
-      if (value == null || value is JObject) object.prototype = value;
-    } else {
-      object.getters.remove(key);
-      object.setters.remove(key);
-      object._accessors.remove(key);
-      object.store(key, value);
-    }
+  for (final entry in entries) {
+    jApplyObjectEntry(object, entry);
   }
   return object;
+}
+
+void jApplyObjectEntry(JObject object, JObjectEntry entry) {
+  final (kind, key, value) = entry;
+  if (kind == 'get' || kind == 'set') {
+    if (!object.accessor(key)) {
+      object.getters.remove(key);
+      object.setters.remove(key);
+    }
+    object.store(key, jUndefined);
+    object._accessors.add(key);
+    (kind == 'get' ? object.getters : object.setters)[key] = value as JFunction;
+  } else if (kind == 'prototype') {
+    if (value == null || value is JObject) object.prototype = value;
+  } else {
+    object.getters.remove(key);
+    object.setters.remove(key);
+    object._accessors.remove(key);
+    object.store(key, value);
+  }
 }
 
 Iterable<JObjectEntry> jObjectSpread(dynamic value) sync* {
@@ -1156,24 +1212,30 @@ class JModuleGraph {
 class JFunction extends JObject {
   final dynamic Function(List<dynamic>, dynamic) invoke;
   final dynamic Function(List<dynamic>)? construct;
+  final dynamic Function(List<dynamic>, dynamic)? constructWithTarget;
   final bool constructible;
-  JFunction(this.invoke, {this.construct, this.constructible = true});
+  JFunction(
+    this.invoke, {
+    this.construct,
+    this.constructWithTarget,
+    this.constructible = true,
+  });
   @override
-  dynamic get(String name) {
-    if (properties.containsKey(name)) return super.get(name);
+  dynamic read(Object name, dynamic receiver) {
+    if (own(name)) return super.read(name, receiver);
     if (name == 'call')
       return jNative(
-        (a) => jCall(this, a.skip(1).toList(), receiver: jArg(a, 0)),
+        (a) => jCall(receiver, a.skip(1).toList(), receiver: jArg(a, 0)),
       );
     if (name == 'apply')
       return jNative(
         (a) => jCall(
-          this,
+          receiver,
           jNullish(jArg(a, 1)) ? [] : jArrayLikeList(a[1]),
           receiver: jArg(a, 0),
         ),
       );
-    return super.get(name);
+    return super.read(name, receiver);
   }
 }
 
@@ -1187,8 +1249,8 @@ JFunction jFunction(dynamic Function(List<dynamic>, dynamic) body) {
   late final JFunction function;
   function = JFunction(
     body,
-    construct: (arguments) {
-      final prototype = function.get('prototype');
+    constructWithTarget: (arguments, newTarget) {
+      final prototype = jGet(newTarget, 'prototype');
       final instance = JObject()
         ..prototype = prototype is JObject ? prototype : jObjectPrototype;
       final result = body(arguments, instance);
@@ -1205,6 +1267,11 @@ JFunction jFunction(dynamic Function(List<dynamic>, dynamic) body) {
   return function;
 }
 
+JFunction jNamedFunction(JFunction function, String name, int length) {
+  jNameFunction(function, name, length);
+  return function;
+}
+
 class JClass extends JObject {
   final dynamic base;
   final Map<String, dynamic> methods;
@@ -1213,18 +1280,6 @@ class JClass extends JObject {
     if (base is JClass) (base as JClass).attach(instance);
     instance.properties.addAll(methods);
   }
-}
-
-class JRegex {
-  final String pattern, flags;
-  late final RegExp value = RegExp(
-    pattern,
-    caseSensitive: !flags.contains('i'),
-    multiLine: flags.contains('m'),
-    dotAll: flags.contains('s'),
-    unicode: flags.contains('u'),
-  );
-  JRegex(this.pattern, this.flags);
 }
 
 class JRef {
@@ -2009,7 +2064,12 @@ dynamic jInvoke(
   receiver: object,
   optional: optionalCall,
 );
-dynamic jNew(dynamic constructor, List<dynamic> args) {
+dynamic jNew(dynamic constructor, List<dynamic> args, {dynamic newTarget}) {
+  newTarget ??= constructor;
+  if (constructor is JProxyFunction) {
+    if (!constructor.constructible) jProxyError('Not a constructor');
+    return constructor.proxy.construct(args, newTarget);
+  }
   if (constructor is JClass) {
     final result = constructor.base is JFunction
         ? jNew(constructor.base, args)
@@ -2020,6 +2080,12 @@ dynamic jNew(dynamic constructor, List<dynamic> args) {
   if (constructor is JFunction) {
     if (!constructor.constructible)
       throw JThrown(JError('TypeError', 'Not a constructor'));
+    if (constructor.constructWithTarget != null)
+      return constructor.constructWithTarget!(args, newTarget);
+    if (!identical(newTarget, constructor))
+      throw UnsupportedError(
+        'Custom newTarget for built-in constructors is not implemented',
+      );
     return constructor.construct == null
         ? jCall(constructor, args)
         : constructor.construct!(args);
@@ -2047,6 +2113,8 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
   final name = property as String;
   if (value is JObject) return value.get(name);
   if (value is List) {
+    if (value is JArray && value.extra.own(property))
+      return value.extra.read(property, value);
     if (name == 'length') return value.length;
     final i = int.tryParse(name);
     if (i != null && '$i' == name)
@@ -2185,59 +2253,12 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
       case 'endsWith':
         return jNative((a) => value.endsWith(jString(a[0])));
       case 'split':
-        return jNative(
-          (a) => a.isEmpty
-              ? [value]
-              : value.split(
-                  a[0] is JRegex ? (a[0] as JRegex).value : jString(a[0]),
-                ),
-        );
       case 'match':
-        return jNative((a) {
-          final re = a[0] is JRegex
-              ? a[0] as JRegex
-              : JRegex(jString(a[0]), '');
-          if (re.flags.contains('g')) {
-            final matches = re.value
-                .allMatches(value)
-                .map((m) => m[0])
-                .toList();
-            return matches.isEmpty ? null : matches;
-          }
-          final m = re.value.firstMatch(value);
-          return m == null
-              ? null
-              : [for (var i = 0; i <= m.groupCount; i++) m[i] ?? jUndefined];
-        });
+      case 'matchAll':
       case 'replace':
-        return jNative((a) {
-          final re = a[0] is JRegex ? a[0] as JRegex : null;
-          final Pattern pattern = re?.value ?? jString(a[0]);
-          String replacement(Match m) {
-            if (a[1] is JFunction)
-              return jString(
-                jCall(a[1], [
-                  m[0],
-                  for (var i = 1; i <= m.groupCount; i++) m[i],
-                  m.start,
-                  value,
-                ]),
-              );
-            return jString(a[1])
-                .replaceAllMapped(RegExp(r'\$(\$|&|[0-9]{1,2})'), (p) {
-                  if (p[1] == '\$') return '\$';
-                  if (p[1] == '&') return m[0]!;
-                  final index = int.parse(p[1]!);
-                  return index > 0 && index <= m.groupCount
-                      ? m[index] ?? ''
-                      : p[0]!;
-                });
-          }
-
-          return re?.flags.contains('g') == true
-              ? value.replaceAllMapped(pattern, replacement)
-              : value.replaceFirstMapped(pattern, replacement);
-        });
+      case 'replaceAll':
+      case 'search':
+        return jBuiltin((a) => jStringRegExp(name, value, a));
     }
   }
   if (value is JSymbol) {
@@ -2245,16 +2266,30 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
     if (name == 'toString') return jNative((_) => value.descriptive);
     if (name == 'valueOf') return jNative((_) => value);
   }
-  if (value is JRegex && name == 'test')
-    return jNative((a) => value.value.hasMatch(jString(a[0])));
   if (value is num) return jNumberPrototype.read(name, value);
   if (value is BigInt) return jBigIntPrototype.read(name, value);
   if (value is bool) return jBooleanPrototype.read(name, value);
   return jUndefined;
 }
 
+int? jArrayIndex(String name) {
+  final index = int.tryParse(name);
+  return index != null && index >= 0 && index < 4294967295 && '$index' == name
+      ? index
+      : null;
+}
+
 dynamic jSet(dynamic value, dynamic key, dynamic assigned) {
   final property = jPropertyKey(key);
+  if (value is JArray &&
+      (property is JSymbol ||
+          property is String &&
+              property != 'length' &&
+              jArrayIndex(property) == null)) {
+    if (!value.extra.write(property, assigned, value.extra))
+      throw JThrown(JError('TypeError', 'Cannot assign array property'));
+    return assigned;
+  }
   if (value is JObject && property is JSymbol) {
     if (!value.write(property, assigned, value))
       throw JThrown(JError('TypeError', 'Cannot assign symbol property'));
@@ -2394,12 +2429,37 @@ dynamic jBinary(String op, dynamic a, dynamic b) {
           JError('TypeError', 'Right operand of in must be an object'),
         );
       return jHasProperty(b, jPropertyKey(a));
+    case 'instanceof':
+      if (!jIsObject(b))
+        throw JThrown(
+          JError('TypeError', 'Right operand of instanceof must be an object'),
+        );
+      final method = jGet(b, jSymbols['hasInstance']);
+      if (!jNullish(method)) return jTruthy(jCall(method, [a], receiver: b));
+      if (b is! JFunction)
+        throw JThrown(
+          JError('TypeError', 'Right operand of instanceof must be callable'),
+        );
+      if (!jIsObject(a)) return false;
+      final prototype = jGet(b, 'prototype');
+      if (!jIsObject(prototype))
+        throw JThrown(
+          JError('TypeError', 'Constructor prototype must be an object'),
+        );
+      dynamic current = a;
+      while ((current = jPrototype(current)) != null) {
+        if (identical(current, prototype)) return true;
+      }
+      return false;
   }
   throw StateError('Binary operator $op');
 }
 
 void installJSBuiltins(JScope scope) {
   installJSObjects(scope);
+  installJSProxies(scope);
+  installJSBinary(scope);
+  installJSRegExp(scope);
   installJSCollections(scope);
   scope.define(
     'JSON',
@@ -2447,13 +2507,7 @@ void installJSBuiltins(JScope scope) {
   );
   installJSPrimitiveWrappers(scope);
   installJSNumbers(scope);
-  scope.define(
-    'Date',
-    jNative((a) {
-      final now = DateTime.now();
-      return JObject({'getFullYear': jNative((a) => now.year)});
-    }),
-  );
+  installJSDates(scope);
   final array = jNative((a) {
     if (a.length == 1 && a[0] is num) {
       final count = a[0] as num;
@@ -2467,7 +2521,7 @@ void installJSBuiltins(JScope scope) {
     return List<dynamic>.of(a);
   });
   array.properties.addAll({
-    'isArray': jNative((a) => jArg(a, 0) is List),
+    'isArray': jNative((a) => jIsArray(jArg(a, 0))),
     'of': jNative((a) => List<dynamic>.of(a)),
     'from': jNative((a) {
       final input = jArg(a, 0), mapper = jArg(a, 1);
@@ -2835,12 +2889,19 @@ void installJSObjects(JScope scope) {
         if (target is List)
           throw UnsupportedError('Object.$mode on arrays is not implemented');
         if (target is! JObject) return target;
-        for (final key in jOwnKeys(target)) {
-          final flags = target.flags.putIfAbsent(key, () => JPropertyFlags());
-          if (mode != 'preventExtensions') flags.configurable = false;
-          if (mode == 'freeze' && !target.accessor(key)) flags.writable = false;
-        }
-        target.extensible = false;
+        if (!jPreventExtensions(target))
+          jProxyError('Cannot prevent extensions');
+        if (mode != 'preventExtensions')
+          for (final key in jOwnKeys(target)) {
+            final desc = jDescriptor(target, key);
+            if (desc is! JObject) continue;
+            final update = JObject({
+              'configurable': false,
+              if (mode == 'freeze' && desc.own('value')) 'writable': false,
+            });
+            if (!jDefineProperty(target, key, update, normalized: true))
+              jProxyError('Cannot seal property');
+          }
         return target;
       }),
     'isExtensible': jNative(
@@ -2854,11 +2915,12 @@ void installJSObjects(JScope scope) {
         if (target is! JObject) return true;
         return !target.extensible &&
             jOwnKeys(target).every((key) {
-              final flags = target.flags[key] ?? JPropertyFlags();
-              return !flags.configurable &&
+              final desc = jDescriptor(target, key);
+              if (desc is! JObject) return true;
+              return !jTruthy(desc.get('configurable')) &&
                   (mode == 'isSealed' ||
-                      target.accessor(key) ||
-                      !flags.writable);
+                      desc.own('get') ||
+                      !jTruthy(desc.get('writable')));
             });
       }),
   });
@@ -2907,13 +2969,23 @@ void installJSObjects(JScope scope) {
       ),
       'isExtensible': jNative((a) => jRequireObject(jArg(a, 0)).extensible),
       'preventExtensions': jNative((a) {
-        jRequireObject(jArg(a, 0)).extensible = false;
-        return true;
+        return jPreventExtensions(jRequireObject(jArg(a, 0)));
       }),
       'apply': jNative(
         (a) =>
             jCall(jArg(a, 0), jArrayLikeList(jArg(a, 2)), receiver: jArg(a, 1)),
       ),
+      'construct': jBuiltin((a) {
+        final target = jArg(a, 0), newTarget = a.length < 3 ? target : a[2];
+        if (target is! JFunction ||
+            !target.constructible ||
+            newTarget is! JFunction ||
+            !newTarget.constructible)
+          throw JThrown(
+            JError('TypeError', 'Reflect.construct requires constructors'),
+          );
+        return jNew(target, jArrayLikeList(jArg(a, 1)), newTarget: newTarget);
+      }),
     }),
   );
 }
@@ -3427,6 +3499,8 @@ bool jDelete(dynamic object, dynamic key, {bool strict = false}) {
   if (object is JObject) {
     success = object.remove(property);
   } else if (object is List) {
+    if (object is JArray && object.extra.own(property))
+      return jDelete(object.extra, property, strict: strict);
     if (property == 'length')
       success = false;
     else {

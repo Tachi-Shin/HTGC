@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>ECMAScriptからFlutterへ</title>
+  <style>
+    main { padding: 24px; max-width: 560px; }
+    button { padding: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>バイナリデータの集計</h1>
+    <p id="status">待機中</p>
+    <p id="result"></p>
+    <p id="date"></p>
+    <button id="run" type="button">集計する</button>
+  </main>
+  <script>
+    const state = new Proxy({status: '待機中'}, {
+      set(target, key, value) {
+        target[key] = value;
+        document.getElementById(key).textContent = value;
+        return true;
+      }
+    });
+    async function* records() {
+      const buffer = new ArrayBuffer(8);
+      const view = new DataView(buffer);
+      view.setUint16(0, 64, true);
+      view.setUint16(2, 128, true);
+      view.setUint16(4, 192, true);
+      view.setUint16(6, 256, true);
+      for (let offset = 0; offset < 8; offset += 2) {
+        yield await Promise.resolve(view.getUint16(offset, true));
+      }
+    }
+    document.getElementById('run').addEventListener('click', async () => {
+      state.status = '集計中';
+      const values = [];
+      for await (const value of records()) values.push(value);
+      const data = new Uint16Array(values);
+      const match = /total=(?<value>\d+)/d.exec('total=' + data.reduce((sum, value) => sum + value, 0));
+      state.result = '合計 ' + match.groups.value + ' / ' + data.join(',');
+      state.date = new Date(Date.UTC(2026, 10, 16)).toISOString();
+      state.status = '完了';
+    });
+  </script>
+</body>
+</html>

@@ -43,11 +43,11 @@ git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
 python3 benchmarks/test262_dart.py ../test262
 ```
 
-Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の計100件を選び、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` に列挙しています。
+Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の100件に、Proxy.get 18件、GeneratorPrototype 59件、Date.toISOString 17件、RegExp.exec 13件、ArrayBuffer.resize 10件を追加した計217件を、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` と `test262_extended.txt` に列挙しています。
 
 BigIntの試験では、2〜36進数の文字列化、整数変換と構文エラー、`asIntN/asUintN` の算術・型変換・副作用の順序、プロトタイプと関数の記述子、呼び出し時の例外を検証します。BigIntの全試験ではなく、複数Realm、Functionの継承、スクリプトのグローバル `this`、Dateと組み合わせた変換などは対象外です。
 
-ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue`、`assert.compareArray`、`assert.throws`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。Test262のpropertyHelper全体やProxy/Reflect.constructを使うisConstructor.js自体の実行ではありません。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue/notSameValue`、`assert.compareArray`、`assert.throws`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。Test262のpropertyHelper全体やProxy/Reflect.constructを使うisConstructor.js自体の実行ではありません。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
 
 ## 非同期実行と条件付きCSSの回帰試験
 
@@ -60,11 +60,31 @@ cd ../portfolio-app
 flutter test test/ui_bridge_test.dart test/css_conditions_test.dart
 ```
 
-`js_async_dart.py` は7組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。Node.jsは比較用で、生成アプリには使いません。`Promise.try` と `Promise.withResolvers` に対応したNode.jsが必要です（24.22.1で検証）。
+`js_async_dart.py` は12組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。ジェネレーター129、Proxy42、バイナリデータ68、Date63、RegExp70の計372アサーションを追加し、合計828アサーションを実行します。Node.jsは比較用で、生成アプリには使いません。`Promise.try`、`Promise.withResolvers`、Float16Array、RegExp.escapeに対応したNode.jsが必要です（24.22.1で検証）。
 
 Flutterテストでは、トップレベル `await` の完了後と非同期クリック処理後に表示が更新されることも確認します。CSSテストは幅320・800・1000pxとテーマ・動きの設定を切り替えて、条件付きレイヤー順序とインポート、メディア範囲比較、`@supports` を検証します。
 
 これらは選定したケースの回帰試験です。WPT全体・Test262全体の通過や、ブラウザとの完全な描画一致を示すものではありません。
+
+## ジェネレーターと組み込みオブジェクトの検証
+
+```sh
+# 全フィクスチャをDartのAOT実行ファイルにしてNode.jsと比較
+python3 benchmarks/js_async_dart.py --aot
+# 不具合調査時には機能を限定できる
+python3 benchmarks/js_async_dart.py --filter generators.js
+python3 benchmarks/test262_dart.py ../test262 --filter '*GeneratorPrototype*'
+
+# 同じ機能をHTMLからコンパイルし、Flutter画面への反映を確認
+python3 HTGC benchmarks/ecmascript/index.html -o ../portfolio-app/lib/ecmascript.dart
+cp benchmarks/ecmascript_test.dart ../portfolio-app/test/
+cd ../portfolio-app
+flutter test test/ecmascript_test.dart
+```
+
+追加したケースは、next/throw/returnとfinally、yield*、for await、非同期returnの拒否、Proxyの不変条件・失効・newTarget、バッファ共有・リサイズ・転送、整数変換・Float16の丸め、日時の境界・getter/setter、正規表現のlastIndex・Unicode・キャプチャ位置・置換を検証します。
+
+Dart JITとLinux x64のAOTで12組の比較試験を通過しました。Flutterの7テストには、ポートフォリオ、UI連携、条件付きCSS、WPT由来のレイヤー試験、埋め込み文書、および上記の組み込み機能を使った画面更新が含まれます。macOS実機・Windows実機・PyInstallerの配布ビルドはこの変更では再検証していません。
 
 ## Dart専用CLIの検証
 
@@ -132,7 +152,7 @@ Apple Silicon Macでは `flutter build macos --release` でビルドし、`lib/m
 | Contact | 3つの入力欄と必須・メール形式の検証 |
 | レイアウト | 画像帯の高さ、ヒーロー中央揃え、Gridの列、幅390pxの表示 |
 
-CSSボックスの細部、フォントと改行、フォーカス表示、フィルター、アニメーションにはブラウザとの差があります。JavaScriptのジェネレーター、Promiseのサブクラスや多くのブラウザAPIには未実装の範囲があります。
+CSSボックスの細部、フォントと改行、フォーカス表示、フィルター、アニメーションにはブラウザとの差があります。JavaScriptの完全なジェネレーター互換性、Promiseのサブクラスや多くのブラウザAPIには未実装の範囲があります。
 
 元サイトの粒子描画は、初期化を試みる時点で関数がまだ定義されていないため自動開始しません。Contactの送信には元サイトと同じく別途受信サービスが必要です。テストはフォームの検証まで行います。
 
