@@ -276,6 +276,16 @@ void installJSDates(JScope scope) {
     }
     throw JThrown(JError('TypeError', 'Cannot convert Date to primitive'));
   }, constructible: false);
+  for (final entry in {
+    'toLocaleString': 'toString',
+    'toLocaleDateString': 'toDateString',
+    'toLocaleTimeString': 'toTimeString',
+  }.entries) {
+    jDatePrototype.properties[entry.key] = JFunction(
+      (a, r) => jDateString(jDateReceiver(r), entry.value),
+      constructible: false,
+    );
+  }
   jDatePrototype.properties['valueOf'] = JFunction(
     (a, r) => jDateReceiver(r).time,
     constructible: false,

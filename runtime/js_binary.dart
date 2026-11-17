@@ -203,6 +203,16 @@ int jFloat16(double value) {
   return sign | ((exponent + 15) << 10) | (significand - 1024);
 }
 
+double jFromFloat16(int bits) {
+  final exponent = (bits >> 10) & 31, mantissa = bits & 1023;
+  final value = exponent == 31
+      ? (mantissa == 0 ? double.infinity : double.nan)
+      : exponent == 0
+      ? mantissa * math.pow(2, -24)
+      : (1024 + mantissa) * math.pow(2, exponent - 25);
+  return (bits & 0x8000) != 0 ? -value.toDouble() : value.toDouble();
+}
+
 dynamic jReadElement(
   JArrayBuffer buffer,
   int offset,
@@ -229,15 +239,7 @@ dynamic jReadElement(
     case 'Float64Array':
       return data.getFloat64(offset, endian);
     case 'Float16Array':
-      final bits = data.getUint16(offset, endian),
-          exponent = (bits >> 10) & 31,
-          mantissa = bits & 1023;
-      final n = exponent == 31
-          ? (mantissa == 0 ? double.infinity : double.nan)
-          : exponent == 0
-          ? mantissa * math.pow(2, -24)
-          : (1024 + mantissa) * math.pow(2, exponent - 25);
-      return (bits & 0x8000) != 0 ? -n.toDouble() : n.toDouble();
+      return jFromFloat16(data.getUint16(offset, endian));
     default:
       final low = data.getUint32(
             offset + (endian == Endian.little ? 0 : 4),
@@ -746,6 +748,7 @@ void installJSBinary(JScope scope) {
       'constructor': constructor,
       'BYTES_PER_ELEMENT': size,
     });
+    if (kind == 'Uint8Array') jInstallByteEncoding(constructor, proto);
     jBuiltinProperties(proto);
     jBuiltinProperties(constructor);
     jNameFunction(constructor, kind, 3);
@@ -821,6 +824,11 @@ void jInstallTypedMethods() {
             .join(identical(jArg(a, 0), jUndefined) ? ',' : jString(a[0])),
   );
   method('toString', (a, t) => jInvoke(t, 'join', []));
+  method('toLocaleString', (a, t) {
+    final length = t.length;
+    return [for (var i = 0; i < length; i++) jLocaleElement(t.at(i), a)]
+        .join(',');
+  });
   method('set', (a, t) {
     final offset = jInteger(jArg(a, 1));
     if (offset < 0 || !offset.isFinite)

@@ -51,8 +51,13 @@ class Compiler:
             "jUndefined",
         )
         self.asynchronous = False
+        self.new_target = "jUndefined"
+        self.home = None
+        self.construction = None
+        self.private_names = {}
         self.temps = []
         self.module_owner = None
+        self.script_name = ""
 
     def temp(self):
         name = self.name("tmp")
@@ -96,6 +101,10 @@ class Compiler:
         if node["type"] == "Identifier":
             return f'JRef.scope({self.scope}, {quote(node["name"])})'
         if node["type"] == "MemberExpression":
+            if node["property"]["type"] == "PrivateIdentifier":
+                return f'{self.private_name(node["property"])}.reference({self.expr(node["object"])})'
+            if node["object"]["type"] == "Super":
+                return self.super_reference(node)
             return f'JRef.member({self.expr(node["object"])}, {self.key(node)})'
         self.fail(node, "assignment target")
 
@@ -106,14 +115,36 @@ class Compiler:
             else quote(node["property"]["name"])
         )
 
+    def private_name(self, node):
+        name = self.private_names.get(node["name"])
+        if name is None:
+            self.fail(node, "undeclared private identifier")
+        return name
+
+    def super_reference(self, node):
+        if self.home is None:
+            self.fail(node, "super outside a class method")
+        return f'jSuperReference({self.receiver}, {self.home}, {self.key(node)})'
+
     def member(self, node, *, call=False, optional_call=False):
+        if node["object"]["type"] == "Super":
+            if not call:
+                return f'{self.super_reference(node)}.read()'
+            if self.home is None:
+                self.fail(node, "super outside a class method")
+            return f'jSuperCallSite({self.receiver}, {self.home}, {self.key(node)}, optional: {str(optional_call).lower()})'
         temp = self.temp()
         obj, key = self.expr(node["object"]), self.key(node)
         test = f"identical({temp} = {obj}, jShortCircuit)"
         if node.get("optional"):
             test += f" || jNullish({temp})"
-        value = (f"JCallSite.member({temp}, {key}, optionalCall: {str(optional_call).lower()})"
-                 if call else f"jGet({temp}, {key})")
+        if node["property"]["type"] == "PrivateIdentifier":
+            private = self.private_name(node["property"])
+            value = (f'{private}.callSite({temp}, optional: {str(optional_call).lower()})'
+                     if call else f'{private}.read({temp})')
+        else:
+            value = (f"JCallSite.member({temp}, {key}, optionalCall: {str(optional_call).lower()})"
+                     if call else f"jGet({temp}, {key})")
         skipped = "JCallSite(jShortCircuit)" if call else "jShortCircuit"
         return f"({test} ? {skipped} : {value})"
 
@@ -124,6 +155,8 @@ class Compiler:
                 else self.expr(key))
 
     def bind(self, pattern, value, kind="let"):
+        if kind == "assign" and pattern["type"] in ("Identifier", "MemberExpression"):
+            return f'{self.ref(pattern)}.write({value});'
         if pattern["type"] == "Identifier":
             if kind == "var":
                 return f'{self.scope}.put({quote(pattern["name"])}, {value});'
@@ -199,10 +232,26 @@ class Compiler:
                     yield from self.var_names(child)
 
     def function(self, node):
+        named_expression = node["type"] == "FunctionExpression" and node.get("id") is not None
+        if named_expression:
+            parent = self.scope
+            self.scope = self.name("named")
+            name = quote(node["id"]["name"])
+            scope = self.scope
+            try:
+                result = self.function_value(node)
+            finally:
+                self.scope = parent
+            return (f'(() {{ final {scope} = JScope({parent}); {scope}.reserve({name}); '
+                    f'return {scope}.define({name}, {result}, constant: true); }})()')
+        return self.function_value(node)
+
+    def function_value(self, node):
         if node.get("generator"):
             from js_generator import compile_generator
             return self.function_metadata(compile_generator(self, node), node)
-        old_scope, old_this = self.scope, self.receiver
+        old_scope, old_this, old_target = self.scope, self.receiver, self.new_target
+        old_home, old_construction = self.home, self.construction
         old_async, old_temps = self.asynchronous, self.temps
         self.asynchronous, self.temps = node.get("async", False), []
         scope, args, receiver = self.name(), self.name("a"), self.name("this")
@@ -210,7 +259,18 @@ class Compiler:
         self.receiver = (
             old_this if node["type"] == "ArrowFunctionExpression" else receiver
         )
+        arrow = node["type"] == "ArrowFunctionExpression"
+        constructible = not arrow and not self.asynchronous and not node.get("htgc_method")
+        self.new_target = old_target if arrow else self.name("newTarget") if constructible else "jUndefined"
+        self.home = old_home if arrow else node.get("htgc_home")
+        self.construction = old_construction if arrow else None
+        if node.get("htgc_constructor"):
+            self.construction = receiver
+            self.receiver = f'{receiver}.thisValue'
+            self.new_target = f'{receiver}.newTarget'
         body = [f"final {scope} = JScope({old_scope});"]
+        if not arrow:
+            body.append(f'{scope}.define("arguments", jArgumentsObject({args}));')
         for i, param in enumerate(node["params"]):
             value = f"jArg({args}, {i})"
             if param["type"] == "RestElement":
@@ -233,10 +293,11 @@ class Compiler:
             if self.asynchronous else (
                 f"JFunction(({args}, {receiver}) {{\n{code}\n}}, constructible: false)"
                 if node["type"] == "ArrowFunctionExpression" or node.get("htgc_method") else
-                f"jFunction(({args}, {receiver}) {{\n{code}\n}})"
+                f"jFunction(({args}, {receiver}, {self.new_target}) {{\n{code}\n}})"
             )
         )
-        self.scope, self.receiver = old_scope, old_this
+        self.scope, self.receiver, self.new_target = old_scope, old_this, old_target
+        self.home, self.construction = old_home, old_construction
         self.asynchronous, self.temps = old_async, old_temps
         return self.function_metadata(result, node)
 
@@ -247,7 +308,8 @@ class Compiler:
                 break
             length += 1
         name = (node.get('id') or {}).get('name', '')
-        return f'jNamedFunction({expression}, {quote(name)}, {length})'
+        source = f', source: {quote(node["htgcSource"])}' if "htgcSource" in node else ""
+        return f'jNamedFunction({expression}, {quote(name)}, {length}{source})'
 
     def returns(self, node):
         if node["type"] in ("ReturnStatement", "ThrowStatement"):
@@ -290,6 +352,8 @@ class Compiler:
             return self.class_expression(n)
         if t == "Identifier":
             return f'{self.scope}.get({quote(n["name"])})'
+        if t == "MetaProperty" and n["meta"]["name"] == "new":
+            return self.new_target
         if t == "ThisExpression":
             return self.receiver
         if t == "Literal":
@@ -332,6 +396,11 @@ class Compiler:
             return "jObjectLiteral([" + ", ".join(parts) + "])"
         if t in ("FunctionExpression", "ArrowFunctionExpression"):
             return self.function(n)
+        if t == "TaggedTemplateExpression":
+            tag = n["tag"]
+            callee = self.member(tag, call=True) if tag["type"] == "MemberExpression" else f'JCallSite({self.expr(tag)})'
+            args = [self.template_object(n), *(self.expr(value) for value in n["quasi"]["expressions"])]
+            return f'{callee}.call(<dynamic>[{", ".join(args)}])'
         if t == "TemplateLiteral":
             parts = []
             for i, q in enumerate(n["quasis"]):
@@ -357,6 +426,10 @@ class Compiler:
                 + "]"
             )
             callee = n["callee"]
+            if callee["type"] == "Super":
+                if self.construction is None:
+                    self.fail(n, "super() outside a class constructor")
+                return f'{self.construction}.callSuper({args})'
             optional = str(n.get("optional", False)).lower()
             if "htgcLoweredRegExp" in n:
                 return self.precompiled_regexp(n, self.expr(callee), args)
@@ -376,6 +449,8 @@ class Compiler:
                 return f'jDelete({self.expr(target["object"])}, {self.key(target)}, strict: true)'
             return f'jUnary({quote(n["operator"])}, {self.expr(n["argument"])})'
         if t == "BinaryExpression":
+            if n["left"]["type"] == "PrivateIdentifier" and n["operator"] == "in":
+                return f'{self.private_name(n["left"])}.has({self.expr(n["right"])})'
             return f'jBinary({quote(n["operator"])}, {self.expr(n["left"])}, {self.expr(n["right"])})'
         if t == "LogicalExpression":
             if self.has_await(n["right"]):
@@ -388,6 +463,13 @@ class Compiler:
         if t == "ConditionalExpression":
             return f'(jTruthy({self.expr(n["test"])}) ? {self.expr(n["consequent"])} : {self.expr(n["alternate"])})'
         if t == "AssignmentExpression":
+            if n["left"]["type"] in ("ArrayPattern", "ObjectPattern"):
+                value = self.name("rhs")
+                argument = self.expr(n["right"])
+                assignment = self.bind(n["left"], value, "assign")
+                asynchronous = self.has_await(n["left"])
+                call = f'(({value}) {"async " if asynchronous else ""}{{\n{assignment}\nreturn {value};\n}})({argument})'
+                return f'(await {call})' if asynchronous else call
             if self.has_await(n["right"]):
                 temp = self.temp()
                 return (
@@ -400,6 +482,14 @@ class Compiler:
         if t == "SequenceExpression":
             return "<dynamic>[" + ", ".join(self.expr(x) for x in n["expressions"]) + "].last"
         self.fail(n)
+
+    def template_object(self, node):
+        quasis = node["quasi"]["quasis"]
+        cooked = [quote(part["value"]["cooked"]) if part["value"]["cooked"] is not None else "jUndefined"
+                  for part in quasis]
+        raw = [quote(part["value"]["raw"]) for part in quasis]
+        site = quote(f'{self.path}:{self.script_name}:{node["start"]}')
+        return f'{self.scope}.template({site}, <dynamic>[{", ".join(cooked)}], <dynamic>[{", ".join(raw)}])'
 
     def block_contents(self, nodes, *, hoist_vars=False):
         # Function declarations are initialized before the surrounding statements.
@@ -464,11 +554,33 @@ class Compiler:
         self.scope = parent
         return "\n".join([*code, "}", "}"])
 
+    @staticmethod
+    def dart_label(name):
+        return "_jsLabel_" + "_".join(f"{ord(char):x}" for char in name)
+
+    def loop_label(self, node):
+        return "".join(f"{self.dart_label(name)}: " for name in node.get("htgcLabels", []))
+
+    def loop_binding(self, target, value):
+        if target["type"] == "VariableDeclaration":
+            return self.bind(target["declarations"][0]["id"], value, target["kind"])
+        return self.bind(target, value, "assign")
+
     def stmt(self, n):
         t = n["type"]
+        if t == "LabeledStatement":
+            labels = [n["label"]["name"]]
+            body = n["body"]
+            while body["type"] == "LabeledStatement":
+                labels.append(body["label"]["name"])
+                body = body["body"]
+            labeled = {**body, "htgcLabels": labels}
+            if body["type"] in ("ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement"):
+                return self.stmt(labeled)
+            return f'{self.loop_label(labeled)}{{\n{self.stmt(body)}\n}}'
         if t == "ExpressionStatement":
             return self.expr(n["expression"]) + ";"
-        if t == "EmptyStatement":
+        if t in ("EmptyStatement", "DebuggerStatement"):
             return ";"
         if t == "VariableDeclaration":
             return "\n".join(
@@ -503,6 +615,16 @@ class Compiler:
                 f'if (jTruthy({self.expr(n["test"])})) {self.stmt(n["consequent"])}'
                 + (" else " + self.stmt(n["alternate"]) if n.get("alternate") else "")
             )
+        if t == "ForInStatement":
+            item = self.name("key")
+            source = self.expr(n["right"])
+            parent = self.scope
+            self.scope = self.name()
+            init = self.loop_binding(n["left"], item)
+            body = self.stmt(n["body"])
+            child, self.scope = self.scope, parent
+            return (f'{self.loop_label(n)}for (final {item} in jForInKeys({source})) {{\n'
+                    f'final {child} = JScope({parent});\n{init}\n{body}\n}}')
         if t == "ForOfStatement":
             asynchronous = n.get("await", False)
             if asynchronous and not self.asynchronous:
@@ -511,18 +633,14 @@ class Compiler:
             source = self.expr(n["right"])
             parent = self.scope
             self.scope = self.name()
-            left = n["left"]
-            if left["type"] == "VariableDeclaration":
-                init = self.bind(left["declarations"][0]["id"], iterator, left["kind"])
-            else:
-                init = f'jAssign({self.ref(left)}, "=", () => {iterator});'
+            init = self.loop_binding(n["left"], iterator)
             record = self.name("iterator")
             caught = self.name("error")
             factory = 'jGetAsyncIterator' if asynchronous else 'jGetIterator'
             def wait(expression):
                 return f'(await jAwait({expression}))' if asynchronous else expression
             body = (f'{{ final {record} = {factory}({source});\ntry {{\n'
-                    f'while ({wait(f"{record}.advance()")}) {{\nfinal {iterator} = {record}.current;\n'
+                    f'{self.loop_label(n)}while ({wait(f"{record}.advance()")}) {{\nfinal {iterator} = {record}.current;\n'
                     f'final {self.scope} = JScope({parent});\n{init}\n{self.stmt(n["body"])}\n}}'
                     f'\n}} catch ({caught}) {{\n{wait(f"{record}.close(suppressErrors: {caught} is! JAsyncReturn)")};\nrethrow;\n}}'
                     f' finally {{ {wait(f"{record}.close()")}; }}\n}}')
@@ -543,7 +661,7 @@ class Compiler:
                 "{\n"
                 + f"final {self.scope} = JScope({parent});\n"
                 + init
-                + "\nfor (; "
+                + "\n" + self.loop_label(n) + "for (; "
                 + condition
                 + "; "
                 + self.expr(n.get("update"))
@@ -555,10 +673,10 @@ class Compiler:
             return code
         if t == "WhileStatement":
             return (
-                "while (jTruthy(" + self.expr(n["test"]) + ")) " + self.stmt(n["body"])
+                self.loop_label(n) + "while (jTruthy(" + self.expr(n["test"]) + ")) " + self.stmt(n["body"])
             )
         if t == "DoWhileStatement":
-            return f'do {{\n{self.stmt(n["body"])}\n}} while (jTruthy({self.expr(n["test"])}));'
+            return f'{self.loop_label(n)}do {{\n{self.stmt(n["body"])}\n}} while (jTruthy({self.expr(n["test"])}));'
         if t == "SwitchStatement":
             return self.switch(n)
         if t == "TryStatement":
@@ -582,9 +700,8 @@ class Compiler:
                 code += " finally " + self.stmt(n["finalizer"])
             return code
         if t in ("BreakStatement", "ContinueStatement"):
-            if n.get("label"):
-                self.fail(n)
-            return ("break" if t == "BreakStatement" else "continue") + ";"
+            label = " " + self.dart_label(n["label"]["name"]) if n.get("label") else ""
+            return ("break" if t == "BreakStatement" else "continue") + label + ";"
         if t == "ClassDeclaration":
             return self.bind(n["id"], self.class_expression(n))
         if t == "ThrowStatement":
@@ -597,39 +714,96 @@ class Compiler:
                 f'{quote(node["htgcLoweredRegExp"])}, constructing: {constructing})')
 
     def class_expression(self, node):
-        for method in node["body"]["body"]:
-            if (method["type"] != "MethodDefinition" or method["kind"] == "constructor"
-                    or method["key"]["type"] == "PrivateIdentifier"):
-                self.fail(method, "class fields and explicit constructors")
+        body = node["body"]["body"]
         if self.has_await(node):
             self.fail(node, "await in class heritage or computed keys")
         name = (node.get("id") or {}).get("name", "")
         parent = self.scope
         inner, constructor, base = self.name("classScope"), self.name("class"), self.name("base")
         self.scope = inner
+        previous_private = self.private_names
         try:
             superclass = node.get("superClass")
             base_expression = "null" if superclass is None else self.expr(superclass)
+            source = f', source: {quote(node["htgcSource"])}' if "htgcSource" in node else ""
             code = [
                 f"final {inner} = JScope({parent});",
                 *([f"{inner}.reserve({quote(name)});"] if name else []),
                 f"final {base} = {base_expression};",
-                f'final {constructor} = jDefaultClass({quote(name)}, {base}, derived: {str(superclass is not None).lower()});',
+                f'final {constructor} = jDefaultClass({quote(name)}, {base}, derived: '
+                f'{str(superclass is not None).lower()}{source});',
             ]
-            for method in node["body"]["body"]:
-                key = self.property_key(method)
-                function = self.function({**method["value"], "htgc_method": True})
-                mode = "init" if method["kind"] == "method" else method["kind"]
-                static = str(method["static"]).lower()
-                code.append(f"jDefineClassMethod({constructor}, {static}, {quote(mode)}, jPropertyKey({key}), {function});")
+            private = {}
+            for item in body:
+                key = item.get("key", {})
+                if key.get("type") == "PrivateIdentifier" and key["name"] not in private:
+                    private[key["name"]] = self.name("private")
+            self.private_names = {**previous_private, **private}
+            code.extend(f'final {slot} = JPrivateName();' for slot in private.values())
+            static_steps, static_methods, installed = [], [], set()
+            for item in body:
+                item_key = item.get("key", {})
+                private_slot = private.get(item_key["name"]) if item_key.get("type") == "PrivateIdentifier" else None
+                static = item.get("static") or item["type"] == "StaticBlock"
+                home = f'jClassHome({constructor}, {str(static).lower()})'
+                if item["type"] == "MethodDefinition":
+                    explicit = item["kind"] == "constructor"
+                    key = None if explicit or private_slot else self.property_key(item)
+                    function = self.function({
+                        **item["value"], "htgc_method": True, "htgc_home": home,
+                        "htgc_constructor": explicit,
+                    })
+                    if explicit:
+                        code.append(f'jSetClassConstructor({constructor}, {function});')
+                    elif private_slot:
+                        code.append(f'{private_slot}.define({quote(item["kind"])}, {quote(item_key["name"])}, {function});')
+                        if private_slot not in installed:
+                            installed.add(private_slot)
+                            if static:
+                                static_methods.append(f'{private_slot}.install({constructor});')
+                            else:
+                                code.append(f'{constructor}.privateMethods.add({private_slot});')
+                    else:
+                        mode = "init" if item["kind"] == "method" else item["kind"]
+                        code.append(f"jDefineClassMethod({constructor}, {str(static).lower()}, "
+                                    f"{quote(mode)}, jPropertyKey({key}), {function});")
+                    continue
+                if item["type"] == "PropertyDefinition" and not private_slot:
+                    key = self.name("field")
+                    code.append(f'final {key} = jPropertyKey({self.property_key(item)});')
+                old_this, old_home, old_context, old_target = self.receiver, self.home, self.construction, self.new_target
+                self.receiver = constructor if static else self.name("instance")
+                self.home, self.construction, self.new_target = home, None, "jUndefined"
+                try:
+                    if item["type"] == "PropertyDefinition":
+                        value = self.expr(item.get("value"))
+                        initializer = (f'{private_slot}.install({self.receiver}, {value});' if private_slot
+                                       else f'jDefineClassField({self.receiver}, {key}, {value});')
+                        if static:
+                            static_steps.append(initializer)
+                        else:
+                            code.append(f'{constructor}.fields.add(({self.receiver}) {{ {initializer} }});')
+                    elif item["type"] == "StaticBlock":
+                        self.scope = self.name("staticScope")
+                        step = self.block_contents(item["body"], hoist_vars=True)
+                        static_steps.append(f'{{ final {self.scope} = JScope({inner});\n{step}\n}}')
+                    else:
+                        self.fail(item)
+                finally:
+                    self.scope = inner
+                    self.receiver, self.home, self.construction, self.new_target = old_this, old_home, old_context, old_target
             if name:
                 code.append(f"{inner}.define({quote(name)}, {constructor}, constant: true);")
+            code.extend(static_methods)
+            code.extend(static_steps)
             code.append(f"return {constructor};")
             return "(() {\n" + "\n".join(code) + "\n})()"
         finally:
             self.scope = parent
+            self.private_names = previous_private
 
     def compile(self, ast, name):
+        self.script_name = name
         body = self.block_contents(ast["body"], hoist_vars=True)
         return (
             f'// JavaScript source: {self.path.replace(chr(10)," ")}\nvoid {name}(JScope scope) {{\n'

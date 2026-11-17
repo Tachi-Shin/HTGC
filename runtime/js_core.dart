@@ -10,6 +10,11 @@ part 'js_binary.dart';
 part 'js_atomics.dart';
 part 'js_regexp.dart';
 part 'js_generator.dart';
+part 'js_array_methods.dart';
+part 'js_text_methods.dart';
+part 'js_math_methods.dart';
+part 'js_function_methods.dart';
+part 'js_byte_encoding.dart';
 
 class JUndefined {
   const JUndefined();
@@ -382,6 +387,14 @@ class JScope {
   final Set<String> _constants = {};
   final Map<String, dynamic Function()> _imports = {};
   JModuleGraph? _modules;
+  final _templates = <String, JTemplateArray>{};
+  JTemplateArray template(
+    String site,
+    List<dynamic> cooked,
+    List<dynamic> raw,
+  ) =>
+      parent?.template(site, cooked, raw) ??
+      _templates.putIfAbsent(site, () => JTemplateArray(cooked, raw: raw));
   JScope([this.parent]);
   JModuleGraph modules(Map<String, JModuleDefinition> definitions) =>
       parent?.modules(definitions) ??
@@ -411,7 +424,7 @@ class JScope {
     if (_values.containsKey(name)) {
       final value = _values[name];
       if (identical(value, _jUninitialized)) {
-        throw StateError('JavaScript ReferenceError: $name is not initialized');
+        throw JThrown(JError('ReferenceError', '$name is not initialized'));
       }
       return value;
     }
@@ -421,22 +434,24 @@ class JScope {
     if (name == 'undefined') return jUndefined;
     if (name == 'NaN') return double.nan;
     if (name == 'Infinity') return double.infinity;
-    throw StateError('JavaScript ReferenceError: $name');
+    throw JThrown(JError('ReferenceError', '$name is not defined'));
   }
 
   dynamic put(String name, dynamic value) {
     if (_values.containsKey(name)) {
       if (identical(_values[name], _jUninitialized)) {
-        throw StateError('JavaScript ReferenceError: $name is not initialized');
+        throw JThrown(JError('ReferenceError', '$name is not initialized'));
       }
       if (_constants.contains(name))
-        throw StateError('Assignment to constant: $name');
+        throw JThrown(JError('TypeError', 'Assignment to constant: $name'));
       return _values[name] = value;
     }
     if (_imports.containsKey(name))
-      throw StateError('Assignment to import: $name');
+      throw JThrown(JError('TypeError', 'Assignment to import: $name'));
     if (parent != null) return parent!.put(name, value);
-    throw StateError('Assignment to undeclared name: $name');
+    throw JThrown(
+      JError('ReferenceError', 'Assignment to undeclared name: $name'),
+    );
   }
 }
 
@@ -643,14 +658,16 @@ List<Object> jOwnKeys(
     );
   if (value is JModuleNamespace)
     return value.exports.keys.cast<Object>().toList();
-  if (value is List || value is String)
+  if (value is List || value is String) {
+    final extras = value is List ? jArrayExtras(value) : null;
     return [
       for (var i = 0; i < value.length; i++)
         if (value is! List || !identical(value[i], _jHole)) '$i',
       if (!enumerable) 'length',
-      if (value is JArray)
-        ...jOwnKeys(value.extra, enumerable: enumerable, strings: strings),
+      if (extras != null)
+        ...jOwnKeys(extras, enumerable: enumerable, strings: strings),
     ];
+  }
   if (value is! JObject) return [];
   final indices = <int>[];
   final names = <Object>[];
@@ -681,7 +698,7 @@ bool jHasOwn(dynamic object, Object key) {
   if (object is JModuleNamespace) return object.exports.containsKey(key);
   if (object is JObject) return object.own(key);
   if (object is List || object is String) {
-    if (object is JArray && object.extra.own(key)) return true;
+    if (object is List && jArrayExtras(object)?.own(key) == true) return true;
     if (key == 'length') return true;
     final index = int.tryParse(key is String ? key : '');
     return index != null &&
@@ -808,15 +825,18 @@ bool jDefineProperty(
 dynamic jDescriptor(dynamic value, Object key) {
   final proxy = jProxyState(value);
   if (proxy != null) return proxy.descriptor(key);
-  if (value is JArray && value.extra.own(key))
-    return jDescriptor(value.extra, key);
+  if (value is List) {
+    final extras = jArrayExtras(value);
+    if (extras != null && extras.own(key)) return jDescriptor(extras, key);
+  }
   if (!jHasOwn(value, key)) return jUndefined;
   if (value is! JObject)
     return JObject({
       'value': jGet(value, key),
-      'writable': value is List,
+      'writable': value is List && value is! JTemplateArray,
       'enumerable': key != 'length',
-      'configurable': key != 'length',
+      'configurable':
+          key != 'length' && value is List && value is! JTemplateArray,
     });
   final f = value.flags[key] ?? JPropertyFlags();
   return JObject({
@@ -864,6 +884,10 @@ final JObject jObjectPrototype = JObject.root({
     }
     return false;
   }, constructible: false),
+  'toLocaleString': JFunction(
+    (args, receiver) => jInvoke(receiver, 'toString', []),
+    constructible: false,
+  ),
   'valueOf': JFunction(
     (a, receiver) => receiver is JBox ? receiver.value : receiver,
     constructible: false,
@@ -877,6 +901,8 @@ final JObject jObjectPrototype = JObject.root({
         ? tag
         : array
         ? 'Array'
+        : receiver is JError
+        ? 'Error'
         : receiver is JDate
         ? 'Date'
         : receiver is JRegex
@@ -1221,23 +1247,11 @@ class JFunction extends JObject {
     this.constructWithTarget,
     this.constructible = true,
   });
+  String? sourceText;
+
   @override
-  dynamic read(Object name, dynamic receiver) {
-    if (own(name)) return super.read(name, receiver);
-    if (name == 'call')
-      return jNative(
-        (a) => jCall(receiver, a.skip(1).toList(), receiver: jArg(a, 0)),
-      );
-    if (name == 'apply')
-      return jNative(
-        (a) => jCall(
-          receiver,
-          jNullish(jArg(a, 1)) ? [] : jArrayLikeList(a[1]),
-          receiver: jArg(a, 0),
-        ),
-      );
-    return super.read(name, receiver);
-  }
+  JObject? get prototype =>
+      _prototype ?? (_nullPrototype ? null : jFunctionPrototype);
 }
 
 JFunction jNative(dynamic Function(List<dynamic>) callback) =>
@@ -1246,15 +1260,15 @@ JFunction jNative(dynamic Function(List<dynamic>) callback) =>
 JFunction jBuiltin(dynamic Function(List<dynamic>) callback) =>
     JFunction((args, receiver) => callback(args), constructible: false);
 
-JFunction jFunction(dynamic Function(List<dynamic>, dynamic) body) {
+JFunction jFunction(dynamic Function(List<dynamic>, dynamic, dynamic) body) {
   late final JFunction function;
   function = JFunction(
-    body,
+    (args, receiver) => body(args, receiver, jUndefined),
     constructWithTarget: (arguments, newTarget) {
       final prototype = jGet(newTarget, 'prototype');
       final instance = JObject()
         ..prototype = prototype is JObject ? prototype : jObjectPrototype;
-      final result = body(arguments, instance);
+      final result = body(arguments, instance, newTarget);
       return result is JObject || result is List ? result : instance;
     },
   );
@@ -1268,12 +1282,22 @@ JFunction jFunction(dynamic Function(List<dynamic>, dynamic) body) {
   return function;
 }
 
-JFunction jNamedFunction(JFunction function, String name, int length) {
+JFunction jNamedFunction(
+  JFunction function,
+  String name,
+  int length, {
+  String? source,
+}) {
+  if (source != null) function.sourceText = source;
   jNameFunction(function, name, length);
   return function;
 }
 
 class JClass extends JFunction {
+  JFunction? body;
+  final privateMethods = <JPrivateName>[];
+  final fields = <void Function(dynamic)>[];
+
   JClass(dynamic Function(List<dynamic>, dynamic) construct)
     : super(
         (args, receiver) => throw JThrown(
@@ -1287,7 +1311,12 @@ class JClass extends JFunction {
   }
 }
 
-JFunction jDefaultClass(String name, dynamic base, {required bool derived}) {
+JClass jDefaultClass(
+  String name,
+  dynamic base, {
+  required bool derived,
+  String? source,
+}) {
   final constructor = base is JFunction && base.constructible ? base : null;
   if (derived && base != null && constructor == null) {
     throw JThrown(JError('TypeError', 'Class extends a non-constructor'));
@@ -1301,13 +1330,29 @@ JFunction jDefaultClass(String name, dynamic base, {required bool derived}) {
     throw JThrown(JError('TypeError', 'Invalid superclass prototype'));
   }
   final prototype = JObject()..prototype = parentPrototype;
-  final classFunction = JClass((args, newTarget) {
-    if (constructor != null)
-      return jNew(constructor, args, newTarget: newTarget);
-    if (derived)
-      throw JThrown(JError('TypeError', 'No superclass constructor'));
-    return JObject()
-      ..prototype = jPrototypeFromConstructor(newTarget, jObjectPrototype);
+  late final JClass classFunction;
+  classFunction = JClass((args, newTarget) {
+    final context = JConstruction(classFunction, newTarget);
+    if (!derived) {
+      context.initialize(
+        JObject()
+          ..prototype = jPrototypeFromConstructor(newTarget, jObjectPrototype),
+      );
+    }
+    final body = classFunction.body;
+    if (body == null)
+      return derived ? context.callSuper(args) : context.thisValue;
+    final result = jCall(body, args, receiver: context);
+    if (jIsObject(result)) return result;
+    if (derived && !identical(result, jUndefined)) {
+      throw JThrown(
+        JError(
+          'TypeError',
+          'Derived constructor must return an object or undefined',
+        ),
+      );
+    }
+    return context.thisValue;
   });
   if (constructor != null) classFunction.prototype = constructor;
   classFunction.properties['prototype'] = prototype;
@@ -1318,7 +1363,8 @@ JFunction jDefaultClass(String name, dynamic base, {required bool derived}) {
   );
   prototype.properties['constructor'] = classFunction;
   prototype.flags['constructor'] = JPropertyFlags(enumerable: false);
-  return jNamedFunction(classFunction, name, 0);
+  jNamedFunction(classFunction, name, 0, source: source);
+  return classFunction;
 }
 
 JObject jPrototypeFromConstructor(dynamic newTarget, JObject fallback) {
@@ -1756,6 +1802,7 @@ void installJSPrimitiveWrappers(JScope scope) {
     (a, _) => stringValue(a),
     construct: (a) => JBox(stringValue(a, construct: true)),
   );
+  string.properties['raw'] = jNamedFunction(jBuiltin(jStringRaw), 'raw', 1);
   string.properties['fromCharCode'] = jBuiltin(
     (a) => String.fromCharCodes(a.map((v) => jUint32(v) & 0xffff)),
   );
@@ -1805,6 +1852,8 @@ void installJSPrimitiveWrappers(JScope scope) {
     jBuiltinProperties(prototype);
     jNameFunction(constructor, isString ? 'String' : 'Boolean', 1);
   }
+  jStringPrototype.properties.addAll(jStringMethods);
+  jBuiltinProperties(jStringPrototype);
   jStringPrototype.properties['length'] = 0;
   jStringPrototype.flags['length'] = JPropertyFlags(
     writable: false,
@@ -1947,6 +1996,10 @@ void installJSNumbers(JScope scope) {
         return jString(value);
       return jNumberRadix(value.toDouble(), radix.toInt());
     }, constructible: false);
+    prototype.properties['toLocaleString'] = JFunction(
+      (args, receiver) => jString(jNumericReceiver(receiver, big)),
+      constructible: false,
+    );
     jBuiltinProperties(prototype);
   }
   jBigIntPrototype.symbols[jSymbols['toStringTag']!] = 'BigInt';
@@ -2138,6 +2191,15 @@ dynamic jInvoke(
 );
 dynamic jNew(dynamic constructor, List<dynamic> args, {dynamic newTarget}) {
   newTarget ??= constructor;
+  if (constructor is JBoundFunction && constructor.constructible) {
+    return jNew(
+      constructor.target,
+      [...constructor._boundArguments, ...args],
+      newTarget: identical(constructor, newTarget)
+          ? constructor.target
+          : newTarget,
+    );
+  }
   if (constructor is JProxyFunction) {
     if (!constructor.constructible) jProxyError('Not a constructor');
     return constructor.proxy.construct(args, newTarget);
@@ -2166,6 +2228,11 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
       JError('TypeError', 'Cannot read property of null or undefined'),
     );
   final property = jPropertyKey(key);
+  if (value is List) {
+    final extras = jArrayExtras(value);
+    if (extras != null && extras.own(property))
+      return extras.read(property, value);
+  }
   if (property is JSymbol) {
     if (value is JObject) return value.read(property, value);
     if (value is BigInt) return jBigIntPrototype.read(property, value);
@@ -2178,14 +2245,14 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
   final name = property as String;
   if (value is JObject) return value.get(name);
   if (value is List) {
-    if (value is JArray && value.extra.own(property))
-      return value.extra.read(property, value);
     if (name == 'length') return value.length;
     final i = int.tryParse(name);
     if (i != null && '$i' == name)
       return i >= 0 && i < value.length && !identical(value[i], _jHole)
           ? value[i]
           : jUndefined;
+    final method = jArrayMethods[name];
+    if (method != null) return method;
     switch (name) {
       case 'valueOf':
         return jNative((_) => value);
@@ -2197,11 +2264,13 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
         return jNative((_) => jBuiltinIterator(value, name));
       case 'push':
         return jNative((a) {
+          if (value is JTemplateArray) jSet(value, 'length', value.length);
           value.addAll(a);
           return value.length;
         });
       case 'pop':
         return jNative((a) {
+          if (value is JTemplateArray) jSet(value, 'length', value.length);
           if (value.isEmpty) return jUndefined;
           final last = value.removeLast();
           return identical(last, _jHole) ? jUndefined : last;
@@ -2304,19 +2373,9 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
       return i >= 0 && i < value.length && !identical(value[i], _jHole)
           ? value[i]
           : jUndefined;
+    final method = jStringMethods[name];
+    if (method != null) return method;
     switch (name) {
-      case 'trim':
-        return jNative((a) => value.trim());
-      case 'toLowerCase':
-        return jNative((a) => value.toLowerCase());
-      case 'toUpperCase':
-        return jNative((a) => value.toUpperCase());
-      case 'includes':
-        return jNative((a) => value.contains(jString(a[0])));
-      case 'startsWith':
-        return jNative((a) => value.startsWith(jString(a[0])));
-      case 'endsWith':
-        return jNative((a) => value.endsWith(jString(a[0])));
       case 'split':
       case 'match':
       case 'matchAll':
@@ -2326,6 +2385,7 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
         return jBuiltin((a) => jStringRegExp(name, value, a));
     }
   }
+  if (value is String) return jStringPrototype.read(name, value);
   if (value is JSymbol) {
     if (name == 'description') return value.description ?? jUndefined;
     if (name == 'toString') return jNative((_) => value.descriptive);
@@ -2346,12 +2406,18 @@ int? jArrayIndex(String name) {
 
 dynamic jSet(dynamic value, dynamic key, dynamic assigned) {
   final property = jPropertyKey(key);
-  if (value is JArray &&
+  if (value is JTemplateArray) {
+    throw JThrown(
+      JError('TypeError', 'Cannot assign to a frozen template object'),
+    );
+  }
+  if (value is List &&
       (property is JSymbol ||
           property is String &&
               property != 'length' &&
               jArrayIndex(property) == null)) {
-    if (!value.extra.write(property, assigned, value.extra))
+    final extras = jArrayExtras(value, create: true)!;
+    if (!extras.write(property, assigned, extras))
       throw JThrown(JError('TypeError', 'Cannot assign array property'));
     return assigned;
   }
@@ -2522,55 +2588,32 @@ dynamic jBinary(String op, dynamic a, dynamic b) {
 
 void installJSBuiltins(JScope scope) {
   installJSObjects(scope);
+  installJSFunctionPrototype(scope);
   installJSProxies(scope);
   installJSBinary(scope);
   installJSAtomics(scope);
   installJSRegExp(scope);
   installJSCollections(scope);
-  scope.define(
-    'JSON',
-    JObject({
-      'parse': jNative((a) => jJSONParse(jArg(a, 0), jArg(a, 1))),
-      'stringify': jNative(
-        (a) => jJSONStringify(jArg(a, 0), jArg(a, 1), jArg(a, 2)),
-      ),
-    }),
-  );
-  installJSPromises(scope);
-  for (final name in [
-    'Error',
-    'TypeError',
-    'RangeError',
-    'ReferenceError',
-    'SyntaxError',
-    'URIError',
-    'EvalError',
-  ]) {
-    final constructor = jNative(
-      (a) =>
-          JError(name, identical(jArg(a, 0), jUndefined) ? '' : jString(a[0])),
-    );
-    final prototype = jErrorPrototypes.putIfAbsent(name, () => JObject());
-    if (name != 'Error') prototype.prototype = jErrorPrototypes['Error'];
-    prototype.properties.addAll({
-      'constructor': constructor,
-      'name': name,
-      'message': '',
-    });
-    constructor.properties.addAll({'prototype': prototype, 'name': name});
-    jBuiltinProperties(prototype);
-    scope.define(name, constructor);
-  }
-  scope.define(
-    'AggregateError',
-    jNative(
-      (a) => JError(
-        'AggregateError',
-        a.length < 2 ? '' : jString(a[1]),
-        errors: jIterable(jArg(a, 0)).toList(),
-      ),
+  final json = JObject({
+    'parse': jNative((a) => jJSONParse(jArg(a, 0), jArg(a, 1))),
+    'rawJSON': jNamedFunction(
+      jBuiltin((a) => jRawJson(jArg(a, 0))),
+      'rawJSON',
+      1,
     ),
-  );
+    'isRawJSON': jNamedFunction(
+      jBuiltin((a) => jArg(a, 0) is JRawJson),
+      'isRawJSON',
+      1,
+    ),
+    'stringify': jNative(
+      (a) => jJSONStringify(jArg(a, 0), jArg(a, 1), jArg(a, 2)),
+    ),
+  });
+  jBuiltinProperties(json);
+  scope.define('JSON', json);
+  installJSPromises(scope);
+  installJSErrors(scope);
   installJSPrimitiveWrappers(scope);
   installJSNumbers(scope);
   installJSDates(scope);
@@ -2619,72 +2662,118 @@ void installJSBuiltins(JScope scope) {
       return values;
     }),
   });
+  final arrayPrototype = JObject(Map<String, dynamic>.of(jArrayMethods));
+  arrayPrototype.properties['constructor'] = array;
+  arrayPrototype.properties['length'] = 0.0;
+  jBuiltinProperties(arrayPrototype);
+  array.properties['prototype'] = arrayPrototype;
+  array.properties['fromAsync'] = jNamedFunction(
+    JFunction(
+      (args, receiver) => jArrayFromAsync(args, receiver),
+      constructible: false,
+    ),
+    'fromAsync',
+    1,
+  );
+  for (final component in [false, true]) {
+    final encode = component ? 'encodeURIComponent' : 'encodeURI';
+    final decode = component ? 'decodeURIComponent' : 'decodeURI';
+    scope.define(
+      encode,
+      jNamedFunction(
+        jBuiltin((args) => jEncodeUri(jString(jArg(args, 0)), component)),
+        encode,
+        1,
+      ),
+    );
+    scope.define(
+      decode,
+      jNamedFunction(
+        jBuiltin((args) => jDecodeUri(jString(jArg(args, 0)), component)),
+        decode,
+        1,
+      ),
+    );
+  }
+  scope.define(
+    'escape',
+    jNamedFunction(
+      jBuiltin((args) => jLegacyEscape(jString(jArg(args, 0)), false)),
+      'escape',
+      1,
+    ),
+  );
+  scope.define(
+    'unescape',
+    jNamedFunction(
+      jBuiltin((args) => jLegacyEscape(jString(jArg(args, 0)), true)),
+      'unescape',
+      1,
+    ),
+  );
   scope.define('Array', array);
   final random = math.Random();
-  scope.define(
-    'Math',
-    JObject({
-      'PI': math.pi,
-      'E': math.e,
-      'LN2': math.ln2,
-      'LN10': math.ln10,
-      'LOG2E': math.log2e,
-      'LOG10E': math.log10e,
-      'SQRT2': math.sqrt2,
-      'SQRT1_2': math.sqrt1_2,
-      'round': jNative((a) => jMathRound(jNumber(jArg(a, 0)))),
-      'trunc': jNative((a) => jNumber(jArg(a, 0)).truncateToDouble()),
-      'sign': jNative((a) {
-        final n = jNumber(jArg(a, 0));
-        return n.isNaN || n == 0
-            ? n
-            : n.isNegative
-            ? -1.0
-            : 1.0;
-      }),
-      'imul': jNative(
-        (a) => jSigned32(
-          ((BigInt.from(jUint32(jArg(a, 0))) *
-                      BigInt.from(jUint32(jArg(a, 1)))) &
-                  BigInt.from(0xffffffff))
-              .toInt(),
-        ).toDouble(),
-      ),
-      'clz32': jNative((a) => (32 - jUint32(jArg(a, 0)).bitLength).toDouble()),
-      'fround': jNative((a) => (Float32List(1)..[0] = jNumber(jArg(a, 0)))[0]),
-      'pow': jNative(
-        (a) => jNumericBinary('**', jNumber(jArg(a, 0)), jNumber(jArg(a, 1))),
-      ),
-      'atan2': jNative(
-        (a) => math.atan2(jNumber(jArg(a, 0)), jNumber(jArg(a, 1))),
-      ),
-      for (final entry in <String, double Function(num)>{
-        'sin': math.sin,
-        'cos': math.cos,
-        'tan': math.tan,
-        'asin': math.asin,
-        'acos': math.acos,
-        'atan': math.atan,
-        'exp': math.exp,
-        'log': math.log,
-      }.entries)
-        entry.key: jNative((a) => entry.value(jNumber(jArg(a, 0)))),
-      'log2': jNative((a) => math.log(jNumber(jArg(a, 0))) / math.ln2),
-      'log10': jNative((a) => math.log(jNumber(jArg(a, 0))) / math.ln10),
-      'random': jNative((a) => random.nextDouble()),
-      'floor': jNative((a) => jNumber(jArg(a, 0)).floorToDouble()),
-      'ceil': jNative((a) => jNumber(jArg(a, 0)).ceilToDouble()),
-      'abs': jNative((a) => jNumber(jArg(a, 0)).abs()),
-      'sqrt': jNative((a) => math.sqrt(jNumber(jArg(a, 0)))),
-      'min': jNative(
-        (a) => a.map(jNumber).fold<num>(double.infinity, math.min),
-      ),
-      'max': jNative(
-        (a) => a.map(jNumber).fold<num>(double.negativeInfinity, math.max),
-      ),
-      'hypot': jNative(jHypot),
+  final mathObject = JObject({
+    'PI': math.pi,
+    'E': math.e,
+    'LN2': math.ln2,
+    'LN10': math.ln10,
+    'LOG2E': math.log2e,
+    'LOG10E': math.log10e,
+    'SQRT2': math.sqrt2,
+    'SQRT1_2': math.sqrt1_2,
+    'round': jNative((a) => jMathRound(jNumber(jArg(a, 0)))),
+    'trunc': jNative((a) => jNumber(jArg(a, 0)).truncateToDouble()),
+    'sign': jNative((a) {
+      final n = jNumber(jArg(a, 0));
+      return n.isNaN || n == 0
+          ? n
+          : n.isNegative
+          ? -1.0
+          : 1.0;
     }),
-  );
+    'imul': jNative(
+      (a) => jSigned32(
+        ((BigInt.from(jUint32(jArg(a, 0))) * BigInt.from(jUint32(jArg(a, 1)))) &
+                BigInt.from(0xffffffff))
+            .toInt(),
+      ).toDouble(),
+    ),
+    'clz32': jNative((a) => (32 - jUint32(jArg(a, 0)).bitLength).toDouble()),
+    'fround': jNative((a) => (Float32List(1)..[0] = jNumber(jArg(a, 0)))[0]),
+    'pow': jNative(
+      (a) => jNumericBinary('**', jNumber(jArg(a, 0)), jNumber(jArg(a, 1))),
+    ),
+    'atan2': jNative(
+      (a) => math.atan2(jNumber(jArg(a, 0)), jNumber(jArg(a, 1))),
+    ),
+    for (final entry in <String, double Function(num)>{
+      'sin': math.sin,
+      'cos': math.cos,
+      'tan': math.tan,
+      'asin': math.asin,
+      'acos': math.acos,
+      'atan': math.atan,
+      'exp': math.exp,
+      'log': math.log,
+    }.entries)
+      entry.key: jNative((a) => entry.value(jNumber(jArg(a, 0)))),
+    'log2': jNative((a) => math.log(jNumber(jArg(a, 0))) / math.ln2),
+    'log10': jNative((a) => math.log(jNumber(jArg(a, 0))) / math.ln10),
+    'random': jNative((a) => random.nextDouble()),
+    'floor': jNative((a) => jNumber(jArg(a, 0)).floorToDouble()),
+    'ceil': jNative((a) => jNumber(jArg(a, 0)).ceilToDouble()),
+    'abs': jNative((a) => jNumber(jArg(a, 0)).abs()),
+    'sqrt': jNative((a) => math.sqrt(jNumber(jArg(a, 0)))),
+    'min': jNative((a) => a.map(jNumber).fold<num>(double.infinity, math.min)),
+    'max': jNative(
+      (a) => a.map(jNumber).fold<num>(double.negativeInfinity, math.max),
+    ),
+    'hypot': jNative(jHypot),
+    ...jMathAdditionalMethods(),
+  });
+  jBuiltinProperties(mathObject);
+  scope.define('Math', mathObject);
   scope.define(
     'console',
     JObject({
@@ -2952,6 +3041,7 @@ void installJSObjects(JScope scope) {
     for (final mode in ['freeze', 'seal', 'preventExtensions'])
       mode: jNative((a) {
         final target = jArg(a, 0);
+        if (target is JTemplateArray) return target;
         if (target is List)
           throw UnsupportedError('Object.$mode on arrays is not implemented');
         if (target is! JObject) return target;
@@ -2976,6 +3066,7 @@ void installJSObjects(JScope scope) {
     for (final mode in ['isFrozen', 'isSealed'])
       mode: jNative((a) {
         final target = jArg(a, 0);
+        if (target is JTemplateArray) return true;
         if (target is List)
           throw UnsupportedError('Object.$mode on arrays is not implemented');
         if (target is! JObject) return true;
@@ -3168,6 +3259,21 @@ JObject jBuildMapPrototype(bool set) {
         r.put(jArg(a, 0), jArg(a, 1));
         return r;
       }),
+    if (!set)
+      for (final computed in [false, true])
+        computed ? 'getOrInsertComputed' : 'getOrInsert': method((args, map) {
+          var key = jArg(args, 0);
+          if (key is num && key == 0) key = 0.0;
+          final input = jArg(args, 1);
+          if (computed && input is! JFunction) {
+            throw JThrown(JError('TypeError', 'Callback is not callable'));
+          }
+          final entry = map.lookup[key];
+          if (entry != null) return entry.value;
+          final value = computed ? jCall(input, [key]) : input;
+          map.put(key, value);
+          return value;
+        }),
     'keys': method((a, r) => r.iterate('keys')),
     'values': method((a, r) => r.iterate('values')),
     'entries': method((a, r) => r.iterate('entries')),
@@ -3325,6 +3431,22 @@ JObject jBuildWeakPrototype(bool set) {
             ? jUndefined
             : r.entries[a[0]]![0],
       ),
+    if (!set)
+      for (final computed in [false, true])
+        computed ? 'getOrInsertComputed' : 'getOrInsert': method((args, map) {
+          final key = jArg(args, 0);
+          final input = jArg(args, 1);
+          if (computed && input is! JFunction) {
+            throw JThrown(JError('TypeError', 'Callback is not callable'));
+          }
+          if (!jWeakKey(key))
+            throw JThrown(JError('TypeError', 'Invalid weak collection key'));
+          final entry = map.entries[key];
+          if (entry != null) return entry[0];
+          final value = computed ? jCall(input, [key]) : input;
+          map.entries[key] = [value];
+          return value;
+        }),
     set ? 'add' : 'set': method((a, r) {
       final key = jArg(a, 0);
       if (!jWeakKey(key))
@@ -3439,10 +3561,11 @@ dynamic jJSONParse(dynamic text, dynamic reviver) {
   }
 
   dynamic root;
+  final original = jString(text);
   try {
     // Dart decodes the integer spelling -0 as int zero. Preserve its sign
     // without rewriting quoted strings or relaxing the JSON grammar.
-    final source = jString(text).replaceAllMapped(
+    final source = original.replaceAllMapped(
       RegExp(r'("(?:[^"\\]|\\.)*")|(-0)(?=[\x20\t\r\n]*(?:[,}\]]|$))'),
       (match) => match[1] ?? '-0.0',
     );
@@ -3451,14 +3574,18 @@ dynamic jJSONParse(dynamic text, dynamic reviver) {
     throw JThrown(JError('SyntaxError', 'Invalid JSON text'));
   }
   if (reviver is! JFunction) return root;
-  dynamic walk(dynamic holder, String key) {
+  final record = JJsonSourceReader(original).read(root);
+  dynamic walk(dynamic holder, String key, JJsonParseRecord? parsed) {
     final value = jGet(holder, key);
+    final original = parsed != null && jSameValue(parsed.value, value)
+        ? parsed
+        : null;
     if (value is JObject || value is List) {
       final keys = value is List
           ? [for (var i = 0; i < value.length; i++) '$i']
           : jOwnKeys(value, enumerable: true, strings: true);
       for (final name in keys) {
-        final next = walk(value, name as String);
+        final next = walk(value, name as String, original?.children?[name]);
         if (identical(next, jUndefined)) {
           jDelete(value, name);
         } else if (value is JObject) {
@@ -3477,10 +3604,14 @@ dynamic jJSONParse(dynamic text, dynamic reviver) {
         }
       }
     }
-    return jCall(reviver, [key, value], receiver: holder);
+    final context = JObject();
+    if (original?.source case final String source) {
+      context.properties['source'] = source;
+    }
+    return jCall(reviver, [key, value, context], receiver: holder);
   }
 
-  return walk(JObject({'': root}), '');
+  return walk(JObject({'': root}), '', record);
 }
 
 dynamic jJSONStringify(dynamic value, dynamic replacer, dynamic space) {
@@ -3517,6 +3648,7 @@ dynamic jJSONStringify(dynamic value, dynamic replacer, dynamic space) {
         identical(current, jUndefined))
       return null;
     if (current == null) return 'null';
+    if (current is JRawJson) return current.text;
     if (current is bool) return '$current';
     if (current is num) return current.isFinite ? jString(current) : 'null';
     if (current is String) return jsonEncode(current);
@@ -3529,9 +3661,9 @@ dynamic jJSONStringify(dynamic value, dynamic replacer, dynamic space) {
     try {
       final nextIndent = indent + gap;
       final parts = <String>[];
-      final array = current is List;
+      final array = jIsArray(current);
       if (array) {
-        final length = current.length;
+        final length = jLength(jGet(current, 'length'));
         for (var i = 0; i < length; i++) {
           parts.add(serialize(current, '$i', nextIndent) ?? 'null');
         }
@@ -3562,11 +3694,14 @@ const _jHole = Object();
 bool jDelete(dynamic object, dynamic key, {bool strict = false}) {
   final property = jPropertyKey(key);
   var success = true;
-  if (object is JObject) {
+  if (object is JTemplateArray) {
+    success = !jHasOwn(object, property);
+  } else if (object is JObject) {
     success = object.remove(property);
   } else if (object is List) {
-    if (object is JArray && object.extra.own(property))
-      return jDelete(object.extra, property, strict: strict);
+    final extras = jArrayExtras(object);
+    if (extras != null && extras.own(property))
+      return jDelete(extras, property, strict: strict);
     if (property == 'length')
       success = false;
     else {

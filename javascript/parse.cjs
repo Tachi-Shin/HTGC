@@ -11,6 +11,19 @@ try {
   }
   function lowerUnicodeSets(node) {
     if (!node || typeof node !== 'object') return;
+    if (['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression', 'ClassDeclaration', 'ClassExpression'].includes(node.type)) {
+      node.htgcSource ??= input.slice(node.start, node.end);
+    } else if (node.type === 'MethodDefinition' ||
+               (node.type === 'Property' && (node.method || node.kind === 'get' || node.kind === 'set'))) {
+      const start = node.type === 'MethodDefinition' && node.static
+        ? node.key.start - (node.computed ? 1 : 0)
+        : node.start;
+      // Static methods exclude the static modifier, including any trivia.
+      const source = input.slice(node.start, node.end);
+      node.value.htgcSource = node.type === 'MethodDefinition' && node.static
+        ? source.replace(/^static(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r\n|\r|\n))*/, '')
+        : input.slice(start, node.end);
+    }
     if (node.regex?.flags.includes('v')) {
       try {
         node.regex.lowered = rewriteUnicodeSets(node.regex.pattern, node.regex.flags);
