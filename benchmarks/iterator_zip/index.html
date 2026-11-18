@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ja">
+<body>
+  <p id="status">準備中</p>
+  <script type="module">
+    const pairs = Iterator.zip([[1, 2], ['a']], {mode: 'longest', padding: [0, '-']}).toArray();
+    const keyed = Iterator.zipKeyed({left: [1], right: [2]}).toArray();
+    async function* stream() { yield 1; }
+    const source = stream();
+    await source.next();
+    await source[Symbol.asyncDispose]();
+    document.getElementById('status').textContent = JSON.stringify(pairs) + ' ' + JSON.stringify(keyed);
+  </script>
+</body>
+</html>

@@ -246,7 +246,9 @@ class NativeSiteState extends State<NativeSiteApp>
     return el;
   }
 
-  void load(String path) {
+  void load(String path) => JRealm().run(() => _loadDocument(path));
+
+  void _loadDocument(String path) {
     final route = modalRoute;
     if (route != null && route.isActive) route.navigator?.removeRoute(route);
     loading = true;
@@ -270,8 +272,9 @@ class NativeSiteState extends State<NativeSiteApp>
       runtime.viewportHeight = widget.viewport!.height;
     }
     final root = runtime.newScope();
+    final global = JScope.script(root);
     for (final int script in data['scripts']) {
-      widget.scripts[script](JScope(root));
+      widget.scripts[script](global);
     }
     loading = false;
     final page = runtime;

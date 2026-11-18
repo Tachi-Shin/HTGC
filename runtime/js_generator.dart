@@ -120,8 +120,37 @@ class JGenerator extends JObject {
   }
 }
 
+JObject get jAsyncIteratorPrototype => JRealm.current.asyncIteratorPrototype;
+JObject _buildRealmAsyncIteratorPrototype() => () {
+  final prototype = JObject();
+  prototype.symbols[jSymbols['asyncIterator']!] = jBuiltinMethod(
+    '[Symbol.asyncIterator]',
+    0,
+    (_, receiver) => receiver,
+  );
+  prototype.symbols[jSymbols['asyncDispose']!] = jBuiltinMethod(
+    '[Symbol.asyncDispose]',
+    0,
+    (_, receiver) {
+      try {
+        final method = jGet(jRequireCoercible(receiver), 'return');
+        if (jNullish(method)) return jPromiseResolve(jUndefined);
+        final result = jCall(method, [], receiver: receiver);
+        return jPromiseResolve(result).then(jBuiltin((_) => jUndefined));
+      } catch (error) {
+        return JPromise()..reject(jExceptionValue(error));
+      }
+    },
+  );
+  jBuiltinProperties(prototype);
+  return prototype;
+}();
+
 JObject jBuildGeneratorPrototype(bool asynchronous) {
   final prototype = JObject();
+  prototype.prototype = asynchronous
+      ? jAsyncIteratorPrototype
+      : jIteratorPrototype;
   for (final mode in ['next', 'return', 'throw']) {
     final function = JFunction((args, receiver) {
       if (receiver is! JGenerator || receiver.asynchronous != asynchronous) {
@@ -134,8 +163,6 @@ JObject jBuildGeneratorPrototype(bool asynchronous) {
     jNameFunction(function, mode, 1);
     prototype.properties[mode] = function;
   }
-  prototype.symbols[jSymbols[asynchronous ? 'asyncIterator' : 'iterator']!] =
-      JFunction((a, r) => r, constructible: false);
   prototype.symbols[jSymbols['toStringTag']!] = asynchronous
       ? 'AsyncGenerator'
       : 'Generator';
@@ -143,13 +170,14 @@ JObject jBuildGeneratorPrototype(bool asynchronous) {
   return prototype;
 }
 
-final jGeneratorPrototype = jBuildGeneratorPrototype(false);
-final jAsyncGeneratorPrototype = jBuildGeneratorPrototype(true);
+JObject get jGeneratorPrototype => JRealm.current.generatorPrototype;
+JObject get jAsyncGeneratorPrototype => JRealm.current.asyncGeneratorPrototype;
 JObject jBuildGeneratorFunctionPrototype(bool asynchronous) {
   final generator = asynchronous
       ? jAsyncGeneratorPrototype
       : jGeneratorPrototype;
-  final prototype = JObject({'prototype': generator});
+  final prototype = JObject({'prototype': generator})
+    ..prototype = jFunctionPrototype;
   prototype.flags['prototype'] = JPropertyFlags(
     enumerable: false,
     writable: false,
@@ -165,8 +193,8 @@ JObject jBuildGeneratorFunctionPrototype(bool asynchronous) {
   return prototype;
 }
 
-final jGeneratorFunctionPrototype = jBuildGeneratorFunctionPrototype(false);
-final jAsyncGeneratorFunctionPrototype = jBuildGeneratorFunctionPrototype(true);
+JObject get jGeneratorFunctionPrototype => JRealm.current.generatorFunctionPrototype;
+JObject get jAsyncGeneratorFunctionPrototype => JRealm.current.asyncGeneratorFunctionPrototype;
 
 class JAsyncIteratorRecord {
   final dynamic object, next;
@@ -175,7 +203,7 @@ class JAsyncIteratorRecord {
   dynamic current = jUndefined;
   JAsyncIteratorRecord(this.object, this.synchronous)
     : next = jGet(object, 'next');
-  JPromise advance() => jAsync((promise) async {
+  JPromise advance({bool readCompletionValue = true}) => jAsync((promise) async {
     try {
       if (done) {
         promise.resolve(false);
@@ -186,7 +214,9 @@ class JAsyncIteratorRecord {
       if (!jIsObject(result))
         throw JThrown(JError('TypeError', 'Iterator result must be an object'));
       final finished = jTruthy(jGet(result, 'done'));
-      dynamic value = jGet(result, 'value');
+      dynamic value = !finished || synchronous || readCompletionValue
+          ? jGet(result, 'value')
+          : jUndefined;
       if (synchronous) {
         try {
           value = await jAwait(value);

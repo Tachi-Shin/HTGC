@@ -37,11 +37,11 @@ class JArrayBuffer extends JObject {
   }
 }
 
-final jArrayBufferPrototype = JObject();
-final jDataViewPrototype = JObject();
-final jTypedArrayPrototype = JObject();
-final jTypedPrototypes = <String, JObject>{};
-final jTypedConstructors = <String, JFunction>{};
+JObject get jArrayBufferPrototype => JRealm.current.arrayBufferPrototype;
+JObject get jDataViewPrototype => JRealm.current.dataViewPrototype;
+JObject get jTypedArrayPrototype => JRealm.current.typedArrayPrototype;
+Map<String, JObject> get jTypedPrototypes => JRealm.current.typedPrototypes;
+Map<String, JFunction> get jTypedConstructors => JRealm.current.typedConstructors;
 const jElementSizes = {
   'Int8Array': 1,
   'Uint8Array': 1,
@@ -146,7 +146,9 @@ class JTypedArray extends JObject {
   bool write(Object key, dynamic value, dynamic receiver) {
     final index = jTypedIndex(key);
     if (index == null) return super.write(key, value, receiver);
-    if (!identical(receiver, this)) return super.write(key, value, receiver);
+    if (!identical(receiver, this)) {
+      return !valid(index) || super.write(key, value, receiver);
+    }
     final converted = kind.startsWith('Big') ? jBigInt(value) : jNumber(value);
     if (valid(index))
       jWriteElement(
@@ -203,6 +205,16 @@ int jFloat16(double value) {
   return sign | ((exponent + 15) << 10) | (significand - 1024);
 }
 
+double jFromFloat16(int bits) {
+  final exponent = (bits >> 10) & 31, mantissa = bits & 1023;
+  final value = exponent == 31
+      ? (mantissa == 0 ? double.infinity : double.nan)
+      : exponent == 0
+      ? mantissa * math.pow(2, -24)
+      : (1024 + mantissa) * math.pow(2, exponent - 25);
+  return (bits & 0x8000) != 0 ? -value.toDouble() : value.toDouble();
+}
+
 dynamic jReadElement(
   JArrayBuffer buffer,
   int offset,
@@ -229,15 +241,7 @@ dynamic jReadElement(
     case 'Float64Array':
       return data.getFloat64(offset, endian);
     case 'Float16Array':
-      final bits = data.getUint16(offset, endian),
-          exponent = (bits >> 10) & 31,
-          mantissa = bits & 1023;
-      final n = exponent == 31
-          ? (mantissa == 0 ? double.infinity : double.nan)
-          : exponent == 0
-          ? mantissa * math.pow(2, -24)
-          : (1024 + mantissa) * math.pow(2, exponent - 25);
-      return (bits & 0x8000) != 0 ? -n.toDouble() : n.toDouble();
+      return jFromFloat16(data.getUint16(offset, endian));
     default:
       final low = data.getUint32(
             offset + (endian == Endian.little ? 0 : 4),
@@ -330,26 +334,16 @@ JTypedArray jTypedReceiver(dynamic receiver) {
 
 JObject jTypedIterator(JTypedArray target, String mode) {
   var index = 0;
-  bool done = false;
-  final iterator = JObject();
-  iterator.properties['next'] = jBuiltin((a) {
-    if (!done) {
-      target.check();
-      if (index >= target.length) done = true;
-    }
-    if (done) return JObject({'value': jUndefined, 'done': true});
+  return JIterator(() {
+    target.check();
+    if (index >= target.length) return jIterationResult();
     final i = index++;
-    return JObject({
-      'value': mode == 'keys'
-          ? i.toDouble()
-          : mode == 'entries'
-          ? <dynamic>[i.toDouble(), target.at(i)]
-          : target.at(i),
-      'done': false,
-    });
+    return jIterationResult(
+      mode == 'keys' ? i.toDouble() :
+      mode == 'entries' ? <dynamic>[i.toDouble(), target.at(i)] : target.at(i),
+      false,
+    );
   });
-  iterator.symbols[jSymbols['iterator']!] = jBuiltin((a) => iterator);
-  return iterator;
 }
 
 void jAccessor(JObject prototype, String name, dynamic Function(dynamic) read) {
@@ -371,7 +365,7 @@ void jInstallSpeciesGetter(JFunction constructor) {
   constructor.flags[key] = JPropertyFlags(enumerable: false);
 }
 
-JFunction jSpeciesConstructor(JObject value, JFunction fallback) {
+JFunction jSpeciesConstructor(dynamic value, JFunction fallback) {
   final constructor = jGet(value, 'constructor');
   if (identical(constructor, jUndefined)) return fallback;
   if (!jIsObject(constructor)) {
@@ -746,6 +740,7 @@ void installJSBinary(JScope scope) {
       'constructor': constructor,
       'BYTES_PER_ELEMENT': size,
     });
+    if (kind == 'Uint8Array') jInstallByteEncoding(constructor, proto);
     jBuiltinProperties(proto);
     jBuiltinProperties(constructor);
     jNameFunction(constructor, kind, 3);
@@ -821,6 +816,11 @@ void jInstallTypedMethods() {
             .join(identical(jArg(a, 0), jUndefined) ? ',' : jString(a[0])),
   );
   method('toString', (a, t) => jInvoke(t, 'join', []));
+  method('toLocaleString', (a, t) {
+    final length = t.length;
+    return [for (var i = 0; i < length; i++) jLocaleElement(t.at(i), a)]
+        .join(',');
+  });
   method('set', (a, t) {
     final offset = jInteger(jArg(a, 1));
     if (offset < 0 || !offset.isFinite)

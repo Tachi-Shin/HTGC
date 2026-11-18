@@ -31,6 +31,7 @@ void main() {
       final inline = state.document.getElementById('inline')!;
       final childRuntime = state.runtime.embeddedDocuments[child]!;
       expect(state.document.getElementById('status')!.text, '文書接続OK');
+      expect(state.document.getElementById('realm')!.text, 'Realm分離OK');
       expect(
         childRuntime.document.getElementById('message')!.text,
         '子で実行済み・親から更新',
@@ -85,6 +86,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(state.current, 'index.html');
+      expect(state.document.getElementById('realm')!.text, 'Realm分離OK');
       expect(
         state.runtime.embeddedDocuments[child]!.document
             .getElementById('message')!

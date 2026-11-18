@@ -1,6 +1,6 @@
 part of 'js_core.dart';
 
-final jSharedArrayBufferPrototype = JObject();
+JObject get jSharedArrayBufferPrototype => JRealm.current.sharedArrayBufferPrototype;
 
 class JSharedArrayBuffer extends JArrayBuffer {
   final waiters = <int, Queue<JAtomicWaiter>>{};

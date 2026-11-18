@@ -1,32 +1,12 @@
 part of 'js_core.dart';
 
-class JArray extends ListBase<dynamic> {
-  final List<dynamic> items;
-  final JObject extra = JObject();
-  JArray(this.items);
-  @override
-  int get length => items.length;
-  @override
-  set length(int value) {
-    while (items.length < value) items.add(_jHole);
-    items.length = value;
-  }
-
-  @override
-  dynamic operator [](int index) => items[index];
-  @override
-  void operator []=(int index, dynamic value) {
-    items[index] = value;
-  }
-}
-
-final jRegExpPrototype = JObject();
+JObject get jRegExpPrototype => JRealm.current.regExpPrototype;
 
 class JRegex extends JObject {
   String pattern, flagText;
   late RegExp value;
   final List<int> captureIndices = [];
-  final Map<String, int> names = {};
+  final Map<String, List<int>> names = {};
   String marker = 'HTGCpos';
   String? lowered;
   bool get fullUnicode => flagText.contains('u') || flagText.contains('v');
@@ -38,13 +18,9 @@ class JRegex extends JObject {
         flags.split('').toSet().length != flags.length ||
         flags.contains('u') && flags.contains('v'))
       throw JThrown(JError('SyntaxError', 'Invalid regular expression flags'));
-    if (flags.contains('v') && lowered == null)
-      throw JThrown(
-        JError(
-          'SyntaxError',
-          'Runtime-created Unicode sets require a precompiled pattern',
-        ),
-      );
+    if (flags.contains('v')) {
+      lowered ??= _RegExpSetParser(pattern, flags.contains('i')).lower();
+    }
     final matchingPattern = lowered ?? pattern;
     try {
       value = RegExp(
@@ -125,7 +101,8 @@ class JRegex extends JObject {
           stack.add(original);
           if (pattern.startsWith('(?<', i)) {
             final end = pattern.indexOf('>', i + 3);
-            names[pattern.substring(i + 3, end)] = original;
+            final name = jRegexGroupName(pattern.substring(i + 3, end));
+            names.putIfAbsent(name, () => []).add(original);
             tokens.add(pattern.substring(i, end + 1));
             i = end;
           } else
@@ -158,6 +135,12 @@ class JRegex extends JObject {
     }).join();
   }
 }
+
+String jRegexGroupName(String name) => name.replaceAllMapped(
+  RegExp(r'\\u(?:\{([0-9a-fA-F]+)\}|([0-9a-fA-F]{4}))'),
+  (escape) =>
+      String.fromCharCode(int.parse(escape[1] ?? escape[2]!, radix: 16)),
+);
 
 int jLength(dynamic value) {
   final n = jInteger(value);
@@ -272,8 +255,15 @@ dynamic jRegexBuiltinExec(JRegex regex, String input) {
               ],
       );
     }
-    for (final entry in regex.names.entries)
-      named.properties[entry.key] = indices[entry.value];
+    for (final entry in regex.names.entries) {
+      named.properties[entry.key] = jUndefined;
+      for (final originalIndex in entry.value) {
+        final index = indices[originalIndex];
+        if (identical(index, jUndefined)) continue;
+        named.properties[entry.key] = index;
+        break;
+      }
+    }
     indices.extra.properties['groups'] = regex.names.isEmpty
         ? jUndefined
         : named;
@@ -355,10 +345,20 @@ String jSubstitute(
   return result.toString();
 }
 
-dynamic jRegexMatch(dynamic regex, String input) {
-  if (!jTruthy(jGet(regex, 'global'))) return jRegexExec(regex, input);
-  final unicode =
-      jTruthy(jGet(regex, 'unicode')) || jTruthy(jGet(regex, 'unicodeSets'));
+void jRequireRegExpMethodReceiver(dynamic value) {
+  if (!jIsObject(value)) {
+    throw JThrown(
+      JError('TypeError', 'RegExp method receiver must be an object'),
+    );
+  }
+}
+
+dynamic jRegexMatch(dynamic regex, dynamic value) {
+  jRequireRegExpMethodReceiver(regex);
+  final input = jString(value);
+  final flags = jString(jGet(regex, 'flags'));
+  if (!flags.contains('g')) return jRegexExec(regex, input);
+  final unicode = flags.contains('u') || flags.contains('v');
   jSet(regex, 'lastIndex', 0.0);
   final values = <dynamic>[];
   while (true) {
@@ -379,13 +379,14 @@ dynamic jRegexMatch(dynamic regex, String input) {
   }
 }
 
-dynamic jRegexReplace(dynamic regex, String input, dynamic replacement) {
-  final functional = replacement is JFunction,
-      text = functional ? '' : jString(replacement),
-      global = jTruthy(jGet(regex, 'global'));
-  final unicode =
-      global &&
-      (jTruthy(jGet(regex, 'unicode')) || jTruthy(jGet(regex, 'unicodeSets')));
+dynamic jRegexReplace(dynamic regex, dynamic value, dynamic replacement) {
+  jRequireRegExpMethodReceiver(regex);
+  final input = jString(value);
+  final functional = replacement is JFunction;
+  final text = functional ? '' : jString(replacement);
+  final flags = jString(jGet(regex, 'flags'));
+  final global = flags.contains('g');
+  final unicode = flags.contains('u') || flags.contains('v');
   if (global) jSet(regex, 'lastIndex', 0.0);
   final matches = <dynamic>[];
   while (true) {
@@ -412,13 +413,12 @@ dynamic jRegexReplace(dynamic regex, String input, dynamic replacement) {
         position = jInteger(jGet(result, 'index'))
             .clamp(0, input.length)
             .toInt();
-    final captures = [
-          for (var i = 1; i < length; i++)
-            identical(jGet(result, i), jUndefined)
-                ? jUndefined
-                : jString(jGet(result, i)),
-        ],
-        groups = jGet(result, 'groups');
+    final captures = <dynamic>[];
+    for (var index = 1; index < length; index++) {
+      final value = jGet(result, index);
+      captures.add(identical(value, jUndefined) ? jUndefined : jString(value));
+    }
+    final groups = jGet(result, 'groups');
     final replaced = functional
         ? jString(
             jCall(replacement, [
@@ -435,7 +435,9 @@ dynamic jRegexReplace(dynamic regex, String input, dynamic replacement) {
             position,
             matched,
             captures,
-            identical(groups, jUndefined) ? groups : jObject(groups),
+            identical(groups, jUndefined)
+                ? groups
+                : jObject(jRequireCoercible(groups)),
           );
     if (position >= next) {
       output.write(input.substring(next, position));
@@ -447,75 +449,88 @@ dynamic jRegexReplace(dynamic regex, String input, dynamic replacement) {
   return output.toString();
 }
 
-dynamic jRegexSplit(JRegex regex, String input, dynamic limitValue) {
-  final limit = identical(limitValue, jUndefined)
-          ? 0xffffffff
-          : jUint32(limitValue),
-      out = <dynamic>[];
+dynamic jRegexSplit(dynamic regex, List<dynamic> args, JFunction intrinsic) {
+  jRequireRegExpMethodReceiver(regex);
+  final input = jString(jArg(args, 0));
+  final constructor = jSpeciesConstructor(regex, intrinsic);
+  final flags = jString(jGet(regex, 'flags'));
+  final fullUnicode = flags.contains('u') || flags.contains('v');
+  final splitter = jNew(constructor, [
+    regex,
+    flags.contains('y') ? flags : '${flags}y',
+  ]);
+  final limit = identical(jArg(args, 1), jUndefined)
+      ? 0xffffffff
+      : jUint32(args[1]);
+  final out = <dynamic>[];
   if (limit == 0) return out;
-  final splitter = JRegex(
-    regex.pattern,
-    regex.flagText.contains('y') ? regex.flagText : '${regex.flagText}y',
-    lowered: regex.lowered,
-  );
   if (input.isEmpty)
     return jRegexExec(splitter, input) == null ? <dynamic>[''] : out;
-  var p = 0, q = 0;
-  while (q < input.length) {
-    splitter.set('lastIndex', q.toDouble());
-    final match = jRegexExec(splitter, input);
-    if (match == null) {
-      q = jAdvanceString(input, q, regex.fullUnicode);
+
+  var endOfLastMatch = 0, nextIndex = 0;
+  while (nextIndex < input.length) {
+    jSet(splitter, 'lastIndex', nextIndex.toDouble());
+    final result = jRegexExec(splitter, input);
+    if (result == null) {
+      nextIndex = jAdvanceString(input, nextIndex, fullUnicode);
       continue;
     }
-    final end = math.min(jLength(splitter.get('lastIndex')), input.length);
-    if (end == p) {
-      q = jAdvanceString(input, q, regex.fullUnicode);
+    final end = math.min(jLength(jGet(splitter, 'lastIndex')), input.length);
+    if (end == endOfLastMatch) {
+      nextIndex = jAdvanceString(input, nextIndex, fullUnicode);
       continue;
     }
-    out.add(input.substring(p, q));
+    out.add(input.substring(endOfLastMatch, nextIndex));
     if (out.length == limit) return out;
-    p = end;
-    for (var i = 1; i < jLength(jGet(match, 'length')); i++) {
-      out.add(jGet(match, i));
+    endOfLastMatch = end;
+
+    final count = jLength(jGet(result, 'length'));
+    for (var index = 1; index < count; index++) {
+      out.add(jGet(result, index));
       if (out.length == limit) return out;
     }
-    q = p;
+    nextIndex = endOfLastMatch;
   }
-  out.add(input.substring(p));
+  out.add(input.substring(endOfLastMatch));
   return out;
 }
 
-JObject jRegexMatchAll(JRegex source, String input) {
-  final regex = JRegex(source.pattern, source.flagText, lowered: source.lowered)
-    ..set('lastIndex', jLength(source.get('lastIndex')).toDouble());
-  final iterator = JObject();
-  var done = false;
-  iterator.properties['next'] = jBuiltin((a) {
-    if (done) return JObject({'value': jUndefined, 'done': true});
-    final result = jRegexExec(regex, input);
-    if (result == null) {
-      done = true;
-      return JObject({'value': jUndefined, 'done': true});
-    }
-    if (!regex.flagText.contains('g'))
-      done = true;
-    else if (jString(jGet(result, 0)).isEmpty)
-      regex.set(
+JIterator jRegexMatchAll(
+  dynamic source,
+  List<dynamic> args,
+  JFunction intrinsic,
+) {
+  jRequireRegExpMethodReceiver(source);
+  final input = jString(jArg(args, 0));
+  final constructor = jSpeciesConstructor(source, intrinsic);
+  final flags = jString(jGet(source, 'flags'));
+  final matcher = jNew(constructor, [source, flags]);
+  final global = flags.contains('g');
+  final fullUnicode = flags.contains('u') || flags.contains('v');
+  jSet(matcher, 'lastIndex', jLength(jGet(source, 'lastIndex')).toDouble());
+
+  // The iterator itself tracks termination after returning a done result.
+  var exhausted = false;
+  return JIterator(() {
+    if (exhausted) return jIterationResult();
+    final result = jRegexExec(matcher, input);
+    if (result == null) return jIterationResult();
+    if (!global) {
+      exhausted = true;
+    } else if (jString(jGet(result, 0)).isEmpty) {
+      final index = jLength(jGet(matcher, 'lastIndex'));
+      jSet(
+        matcher,
         'lastIndex',
-        jAdvanceString(
-          input,
-          jLength(regex.get('lastIndex')),
-          regex.fullUnicode,
-        ).toDouble(),
+        jAdvanceString(input, index, fullUnicode).toDouble(),
       );
-    return JObject({'value': result, 'done': false});
-  });
-  iterator.symbols[jSymbols['iterator']!] = jBuiltin((a) => iterator);
-  return iterator;
+    }
+    return jIterationResult(result, false);
+  }, kind: 'RegExp String Iterator');
 }
 
-dynamic jStringRegExp(String operation, String input, List<dynamic> args) {
+dynamic jStringRegExp(String operation, dynamic receiver, List<dynamic> args) {
+  jRequireCoercible(receiver);
   final pattern = jArg(args, 0), argument = jArg(args, 1);
   if (!jNullish(pattern)) {
     if ((operation == 'matchAll' || operation == 'replaceAll') &&
@@ -526,10 +541,11 @@ dynamic jStringRegExp(String operation, String input, List<dynamic> args) {
     final method = symbol == null ? jUndefined : jGet(pattern, symbol);
     if (!jNullish(method))
       return jCall(method, [
-        input,
+        receiver,
         if (operation == 'split' || operation.startsWith('replace')) argument,
       ], receiver: pattern);
   }
+  final input = jString(receiver);
   if (operation == 'match' ||
       operation == 'search' ||
       operation == 'matchAll') {
@@ -593,8 +609,9 @@ dynamic jCallPrecompiledRegExp(
   String lowered, {
   required bool constructing,
 }) {
-  if (target is JRegExpConstructor)
-    return target.create(args, constructing, lowered);
+  if (target is JRegExpConstructor) {
+    return target.realm.run(() => target.create(args, constructing, lowered));
+  }
   return constructing ? jNew(target, args) : jCall(target, args);
 }
 
@@ -635,6 +652,21 @@ void installJSRegExp(JScope scope) {
         ? input.lowered
         : null;
     return JRegex(source, options, lowered: precompiled ?? lowered);
+  }
+
+  for (final name in [
+    'split',
+    'match',
+    'matchAll',
+    'replace',
+    'replaceAll',
+    'search',
+  ]) {
+    jStringPrototype.properties[name] = jBuiltinMethod(
+      name,
+      name == 'split' || name.startsWith('replace') ? 2 : 1,
+      (args, receiver) => jStringRegExp(name, receiver, args),
+    );
   }
 
   constructor = JRegExpConstructor(create);
@@ -723,14 +755,15 @@ void installJSRegExp(JScope scope) {
     constructible: false,
   );
   jRegExpPrototype.symbols[jSymbols['match']!] = JFunction(
-    (a, r) => jRegexMatch(r, jString(jArg(a, 0))),
+    (a, r) => jRegexMatch(r, jArg(a, 0)),
     constructible: false,
   );
   jRegExpPrototype.symbols[jSymbols['replace']!] = JFunction(
-    (a, r) => jRegexReplace(r, jString(jArg(a, 0)), jArg(a, 1)),
+    (a, r) => jRegexReplace(r, jArg(a, 0), jArg(a, 1)),
     constructible: false,
   );
   jRegExpPrototype.symbols[jSymbols['search']!] = JFunction((a, r) {
+    jRequireRegExpMethodReceiver(r);
     final input = jString(jArg(a, 0)), previous = jGet(r, 'lastIndex');
     if (!jSameValue(previous, 0.0)) jSet(r, 'lastIndex', 0.0);
     final result = jRegexExec(r, input);
@@ -739,13 +772,14 @@ void installJSRegExp(JScope scope) {
     return result == null ? -1.0 : jGet(result, 'index');
   }, constructible: false);
   jRegExpPrototype.symbols[jSymbols['split']!] = JFunction(
-    (a, r) => jRegexSplit(receiver(r), jString(jArg(a, 0)), jArg(a, 1)),
+    (a, r) => jRegexSplit(r, a, constructor),
     constructible: false,
   );
   jRegExpPrototype.symbols[jSymbols['matchAll']!] = JFunction(
-    (a, r) => jRegexMatchAll(receiver(r), jString(jArg(a, 0))),
+    (a, r) => jRegexMatchAll(r, a, constructor),
     constructible: false,
   );
+  jInstallSpeciesGetter(constructor);
   jBuiltinProperties(constructor);
   jBuiltinProperties(jRegExpPrototype);
   jNameFunction(constructor, 'RegExp', 2);

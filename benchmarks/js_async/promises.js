@@ -98,6 +98,45 @@ async function checks() {
   equal(absent?.[await Promise.reject('computed key')], undefined);
   equal(absent?.[touched++]?.(await Promise.reject('call argument')), undefined);
   equal(touched, 1);
+  class P extends Promise {}
+  const p = P.resolve(4);
+  equal(p instanceof P, true);
+  equal(P.resolve(p), p);
+  equal(Promise.resolve(p) === p, false);
+  equal(p.then(v => v + 1) instanceof P, true);
+  equal(p.finally(() => 1) instanceof P, true);
+  for (const value of [P.all([p]), P.allSettled([p]), P.any([p]), P.race([p]), P.try(() => 5)]) {
+    equal(value instanceof P, true);
+    await value;
+  }
+  const kit = P.withResolvers();
+  kit.resolve(7);
+  equal(kit.promise instanceof P, true);
+  equal(await kit.promise, 7);
+  class NativeChain extends P { static get [Symbol.species]() {return Promise;} }
+  const chain = NativeChain.resolve(5).finally(() => p);
+  equal(chain instanceof NativeChain, false);
+  equal(await chain, 5);
+  const receivers = [];
+  class Counting extends P {
+    static get resolve() { receivers.push("get"); return function(v) { receivers.push(this === Counting); return P.resolve(v); }; }
+  }
+  equal((await Counting.all([1, 2])).join(":"), "1:2");
+  equal(receivers.join(","), "get,true,true");
+  function Alternative(executor) {
+    executor(v => {this.value = v}, e => {this.error = e});
+  }
+  const custom = Promise.resolve.call(Alternative, 9);
+  equal(custom instanceof Alternative, true);
+  equal(custom.value, 9);
+  class Exotic extends P { static get [Symbol.species]() {return Alternative;} }
+  const other = Exotic.resolve(2).then(n => n * 2);
+  equal(other instanceof Alternative, true);
+  await 0;
+  equal(other.value, 4);
+  const badSpecies = P.resolve(1);
+  badSpecies.constructor = {[Symbol.species]: {}};
+  try { badSpecies.then(); throw 'expected TypeError'; } catch (e) { equal(e.name, 'TypeError'); }
   console.log('promises: pass');
 }
 checks().then(() => $DONE(), error => $DONE(error));
