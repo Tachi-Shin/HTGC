@@ -363,7 +363,7 @@ void jInstallSpeciesGetter(JFunction constructor) {
   constructor.flags[key] = JPropertyFlags(enumerable: false);
 }
 
-JFunction jSpeciesConstructor(JObject value, JFunction fallback) {
+JFunction jSpeciesConstructor(dynamic value, JFunction fallback) {
   final constructor = jGet(value, 'constructor');
   if (identical(constructor, jUndefined)) return fallback;
   if (!jIsObject(constructor)) {

@@ -90,5 +90,37 @@ eq(Ints.from([2, 3], x => x * 2).join(','), '4,6');
 eq(Ints.from([2, 3]) instanceof Ints, true);
 eq(typed.from.call(Float32Array, {0: 1.5, length: 1})[0], 1.5);
 
+const initLog = [];
+class KeyMap extends Map {
+  set(k, v) { initLog.push(k); return super.set(k, v + 1); }
+}
+class ValueSet extends Set {
+  add(v) { return super.add(v * 2); }
+}
+class WeakKeys extends WeakMap {
+  set(k, v) { return super.set(k, v + 2); }
+}
+class WeakValues extends WeakSet {}
+const key = {};
+const km = new KeyMap([['a', 2], ['b', 4]]);
+eq(km instanceof KeyMap, true);
+eq(km.get('b'), 5);
+eq(initLog.join(','), 'a,b');
+eq(new ValueSet([4]).has(8), true);
+eq(new WeakKeys([[key,1]]).get(key), 3);
+eq(new WeakValues([key]).has(key), true);
+eq(KeyMap[Symbol.species], KeyMap);
+class N extends Number {}
+class S extends String {}
+class B extends Boolean {}
+eq(new N(4).valueOf(), 4);
+eq(new N(0) instanceof N, true);
+eq(new S('ab')[1], 'b');
+eq(new B(false).valueOf(), false);
+const original = {v: 5};
+class O extends Object {}
+eq(new O(original) instanceof O, true);
+eq(new O(original).v, undefined);
+eq(new Object(original), original);
 console.log('subclasses: ' + checks + ' checks');
 $DONE();

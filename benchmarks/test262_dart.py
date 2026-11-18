@@ -120,7 +120,9 @@ NUMERIC_TESTS = (
 )
 
 ASYNC_HARNESS = r"""
-Future<void> main() async {
+Future<void> main() => runZoned(runTest,
+    zoneValues: {jPromiseRejectionHook: (dynamic reason) {}});
+Future<void> runTest() async {
   final scope = JScope();
   installJSBuiltins(scope);
   final done = Completer<void>();
@@ -205,6 +207,7 @@ Future<void> main() async {
   scope.define('assert', assertFn);
   late final JFunction testError;
   testError = jNative((args) => JError('Test262Error', jString(jArg(args, 0)))..properties['constructor'] = testError);
+  testError.properties['thrower'] = jBuiltin((args) => throw JThrown(jCall(testError, args)));
   scope.define('Test262Error', testError);
   // Inspect our [[Construct]] flag; this does not execute Test262's
   // Proxy/Reflect.construct-based isConstructor.js implementation.
@@ -270,6 +273,9 @@ def main():
             try:
                 source = path.read_text(encoding="utf-8")
                 metadata = source.partition("/*---")[2].partition("---*/")[0]
+                if re.search(r"^includes:.*\bpromiseHelper\.js\b", metadata, re.M):
+                    helper = args.checkout / "harness/promiseHelper.js"
+                    source = helper.read_text(encoding="utf-8") + "\n" + source
                 negative = re.search(r"^negative:\s*\n\s*phase:\s*runtime\s*\n\s*type:\s*(\w+)", metadata, re.M)
                 if negative:
                     expected = negative.group(1)

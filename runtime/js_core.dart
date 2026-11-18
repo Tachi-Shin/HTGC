@@ -60,6 +60,33 @@ class JError extends JObject {
 
 final Map<String, JObject> jErrorPrototypes = {};
 
+// Hosts can observe unhandled promise rejections independently of uncaught throws.
+final jPromiseRejectionHook = Object();
+
+class JPromiseCapability {
+  late final dynamic promise;
+  late final JFunction resolveFunction, rejectFunction;
+  JPromiseCapability(dynamic constructor) {
+    dynamic resolve = jUndefined, reject = jUndefined;
+    final executor = jNamedFunction(jBuiltin((args) {
+      if (!identical(resolve, jUndefined) || !identical(reject, jUndefined)) {
+        throw JThrown(JError('TypeError', 'Promise capability already initialized'));
+      }
+      resolve = jArg(args, 0);
+      reject = jArg(args, 1);
+      return jUndefined;
+    }), '', 2);
+    promise = jNew(constructor, [executor]);
+    if (resolve is! JFunction || reject is! JFunction) {
+      throw JThrown(JError('TypeError', 'Invalid promise resolving functions'));
+    }
+    resolveFunction = resolve;
+    rejectFunction = reject;
+  }
+  void resolve(dynamic value) => jCall(resolveFunction, [value]);
+  void reject(dynamic reason) => jCall(rejectFunction, [reason]);
+}
+
 class JPromise extends JObject {
   int _state = 0; // pending, fulfilled, rejected
   dynamic _value = jUndefined;
@@ -77,8 +104,13 @@ class JPromise extends JObject {
     _value = value;
     if (state == 2 && !_handled) {
       Timer.run(() {
-        if (!_handled)
+        if (_handled) return;
+        final report = _zone[jPromiseRejectionHook] as void Function(dynamic)?;
+        if (report == null) {
           _zone.handleUncaughtError(JThrown(value), StackTrace.current);
+        } else {
+          report(value);
+        }
       });
     }
     for (final reaction in _reactions) {
@@ -157,66 +189,64 @@ class JPromise extends JObject {
     }
   }
 
-  JPromise then(dynamic fulfilled, [dynamic rejected = jUndefined]) {
-    final next = JPromise();
+  dynamic then(dynamic fulfilled, [dynamic rejected = jUndefined]) {
+    final next = JPromiseCapability(jSpeciesConstructor(this, jPromiseConstructor));
     void reaction(dynamic handler, dynamic value, bool failure) {
-      try {
-        if (handler is JFunction) {
-          next.resolve(jCall(handler, [value]));
-        } else if (failure) {
-          next.reject(value);
-        } else {
-          next.resolve(value);
+      if (handler is JFunction) {
+        try {
+          value = jCall(handler, [value]);
+          failure = false;
+        } catch (error) {
+          value = jExceptionValue(error);
+          failure = true;
         }
-      } catch (error) {
-        next.reject(jExceptionValue(error));
       }
+      if (failure) { next.reject(value); } else { next.resolve(value); }
     }
 
     observe(
       (value) => reaction(fulfilled, value, false),
       (error) => reaction(rejected, error, true),
     );
-    return next;
+    return next.promise;
   }
 }
 
 final JObject jPromisePrototype = JObject({
   'constructor': jPromiseConstructor,
-  'then': JFunction((a, receiver) {
+  'then': jBuiltinMethod('then', 2, (a, receiver) {
     if (receiver is! JPromise)
       throw JThrown(JError('TypeError', 'Not a Promise receiver'));
     return receiver.then(jArg(a, 0), jArg(a, 1));
-  }, constructible: false),
-  'catch': JFunction(
+  }),
+  'catch': jBuiltinMethod('catch', 1,
     (a, receiver) => jInvoke(receiver, 'then', [jUndefined, jArg(a, 0)]),
-    constructible: false,
   ),
-  'finally': JFunction((a, receiver) {
+  'finally': jBuiltinMethod('finally', 1, (a, receiver) {
+    if (!jIsObject(receiver)) throw JThrown(JError('TypeError', 'Invalid Promise.finally receiver'));
+    final constructor = jSpeciesConstructor(receiver, jPromiseConstructor);
     final callback = jArg(a, 0);
-    if (callback is! JFunction)
-      return jInvoke(receiver, 'then', [callback, callback]);
-    return jInvoke(receiver, 'then', [
-      jNative(
-        (values) =>
-            jPromiseResolve(jCall(callback, []))
-                .then(jNative((_) => values[0])),
-      ),
-      jNative(
-        (errors) =>
-            jPromiseResolve(jCall(callback, []))
-                .then(jNative((_) => throw JThrown(errors[0]))),
-      ),
-    ]);
-  }, constructible: false),
+    if (callback is! JFunction) return jInvoke(receiver, 'then', [callback, callback]);
+    JFunction continuation(bool rejected) => jBuiltin((args) {
+      final value = jArg(args, 0);
+      final promise = jPromiseResolveWith(constructor, jCall(callback, []));
+      return jInvoke(promise, 'then', [jBuiltin((_) {
+        if (rejected) throw JThrown(value);
+        return value;
+      })]);
+    });
+    return jInvoke(receiver, 'then', [continuation(false), continuation(true)]);
+  }),
 });
 
-JPromise jPromiseResolve(dynamic value) {
-  if (value is JPromise &&
-      identical(value.get('constructor'), jPromiseConstructor))
-    return value;
-  return JPromise()..resolve(value);
+dynamic jPromiseResolveWith(dynamic constructor, dynamic value) {
+  if (!jIsObject(constructor)) throw JThrown(JError('TypeError', 'Invalid Promise.resolve receiver'));
+  if (value is JPromise && identical(jGet(value, 'constructor'), constructor)) return value;
+  final capability = JPromiseCapability(constructor)..resolve(value);
+  return capability.promise;
 }
+
+JPromise jPromiseResolve(dynamic value) => jPromiseResolveWith(jPromiseConstructor, value) as JPromise;
 
 Future<dynamic> jAwait(dynamic value) {
   // Complete inside the Promise reaction, avoiding an extra Future job.
@@ -235,8 +265,8 @@ JPromise jAsync(Future<void> Function(JPromise) body) {
   return promise;
 }
 
-JPromise jPromiseAggregate(String mode, dynamic iterable) {
-  final result = JPromise();
+dynamic jPromiseAggregate(String mode, dynamic iterable, dynamic constructor) {
+  final result = JPromiseCapability(constructor);
   final values = <dynamic>[];
   var remaining = 1;
   void finish() {
@@ -251,35 +281,31 @@ JPromise jPromiseAggregate(String mode, dynamic iterable) {
   }
 
   try {
+    final resolve = jGet(constructor, 'resolve');
+    if (resolve is! JFunction) throw JThrown(JError('TypeError', 'Promise resolve method is not callable'));
     jForEachIterable(iterable, (value) {
       final index = values.length;
       values.add(jUndefined);
       remaining++;
       var called = false;
-      final next = jInvoke(jPromiseConstructor, 'resolve', [value]);
+      final next = jCall(resolve, [value], receiver: constructor);
       jInvoke(next, 'then', [
-        jNative((args) {
-          final resolved = jArg(args, 0);
-          if (mode == 'race' || mode == 'any') {
-            result.resolve(resolved);
-          } else if (!called) {
+        mode == 'race' || mode == 'any' ? result.resolveFunction : jBuiltin((args) {
+          if (!called) {
             called = true;
+            final resolved = jArg(args, 0);
             values[index] = mode == 'allSettled'
-                ? JObject({'status': 'fulfilled', 'value': resolved})
-                : resolved;
+                ? JObject({'status': 'fulfilled', 'value': resolved}) : resolved;
             finish();
           }
           return jUndefined;
         }),
-        jNative((args) {
-          final error = jArg(args, 0);
-          if (mode == 'race' || mode == 'all') {
-            result.reject(error);
-          } else if (!called) {
+        mode == 'race' || mode == 'all' ? result.rejectFunction : jBuiltin((args) {
+          if (!called) {
             called = true;
+            final error = jArg(args, 0);
             values[index] = mode == 'allSettled'
-                ? JObject({'status': 'rejected', 'reason': error})
-                : error;
+                ? JObject({'status': 'rejected', 'reason': error}) : error;
             finish();
           }
           return jUndefined;
@@ -290,7 +316,7 @@ JPromise jPromiseAggregate(String mode, dynamic iterable) {
   } catch (error) {
     result.reject(jExceptionValue(error));
   }
-  return result;
+  return result.promise;
 }
 
 final JFunction jPromiseConstructor = buildJSPromiseConstructor();
@@ -298,18 +324,18 @@ final JFunction jPromiseConstructor = buildJSPromiseConstructor();
 JFunction buildJSPromiseConstructor() {
   final constructor = JFunction(
     (a, receiver) => throw JThrown(JError('TypeError', 'Promise requires new')),
-    construct: (a) {
+    constructWithTarget: (a, target) {
       final executor = jArg(a, 0);
       if (executor is! JFunction)
         throw JThrown(JError('TypeError', 'Promise executor is not callable'));
-      final promise = JPromise();
+      final promise = JPromise()..prototype = jPrototypeFromConstructor(target, jPromisePrototype);
       try {
         jCall(executor, [
-          jNative((values) {
+          jBuiltinMethod('', 1, (values, _) {
             promise.resolve(jArg(values, 0));
             return jUndefined;
           }),
-          jNative((errors) {
+          jBuiltinMethod('', 1, (errors, _) {
             promise.reject(jArg(errors, 0));
             return jUndefined;
           }),
@@ -321,40 +347,42 @@ JFunction buildJSPromiseConstructor() {
     },
   );
   constructor.properties.addAll({
-    'resolve': jNative((a) => jPromiseResolve(jArg(a, 0))),
-    'reject': jNative((a) => JPromise()..reject(jArg(a, 0))),
+    'resolve': jBuiltinMethod('resolve', 1, (a, c) => jPromiseResolveWith(c, jArg(a, 0))),
+    'reject': jBuiltinMethod('reject', 1, (a, c) => (JPromiseCapability(c)..reject(jArg(a, 0))).promise),
     for (final mode in ['all', 'allSettled', 'any', 'race'])
-      mode: jNative((a) => jPromiseAggregate(mode, jArg(a, 0))),
-    'withResolvers': jNative((_) {
-      final promise = JPromise();
-      return JObject({
-        'promise': promise,
-        'resolve': jNative((a) {
-          promise.resolve(jArg(a, 0));
-          return jUndefined;
-        }),
-        'reject': jNative((a) {
-          promise.reject(jArg(a, 0));
-          return jUndefined;
-        }),
-      });
+      mode: jBuiltinMethod(mode, 1, (a, c) => jPromiseAggregate(mode, jArg(a, 0), c)),
+    'withResolvers': jBuiltinMethod('withResolvers', 0, (_, c) {
+      final capability = JPromiseCapability(c);
+      return JObject({'promise': capability.promise, 'resolve': capability.resolveFunction, 'reject': capability.rejectFunction});
     }),
-    'try': jNative((a) {
-      final promise = JPromise();
-      try {
-        promise.resolve(jCall(jArg(a, 0), a.skip(1).toList()));
-      } catch (error) {
-        promise.reject(jExceptionValue(error));
+    'try': jBuiltinMethod('try', 1, (a, c) {
+      if (!jIsObject(c)) {
+        throw JThrown(JError('TypeError', 'Invalid Promise.try receiver'));
       }
-      return promise;
+      dynamic value;
+      try {
+        value = jCall(jArg(a, 0), a.skip(1).toList());
+      } catch (error) {
+        final capability = JPromiseCapability(c)..reject(jExceptionValue(error));
+        return capability.promise;
+      }
+      return jPromiseResolveWith(c, value);
     }),
   });
+  jInstallSpeciesGetter(constructor);
+  jNameFunction(constructor, 'Promise', 1);
+  jBuiltinProperties(constructor);
   return constructor;
 }
 
 void installJSPromises(JScope scope) {
   // Lazily linked to avoid recursive initialization of constructor/prototype.
   jPromiseConstructor.properties['prototype'] = jPromisePrototype;
+  jPromiseConstructor.flags['prototype'] = JPropertyFlags(enumerable: false, configurable: false, writable: false);
+  final tag = jSymbols['toStringTag']!;
+  jPromisePrototype.symbols[tag] = 'Promise';
+  jPromisePrototype.flags[tag] = JPropertyFlags(writable: false, enumerable: false);
+  jBuiltinProperties(jPromisePrototype);
   scope.define('Promise', jPromiseConstructor);
 }
 
@@ -2033,7 +2061,8 @@ void installJSPrimitiveWrappers(JScope scope) {
       : jString(a[0]);
   final string = JFunction(
     (a, _) => stringValue(a),
-    construct: (a) => JBox(stringValue(a, construct: true)),
+    constructWithTarget: (a, target) => JBox(stringValue(a, construct: true))
+      ..prototype = jPrototypeFromConstructor(target, jStringPrototype),
   );
   string.properties['raw'] = jNamedFunction(jBuiltin(jStringRaw), 'raw', 1);
   string.properties['fromCharCode'] = jBuiltin(
@@ -2054,7 +2083,8 @@ void installJSPrimitiveWrappers(JScope scope) {
   );
   final boolean = JFunction(
     (a, _) => jTruthy(jArg(a, 0)),
-    construct: (a) => JBox(jTruthy(jArg(a, 0))),
+    constructWithTarget: (a, target) => JBox(jTruthy(jArg(a, 0)))
+      ..prototype = jPrototypeFromConstructor(target, jBooleanPrototype),
   );
   for (final isString in [true, false]) {
     final prototype = isString ? jStringPrototype : jBooleanPrototype;
@@ -2156,7 +2186,8 @@ void installJSNumbers(JScope scope) {
 
   final number = JFunction(
     (a, _) => numberValue(a),
-    construct: (a) => JBox(numberValue(a)),
+    constructWithTarget: (a, target) => JBox(numberValue(a))
+      ..prototype = jPrototypeFromConstructor(target, jNumberPrototype),
   );
   number.properties.addAll({
     'prototype': jNumberPrototype,
@@ -2599,15 +2630,7 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
           }
           return name == 'includes' ? false : -1;
         });
-      case 'slice':
-        return jNative((a) {
-          final length = value.length;
-          final start = jRelativeIndex(jArg(a, 0), length);
-          final end = identical(jArg(a, 1), jUndefined)
-              ? length
-              : jRelativeIndex(a[1], length);
-          return value.sublist(start, math.max(start, end));
-        });
+
     }
   }
   if (value is String) {
@@ -3203,7 +3226,10 @@ void installJSObjects(JScope scope) {
   });
   jBuiltinProperties(symbol);
   scope.define('Symbol', symbol);
-  final object = jNative((a) => jObject(jArg(a, 0)));
+  late final JFunction object;
+  object = JFunction((a, _) => jObject(jArg(a, 0)), constructWithTarget: (a, target) =>
+      identical(object, target) ? jObject(jArg(a, 0)) :
+      (JObject()..prototype = jPrototypeFromConstructor(target, jObjectPrototype)));
   object.properties.addAll({
     'prototype': jObjectPrototype,
     'is': jNative((a) => jSameValue(jArg(a, 0), jArg(a, 1))),
@@ -3747,8 +3773,9 @@ void installJSCollections(JScope scope) {
     final name = set ? 'Set' : 'Map';
     final constructor = JFunction(
       (_, __) => throw JThrown(JError('TypeError', '$name requires new')),
-      construct: (a) {
-        final object = set ? JSet() : JMap();
+      constructWithTarget: (a, target) {
+        final object = (set ? JSet() : JMap())
+          ..prototype = jPrototypeFromConstructor(target, set ? jSetPrototypeObject : jMapPrototype);
         if (!jNullish(jArg(a, 0))) {
           final adder = object.get(set ? 'add' : 'set');
           if (adder is! JFunction)
@@ -3769,6 +3796,7 @@ void installJSCollections(JScope scope) {
     constructor.properties['prototype'] = set
         ? jSetPrototypeObject
         : jMapPrototype;
+    jInstallSpeciesGetter(constructor);
     (set ? jSetPrototypeObject : jMapPrototype).properties['constructor'] =
         constructor;
     if (!set)
@@ -3789,20 +3817,20 @@ void installJSCollections(JScope scope) {
     final weakName = set ? 'WeakSet' : 'WeakMap';
     final weakConstructor = JFunction(
       (_, __) => throw JThrown(JError('TypeError', '$weakName requires new')),
-      construct: (a) {
-        final object = JWeakCollection(set);
-        if (!jNullish(jArg(a, 0)))
+      constructWithTarget: (a, target) {
+        final object = JWeakCollection(set)
+          ..prototype = jPrototypeFromConstructor(target, set ? jWeakSetPrototype : jWeakMapPrototype);
+        if (!jNullish(jArg(a, 0))) {
+          final adder = jGet(object, set ? 'add' : 'set');
+          if (adder is! JFunction) throw JThrown(JError('TypeError', 'Invalid weak collection adder'));
           jForEachIterable(a[0], (value) {
             if (!set && value is! JObject && value is! List)
               throw JThrown(
                 JError('TypeError', 'WeakMap entry must be an object'),
               );
-            jInvoke(
-              object,
-              set ? 'add' : 'set',
-              set ? [value] : [jGet(value, 0), jGet(value, 1)],
-            );
+            jCall(adder, set ? [value] : [jGet(value, 0), jGet(value, 1)], receiver: object);
           });
+        }
         return object;
       },
     );

@@ -74,6 +74,15 @@ Map<String, JFunction> jBuildArrayMethods() {
     }
     return result;
   });
+  add('slice', 2, (object, args) {
+    final size = length(object);
+    final start = jRelativeIndex(jArg(args, 0), size);
+    final stop = end(args, 1, size);
+    return <dynamic>[
+      for (var i = start; i < stop; i++)
+        jHasProperty(object, '$i') ? jGet(object, i) : _jHole,
+    ];
+  });
   add('copyWithin', 2, (object, args) {
     final size = length(object);
     final to = jRelativeIndex(jArg(args, 0), size);

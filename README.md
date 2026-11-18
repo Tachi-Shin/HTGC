@@ -272,9 +272,9 @@ export async function save(text) {
 
 指定方法は `HTGC -Dart main.html -o test/lib/main.dart` のままです。JavaScriptは変換時にDartへ収録され、生成アプリの起動時に `.js` を読みません。
 
-- 文字列リテラルで参照したローカルの `import('./memo.js')` は依存ファイルとして収録され、呼び出す時まで評価を遅延します。変数を使う `import(path)` は、同じ生成物に収録済みのモジュールを選択できます。未収録のファイルはPromiseを拒否します。通信で新しいJavaScriptを取得して実行する機能やimport attributesには対応していません。
+- 文字列リテラルで参照したローカルの `import('./memo.js')` は依存ファイルとして収録され、呼び出す時まで評価を遅延します。変数を使う `import(path)` は、同じ生成物に収録済みのモジュールを選択できます。未収録のファイルはPromiseを拒否します。JSONモジュールは `with: {type: "json"}` で読み込めます。実行時に外部から取得したJavaScriptの評価は未対応です。
 - 依存先のトップレベル `await` を待ってから利用側を評価します。循環参照、共有依存、同時インポート、失敗したモジュールの再インポートでも、同じ文書の評価結果を共有します。
-- `Promise` の生成、`resolve/reject`、`then/catch/finally`、`all/allSettled/race/any`、`withResolvers/try` を実装しています。引数には配列など現在対応する反復可能値を使います。Promiseのサブクラス、`Symbol.species`、汎用コンストラクターへの組み込みメソッド転用は未対応です。
+- `Promise` の生成、`resolve/reject`、`then/catch/finally`、`all/allSettled/race/any`、`withResolvers/try` を実装しています。引数には配列など現在対応する反復可能値を使います。`class Task extends Promise {}` の `Task.resolve(1)` はTaskを返し、`.then()` と `.finally()` は `Symbol.species` に従います。静的メソッドを `.call()` で別のコンストラクターにも適用できます。
 - `await` はPromise、thenable、通常値を受け取ります。例外と `finally`、右辺に `await` を含む代入・短絡評価にも対応します。捕捉されなかった拒否はDartのZoneへエラーを通知します。HTMLの `unhandledrejection` / `rejectionhandled` イベントは未実装です。
 
 ### ECMAScriptの数値・BigInt
@@ -341,7 +341,7 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 | Date | 時刻値、TimeClip、ISO形式と生成したUTC／ローカル形式の解析、UTC／ローカルのget/set、ISO・UTC文字列、JSON変換、無効日時、年0〜99の変換 |
 | RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し、RegExp.escape、compile。`v` はリテラルと実行時のパターン文字列に対応し、文字集合の積・差、文字列集合、絵文字プロパティを扱います。 |
 | SharedArrayBufferとAtomics | 単一のFlutter isolate内でのバッファ共有、grow、slice、整数・BigIntの原子的な読み書き、waitAsyncのタイムアウトとnotify。FlutterのUIエージェントは同期waitを拒否。 |
-| 組み込み型の派生クラス | 既定コンストラクターのクラス宣言・クラス式。Date、RegExp、ArrayBuffer、SharedArrayBuffer、DataView、TypedArray各型の内部データと派生プロトタイプを保持。`slice` などのバッファ・TypedArray操作でSymbol.speciesを参照。 |
+| 組み込み型の派生クラス | 既定コンストラクターのクラス宣言・クラス式。Promise、Map、Set、WeakMap、WeakSet、Boolean、Number、String、Error各種、Date、RegExp、ArrayBuffer、SharedArrayBuffer、DataView、TypedArray各型の内部データと派生プロトタイプを保持。`slice` などのバッファ・TypedArray操作でSymbol.speciesを参照。 |
 
 5機能を組み合わせて、HTMLのボタンから非同期にバイナリデータを集計するサンプルは [benchmarks/ecmascript/index.html](benchmarks/ecmascript/index.html) にあります。
 

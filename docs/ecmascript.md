@@ -14,9 +14,9 @@
 | 数値、日時、文字列 | Number/Math/BigIntの境界とメタデータ、Dateの実装依存の旧式書式・時刻規則、ロケール依存の完全な照合・大小文字変換、Unicodeの網羅検証。Unicode 17.0のString.normalize、String.raw、コード単位・コードポイント、検索・抽出・パディング等は対応 |
 | RegExp | 重複する名前付きグループ、Speciesと汎用メソッド、最新Unicodeや全キャプチャ条件の差。vリテラルと動的なパターンの集合演算に対応 |
 | インデックス付きコレクション | 配列の継承、穴・length・Speciesの細部、TypedArrayの全変換順・記述子・全メソッドの派生型。Array.fromAsyncと不足していた配列メソッド、Uint8ArrayのBase64・16進変換は対応 |
-| キー付き・弱参照コレクション | Map/Set/WeakMap/WeakSetの細部、弱参照のGCや後始末の時機、派生型の細部。WeakRefとFinalizationRegistryの基本APIに対応。Map・WeakMapのgetOrInsert/getOrInsertComputedは対応 |
+| キー付き・弱参照コレクション | Map/Set/WeakMap/WeakSetの例外・副作用順序の全条件、弱参照のGCや後始末の時機。各コレクションの構築時に派生プロトタイプを使用し、上書きしたset・addを初期値にも適用。WeakRefとFinalizationRegistryの基本APIに対応。Map・WeakMapのgetOrInsert/getOrInsertComputedは対応 |
 | バイナリデータとメモリモデル | 複数Agentで共有するSharedArrayBuffer・ブロッキングAtomics.wait、ArrayBuffer新APIとSpecies、バッファ制限。単一Agent用のSharedArrayBufferとAtomicsは今回の変更で対応 |
-| 非同期・反復 | AsyncIteratorの全仕様、Promiseの派生型・Species・ジョブ順の全ケース。同期Iteratorのzip、zipKeyed、map、filter、flatMap、take、drop、reduce、includes、joinなど、非同期IteratorのSymbol.asyncDispose、DisposableStackとAsyncDisposableStackは対応 |
+| 非同期・反復 | AsyncIteratorの全仕様、Promiseのジョブ順・Realm境界を含む全条件の検証。Promiseの派生クラス、then・finallyでのSpecies選択、静的メソッドの汎用呼び出しに対応。同期Iteratorのzip、zipKeyed、map、filter、flatMap、take、drop、reduce、includes、joinなど、非同期IteratorのSymbol.asyncDispose、DisposableStackとAsyncDisposableStackは対応 |
 | JSON、追加仕様 | 任意のホストフックとAnnex Bの残り。JSON.rawJSON/isRawJSONとreviverのcontext.sourceは対応。ECMA-402のIntlやHTMLのWorkerは各別仕様 |
 
 実装の参照元は [V8のTypedArray構築とSpecies](https://github.com/v8/v8/blob/main/src/builtins/typed-array-createtypedarray.tq)、 [V8の文字クラス集合パーサー](https://chromium.googlesource.com/v8/v8.git/+/refs/heads/lkgr/src/regexp/regexp-parser.cc)、[regexpu-core](https://github.com/mathiasbynens/regexpu-core)、[QuickJS](https://github.com/bellard/quickjs/blob/master/quickjs.c)、適合試験は [Test262](https://github.com/tc39/test262) です。regexpu-coreは変換機としてビルド時に使用します。
