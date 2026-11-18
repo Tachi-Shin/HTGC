@@ -37,11 +37,11 @@ class JArrayBuffer extends JObject {
   }
 }
 
-final jArrayBufferPrototype = JObject();
-final jDataViewPrototype = JObject();
-final jTypedArrayPrototype = JObject();
-final jTypedPrototypes = <String, JObject>{};
-final jTypedConstructors = <String, JFunction>{};
+JObject get jArrayBufferPrototype => JRealm.current.arrayBufferPrototype;
+JObject get jDataViewPrototype => JRealm.current.dataViewPrototype;
+JObject get jTypedArrayPrototype => JRealm.current.typedArrayPrototype;
+Map<String, JObject> get jTypedPrototypes => JRealm.current.typedPrototypes;
+Map<String, JFunction> get jTypedConstructors => JRealm.current.typedConstructors;
 const jElementSizes = {
   'Int8Array': 1,
   'Uint8Array': 1,

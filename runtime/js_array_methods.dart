@@ -1,7 +1,8 @@
 part of 'js_core.dart';
 
-final jArrayMethods = jBuildArrayMethods();
-final jArrayPrototypeObject = JObject(Map<String, dynamic>.of(jArrayMethods))
+Map<String, JFunction> get jArrayMethods => JRealm.current.arrayMethods;
+JObject get jArrayPrototypeObject => JRealm.current.arrayPrototypeObject;
+JObject _buildRealmArrayPrototypeObject() => JObject(Map<String, dynamic>.of(jArrayMethods))
   ..symbols[jSymbols['unscopables']!] = JObject.root({
     for (final name in const [
       'at', 'copyWithin', 'entries', 'fill', 'find', 'findIndex', 'findLast',

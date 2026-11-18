@@ -315,7 +315,9 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 
 子文書は自身のDOM・CSS計算・スクリプトスコープ・スクロール位置を持ち、メディア条件には埋め込み領域の寸法を使います。子のリンクを押しても親文書は遷移しません。`contentDocument`、`contentWindow.document` と子文書の読み込み後の `load` 通知を実装しています。自分自身・祖先への循環埋め込みは空文書にします。
 
-現在の対象は入力ルート内のHTMLと画像です。外部サイト、sandbox/credentialless、Permissions Policy、完全なWindowProxy/Realm分離、親文書との `postMessage`、実行中に新しい `srcdoc` をコンパイルする機能は未実装です。外部サイトとsandbox/credentiallessの指定は変換エラーにします。
+親ページと各iframeのJavaScriptは個別のRealmで動作します。親でObject.prototypeを書き換えても子のオブジェクトには波及せず、子の関数は親から呼び出しても子のグローバル環境を参照します。
+
+現在の対象は入力ルート内のHTMLと画像です。外部サイト、sandbox/credentialless、Permissions Policy、ナビゲーションをまたいだWindowProxyの同一性、親文書との `postMessage`、実行中に新しい `srcdoc` をコンパイルする機能は未実装です。外部サイトとsandbox/credentiallessの指定は変換エラーにします。
 
 ### FlutterのJavaScript組み込みオブジェクト
 

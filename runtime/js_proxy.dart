@@ -4,7 +4,8 @@ bool jIsObject(dynamic value) => value is JObject || value is List;
 bool jExtensible(dynamic value) =>
     value is JObject ? value.extensible : value is List;
 dynamic jPrototype(dynamic value) =>
-    value is JObject ? value.prototype : jObjectPrototype;
+    value is JObject ? value.prototype :
+    value is List ? jArrayRealm(value).arrayPrototypeObject : jObjectPrototype;
 JProxy? jProxyState(dynamic value) => value is JProxy
     ? value
     : value is JProxyFunction

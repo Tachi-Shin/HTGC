@@ -125,6 +125,24 @@ Future<void> main() => runZoned(runTest,
 Future<void> runTest() async {
   final scope = JScope();
   installJSBuiltins(scope);
+  JObject hostFor(JScope globals) {
+    final host = JObject({'global': globals.globalThisValue});
+    host.properties['createRealm'] = jBuiltin((_) => JRealm().run(() {
+      final root = JScope();
+      installJSBuiltins(root);
+      return hostFor(JScope.script(root));
+    }));
+    host.properties['evalScript'] = jBuiltin((args) {
+      final scriptScope = globals.scriptGlobalScope;
+      final parser = _RuntimeEvalParser(jString(jArg(args, 0)), scriptScope, globals.globalThisValue);
+      final statements = parser.parse();
+      parser.instantiate();
+      return _runRuntimeStatements(statements);
+    });
+    globals.root.defineGlobal(r'$262', host);
+    return host;
+  }
+  hostFor(scope);
   final done = Completer<void>();
   final assertFn = jNative((a) {
     if (!jTruthy(jArg(a, 0))) throw StateError('assert: ${jString(jArg(a, 1))}');

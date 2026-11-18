@@ -246,7 +246,9 @@ class NativeSiteState extends State<NativeSiteApp>
     return el;
   }
 
-  void load(String path) {
+  void load(String path) => JRealm().run(() => _loadDocument(path));
+
+  void _loadDocument(String path) {
     final route = modalRoute;
     if (route != null && route.isActive) route.navigator?.removeRoute(route);
     loading = true;

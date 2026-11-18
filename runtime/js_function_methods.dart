@@ -1,6 +1,6 @@
 part of 'js_core.dart';
 
-final JFunction jFunctionPrototype = jBuildFunctionPrototype();
+JFunction get jFunctionPrototype => JRealm.current.functionPrototype;
 
 class JBoundFunction extends JFunction {
   final JFunction target;
@@ -104,7 +104,18 @@ bool jOrdinaryHasInstance(JFunction function, dynamic instance) {
 class JDynamicFunctionConstructor extends JFunction {
   final String kind;
   JDynamicFunctionConstructor(JScope scope, [this.kind = 'normal'])
-    : super((args, _) => jRuntimeFunction(scope, args, kind));
+    : super(
+        (args, _) => jRuntimeFunction(scope, args, kind),
+        constructWithTarget: (args, target) {
+          final function = jRuntimeFunction(scope, args, kind);
+          return function..prototype = jPrototypeFromConstructor(target, switch (kind) {
+            'generator' => jGeneratorFunctionPrototype,
+            'asyncGenerator' => jAsyncGeneratorFunctionPrototype,
+            'async' => jAsyncFunctionPrototype,
+            _ => jFunctionPrototype,
+          });
+        },
+      );
 }
 
 class JEvalFunction extends JFunction {
@@ -125,7 +136,7 @@ dynamic jCompiledEval(
   dynamic Function() body, {
   dynamic receiver = jUndefined,
 }) {
-  if (callee is JEvalFunction) return body();
+  if (callee is JEvalFunction && identical(callee.realm, JRealm.current)) return body();
   return jCall(callee, args, receiver: receiver);
 }
 
@@ -137,14 +148,15 @@ dynamic jCompiledFunction(
   String kind = 'normal',
   dynamic receiver = jUndefined,
 }) {
-  if (callee is JDynamicFunctionConstructor && callee.kind == kind)
+  if (callee is JDynamicFunctionConstructor && callee.kind == kind && identical(callee.realm, JRealm.current))
     return body();
   return construct
       ? jNew(callee, args)
       : jCall(callee, args, receiver: receiver);
 }
 
-final JObject jAsyncFunctionPrototype = JObject()
+JObject get jAsyncFunctionPrototype => JRealm.current.asyncFunctionPrototype;
+JObject _buildRealmAsyncFunctionPrototype() => JObject()
   ..prototype = jFunctionPrototype;
 
 JFunction jAsyncFunction(JFunction function) {
@@ -242,7 +254,8 @@ class JMappedArguments extends JObject {
   }
 }
 
-final _throwArgumentsCallee = jBuiltin(
+JFunction get _throwArgumentsCallee => JRealm.current.throwArgumentsCallee;
+JFunction _buildRealmThrowArgumentsCallee() => jBuiltin(
   (_) => throw JThrown(JError('TypeError', 'Restricted arguments.callee')),
 );
 

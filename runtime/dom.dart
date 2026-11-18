@@ -4,6 +4,7 @@ import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html;
 
 class JDomRuntime {
+  final JRealm realm = JRealm.current;
   final dom.Document document;
   final Map<String, String> storage;
   final void Function()? onMutation;
@@ -37,7 +38,7 @@ class JDomRuntime {
     }
   }
   JDomNode wrap(dom.Node node) =>
-      _nodes.putIfAbsent(node, () => JDomNode(this, node));
+      _nodes.putIfAbsent(node, () => realm.run(() => JDomNode(this, node)));
   void changed() => onMutation?.call();
 
   dom.DocumentFragment templateContent(dom.Element template) =>

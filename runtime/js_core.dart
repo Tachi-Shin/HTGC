@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:collection';
 import 'dart:typed_data';
+part 'js_realm.dart';
 part 'js_date.dart';
 part 'js_proxy.dart';
 part 'js_binary.dart';
@@ -58,7 +59,7 @@ class JError extends JObject {
   }
 }
 
-final Map<String, JObject> jErrorPrototypes = {};
+Map<String, JObject> get jErrorPrototypes => JRealm.current.errorPrototypes;
 
 // Hosts can observe unhandled promise rejections independently of uncaught throws.
 final jPromiseRejectionHook = Object();
@@ -212,7 +213,8 @@ class JPromise extends JObject {
   }
 }
 
-final JObject jPromisePrototype = JObject({
+JObject get jPromisePrototype => JRealm.current.promisePrototype;
+JObject _buildRealmPromisePrototype() => JObject({
   'constructor': jPromiseConstructor,
   'then': jBuiltinMethod('then', 2, (a, receiver) {
     if (receiver is! JPromise)
@@ -319,7 +321,7 @@ dynamic jPromiseAggregate(String mode, dynamic iterable, dynamic constructor) {
   return result.promise;
 }
 
-final JFunction jPromiseConstructor = buildJSPromiseConstructor();
+JFunction get jPromiseConstructor => JRealm.current.promiseConstructor;
 
 JFunction buildJSPromiseConstructor() {
   final constructor = JFunction(
@@ -789,6 +791,7 @@ class JPropertyFlags {
 }
 
 class JObject {
+  final JRealm realm = JRealm.current;
   final Map<String, dynamic> properties;
   final Map<JSymbol, dynamic> symbols = {};
   final Map<Object, JFunction> getters = {}, setters = {};
@@ -803,7 +806,7 @@ class JObject {
     : properties = properties ?? {},
       _nullPrototype = true;
   JObject? get prototype =>
-      _prototype ?? (_nullPrototype ? null : jObjectPrototype);
+      _prototype ?? (_nullPrototype ? null : realm.objectPrototype);
   set prototype(JObject? value) {
     _prototype = value;
     _nullPrototype = value == null;
@@ -1139,7 +1142,8 @@ bool jSetPrototype(JObject object, dynamic prototype) {
   return true;
 }
 
-final JObject jObjectPrototype = JObject.root({
+JObject get jObjectPrototype => JRealm.current.objectPrototype;
+JObject _buildRealmObjectPrototype() => JObject.root({
   'hasOwnProperty': JFunction(
     (a, receiver) => jHasOwn(receiver, jPropertyKey(jArg(a, 0))),
     constructible: false,
@@ -1567,7 +1571,7 @@ class JFunction extends JObject {
 
   @override
   JObject? get prototype =>
-      _prototype ?? (_nullPrototype ? null : jFunctionPrototype);
+      _prototype ?? (_nullPrototype ? null : realm.functionPrototype);
 }
 
 JFunction jNative(dynamic Function(List<dynamic>) callback) =>
@@ -1581,9 +1585,8 @@ JFunction jFunction(dynamic Function(List<dynamic>, dynamic, dynamic) body) {
   function = JFunction(
     (args, receiver) => body(args, receiver, jUndefined),
     constructWithTarget: (arguments, newTarget) {
-      final prototype = jGet(newTarget, 'prototype');
       final instance = JObject()
-        ..prototype = prototype is JObject ? prototype : jObjectPrototype;
+        ..prototype = jPrototypeFromConstructor(newTarget, jObjectPrototype);
       final result = body(arguments, instance, newTarget);
       return result is JObject || result is List ? result : instance;
     },
@@ -1685,7 +1688,11 @@ JClass jDefaultClass(
 
 JObject jPrototypeFromConstructor(dynamic newTarget, JObject fallback) {
   final prototype = jGet(newTarget, 'prototype');
-  return prototype is JObject ? prototype : fallback;
+  if (prototype is JObject) return prototype;
+  final realm = jFunctionRealm(newTarget as JFunction);
+  if (identical(realm, fallback.realm)) return fallback;
+  final name = fallback.realm._prototypeNames[fallback];
+  return realm._prototypes[name] ?? fallback;
 }
 
 JObject Function(List<dynamic>, dynamic) jBuiltinAllocator(
@@ -2105,10 +2112,10 @@ double jInteger(dynamic value) {
   return number.isNaN || number == 0 ? 0.0 : number.truncateToDouble();
 }
 
-final JObject jNumberPrototype = JObject();
-final JObject jBigIntPrototype = JObject();
-final JObject jStringPrototype = JObject();
-final JObject jBooleanPrototype = JObject();
+JObject get jNumberPrototype => JRealm.current.numberPrototype;
+JObject get jBigIntPrototype => JRealm.current.bigIntPrototype;
+JObject get jStringPrototype => JRealm.current.stringPrototype;
+JObject get jBooleanPrototype => JRealm.current.booleanPrototype;
 
 void installJSPrimitiveWrappers(JScope scope) {
   dynamic stringValue(List<dynamic> a, {bool construct = false}) => a.isEmpty
@@ -2505,7 +2512,10 @@ dynamic jCall(
 }) {
   if (identical(fn, jShortCircuit)) return jShortCircuit;
   if (optional && jNullish(fn)) return jShortCircuit;
-  if (fn is JFunction) return fn.invoke(args, receiver);
+  if (fn is JFunction) {
+    if (identical(fn.realm, JRealm.current)) return jRealmValue(fn.invoke(args, receiver));
+    return fn.realm.run(() => jRealmValue(fn.invoke(args, receiver)));
+  }
   throw JThrown(JError('TypeError', 'Value is not callable'));
 }
 
@@ -2523,6 +2533,9 @@ dynamic jInvoke(
 );
 dynamic jNew(dynamic constructor, List<dynamic> args, {dynamic newTarget}) {
   newTarget ??= constructor;
+  if (constructor is JFunction && !identical(constructor.realm, JRealm.current)) {
+    return constructor.realm.run(() => jNew(constructor, args, newTarget: newTarget));
+  }
   if (constructor is JBoundFunction && constructor.constructible) {
     return jNew(
       constructor.target,
@@ -2540,14 +2553,14 @@ dynamic jNew(dynamic constructor, List<dynamic> args, {dynamic newTarget}) {
     if (!constructor.constructible)
       throw JThrown(JError('TypeError', 'Not a constructor'));
     if (constructor.constructWithTarget != null)
-      return constructor.constructWithTarget!(args, newTarget);
+      return jRealmValue(constructor.constructWithTarget!(args, newTarget));
     if (!identical(newTarget, constructor))
       throw UnsupportedError(
         'Custom newTarget for built-in constructors is not implemented',
       );
     return constructor.construct == null
         ? jCall(constructor, args)
-        : constructor.construct!(args);
+        : jRealmValue(constructor.construct!(args));
   }
   throw JThrown(JError('TypeError', 'Value is not a constructor'));
 }
@@ -2572,7 +2585,7 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
     if (identical(property, jSymbols['iterator']) &&
         (value is List || value is String))
       return jNative((_) => jBuiltinIterator(value));
-    if (value is List) return jArrayPrototypeObject.read(property, value);
+    if (value is List) return jArrayRealm(value).arrayPrototypeObject.read(property, value);
     return jUndefined;
   }
   final name = property as String;
@@ -2584,8 +2597,8 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
       return i >= 0 && i < value.length && !identical(value[i], _jHole)
           ? value[i]
           : jUndefined;
-    final method = jArrayMethods[name];
-    if (method != null) return method;
+    final prototype = jArrayRealm(value).arrayPrototypeObject;
+    if (prototype.own(name) && name != 'length') return prototype.read(name, value);
     switch (name) {
       case 'valueOf':
         return jNative((_) => value);
@@ -3112,10 +3125,11 @@ void installJSBuiltins(JScope scope, {JObject? globalObject}) {
       }),
     }),
   );
+  JRealm.current._recordPrototypes(scope._values);
   scope.attachGlobal(globalObject ?? JObject());
 }
 
-final _jBuiltinIteratorPrototypes = <String, JObject>{};
+Map<String, JObject> get _jBuiltinIteratorPrototypes => JRealm.current.builtinIteratorPrototypes;
 
 JObject jBuiltinIteratorPrototype(String kind) =>
     _jBuiltinIteratorPrototypes.putIfAbsent(kind, () {
@@ -3353,7 +3367,7 @@ void installJSObjects(JScope scope) {
         throw JThrown(
           JError('TypeError', 'Cannot get prototype of null or undefined'),
         );
-      return jRequireObject(jObject(a[0])).prototype;
+      return jPrototype(jObject(a[0]));
     }),
     'setPrototypeOf': jNative((a) {
       final target = jRequireObject(jArg(a, 0));
@@ -3478,7 +3492,11 @@ void installJSObjects(JScope scope) {
         (a) =>
             jDescriptor(jRequireObject(jArg(a, 0)), jPropertyKey(jArg(a, 1))),
       ),
-      'getPrototypeOf': jNative((a) => jRequireObject(jArg(a, 0)).prototype),
+      'getPrototypeOf': jNative((a) {
+        final value = jArg(a, 0);
+        if (!jIsObject(value)) throw JThrown(JError('TypeError', 'Reflect.getPrototypeOf requires an object'));
+        return jPrototype(value);
+      }),
       'setPrototypeOf': jNative(
         (a) => jSetPrototype(jRequireObject(jArg(a, 0)), jArg(a, 1)),
       ),
@@ -3670,8 +3688,8 @@ JObject jBuildMapPrototype(bool set) {
   return prototype;
 }
 
-final JObject jMapPrototype = jBuildMapPrototype(false);
-final JObject jSetPrototypeObject = jBuildMapPrototype(true);
+JObject get jMapPrototype => JRealm.current.mapPrototype;
+JObject get jSetPrototypeObject => JRealm.current.setPrototypeObject;
 
 class JSetRecord {
   final dynamic object, has, keys;
@@ -3817,8 +3835,8 @@ JObject jBuildWeakPrototype(bool set) {
   return prototype;
 }
 
-final JObject jWeakMapPrototype = jBuildWeakPrototype(false);
-final JObject jWeakSetPrototype = jBuildWeakPrototype(true);
+JObject get jWeakMapPrototype => JRealm.current.weakMapPrototype;
+JObject get jWeakSetPrototype => JRealm.current.weakSetPrototype;
 
 void jBuiltinProperties(JObject object) {
   for (final key in jOwnKeys(object)) {

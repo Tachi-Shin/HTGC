@@ -13,8 +13,8 @@ void jKeepDuringJob(Object target) {
   });
 }
 
-final JObject jWeakRefPrototype = JObject();
-final JObject jFinalizationRegistryPrototype = JObject();
+JObject get jWeakRefPrototype => JRealm.current.weakRefPrototype;
+JObject get jFinalizationRegistryPrototype => JRealm.current.finalizationRegistryPrototype;
 
 class JWeakRef extends JObject {
   final WeakReference<Object> target;

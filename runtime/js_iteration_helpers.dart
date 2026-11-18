@@ -35,7 +35,8 @@ JIteratorRecord jIteratorFlattenable(
   );
 }
 
-final jIteratorHelperPrototype = JObject()
+JObject get jIteratorHelperPrototype => JRealm.current.iteratorHelperPrototype;
+JObject _buildRealmIteratorHelperPrototype() => JObject()
   ..prototype = jIteratorPrototype
   ..symbols[jSymbols['toStringTag']!] = 'Iterator Helper'
   ..properties['next'] = jBuiltinMethod('next', 0, (_, receiver) {
@@ -381,7 +382,8 @@ JIteratorHelper jIteratorConcat(List<dynamic> args) {
   }, (suppress) => active?.close(suppressErrors: suppress));
 }
 
-final JFunction jIteratorConstructor = jNamedFunction(
+JFunction get jIteratorConstructor => JRealm.current.iteratorConstructor;
+JFunction _buildRealmIteratorConstructor() => jNamedFunction(
   JFunction(
     (_, __) => throw JThrown(JError('TypeError', 'Iterator requires new')),
     constructWithTarget: (_, target) {
@@ -396,7 +398,7 @@ final JFunction jIteratorConstructor = jNamedFunction(
   0,
 );
 
-final jIteratorPrototype = _jBuildIteratorPrototype();
+JObject get jIteratorPrototype => JRealm.current.iteratorPrototype;
 
 JObject _jBuildIteratorPrototype() {
   final prototype = JObject({

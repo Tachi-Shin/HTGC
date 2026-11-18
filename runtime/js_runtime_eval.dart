@@ -1460,7 +1460,7 @@ class _RuntimeEvalParser {
     }
     if (take('[')) {
       final elements = expressionList(']', holes: true);
-      return _EvalExpr(() => evaluateList(elements));
+      return _EvalExpr(() => jRealmValue(evaluateList(elements)));
     }
     if (take('{')) return objectLiteral();
     if (take('super')) {
@@ -1638,7 +1638,7 @@ dynamic jDirectRuntimeEval(
   dynamic newTarget = _noNewTarget,
   JObject? home,
   dynamic receiver = jUndefined,
-}) => callee is JEvalFunction
+}) => callee is JEvalFunction && identical(callee.realm, JRealm.current)
     ? jRuntimeEval(
         jArg(args, 0),
         scope,

@@ -120,7 +120,8 @@ class JGenerator extends JObject {
   }
 }
 
-final JObject jAsyncIteratorPrototype = () {
+JObject get jAsyncIteratorPrototype => JRealm.current.asyncIteratorPrototype;
+JObject _buildRealmAsyncIteratorPrototype() => () {
   final prototype = JObject();
   prototype.symbols[jSymbols['asyncIterator']!] = jBuiltinMethod(
     '[Symbol.asyncIterator]',
@@ -169,8 +170,8 @@ JObject jBuildGeneratorPrototype(bool asynchronous) {
   return prototype;
 }
 
-final jGeneratorPrototype = jBuildGeneratorPrototype(false);
-final jAsyncGeneratorPrototype = jBuildGeneratorPrototype(true);
+JObject get jGeneratorPrototype => JRealm.current.generatorPrototype;
+JObject get jAsyncGeneratorPrototype => JRealm.current.asyncGeneratorPrototype;
 JObject jBuildGeneratorFunctionPrototype(bool asynchronous) {
   final generator = asynchronous
       ? jAsyncGeneratorPrototype
@@ -192,8 +193,8 @@ JObject jBuildGeneratorFunctionPrototype(bool asynchronous) {
   return prototype;
 }
 
-final jGeneratorFunctionPrototype = jBuildGeneratorFunctionPrototype(false);
-final jAsyncGeneratorFunctionPrototype = jBuildGeneratorFunctionPrototype(true);
+JObject get jGeneratorFunctionPrototype => JRealm.current.generatorFunctionPrototype;
+JObject get jAsyncGeneratorFunctionPrototype => JRealm.current.asyncGeneratorFunctionPrototype;
 
 class JAsyncIteratorRecord {
   final dynamic object, next;

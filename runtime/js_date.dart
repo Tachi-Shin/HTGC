@@ -14,7 +14,7 @@ class JDate extends JObject {
   JDate.prototype() : time = double.nan;
 }
 
-final jDatePrototype = JDate.prototype();
+JDate get jDatePrototype => JRealm.current.datePrototype;
 const jMonths = [
   'Jan',
   'Feb',

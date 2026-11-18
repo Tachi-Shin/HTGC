@@ -4,7 +4,7 @@
 
 | 仕様の領域 | 未実装、または一部だけ実装している機能 |
 | --- | --- |
-| 実行コンテキスト、Realm、Agent | Realmごとのintrinsic・プロトタイプ・エラーの分離、グローバル宣言の競合やホスト仕様の残り、複数Agentとメモリモデル。globalThisとWindowの同一性、通常スクリプト間のvar・関数・字句束縛の共有、モジュールの字句束縛の分離は対応 |
+| 実行コンテキスト、Realm、Agent | 文書ごとにグローバル環境と組み込みを分離。Realm間の全呼び出し・ジョブの検証、グローバル宣言の競合、複数Agentとメモリモデルが残る。globalThisとWindowの同一性、通常スクリプト間のvar・関数・字句束縛の共有、モジュールの字句束縛の分離は対応 |
 | 宣言と関数 | 非strictスクリプトの残りの規則、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunction/AsyncGeneratorFunctionコンストラクターとevalの構文・意味の大部分。実行時評価の対応範囲を下記に記載 |
 | クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
 | 式と文 | 細部の評価順と例外。非strictのwith、Symbol.unscopables、オブジェクト環境に束縛された関数のthisに対応。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
@@ -25,7 +25,7 @@
 
 2026-11-17の追加分では、イテレーターの共通プロトタイプ、Iterator.from／concat、同期ヘルパー、using／await usingとDisposableStack系、ローカルJSONモジュール、import.meta、String.normalizeを追加しました。正規化データはUnicode 17.0.0のUCDに基づき、生成スクリプトは `tools/generate_normalization.py`、利用条件は `runtime/UNICODE-LICENSE.txt` にあります。
 
-`import.meta.url` はHTGCの入力ルートを基準とした `htgc://local/` URLです。JSONモジュールは変換時に対象ファイルを収集します。動的importでは変換済みモジュールを利用し、`with: {type: 'json'}` を検証します。複数Realm、動的なコード評価の大部分、変換後に追加されたモジュールの読み込み、複数Agentの共有メモリなどは引き続き未実装です。Iterator・リソース管理の仕様全体に対する適合性検証も継続中です。
+`import.meta.url` はHTGCの入力ルートを基準とした `htgc://local/` URLです。JSONモジュールは変換時に対象ファイルを収集します。動的importでは変換済みモジュールを利用し、`with: {type: 'json'}` を検証します。Realmをまたぐ全操作の適合性確認、実行時パーサーの未対応構文、変換後に追加されたモジュールの読み込み、複数Agentの共有メモリなどは引き続き未実装です。Iterator・リソース管理の仕様全体に対する適合性検証も継続中です。
 
 同期Iteratorの `zip`／`zipKeyed` は仕様ドラフトの `shortest`、`longest`、`strict` モードとpaddingに対応します。非同期ジェネレーターは `Symbol.asyncDispose` で終了できます。追加のTest262は同梱ハーネスで実行できるケースを選択しています。
 
@@ -35,7 +35,7 @@
 
 直接evalにおける空の文・ブロック、条件分岐、ループ、switch、try/finallyの評価完了値を拡充しました。スクリプトの全構文に対する完了値の適合性は未検証です。
 
-通常のHTMLスクリプトでは、globalThisとwindowが同じオブジェクトを指します。globalThisへのプロパティ変更はグローバル識別子に反映され、varと関数宣言は後続スクリプトと共有されます。let・const・classはグローバルオブジェクトのプロパティを作らず、後続の通常スクリプトとモジュールから参照できます。組み込みプロトタイプのRealmごとの分離、全グローバル宣言の競合、非strictの仕様は未完です。
+通常のHTMLスクリプトでは、globalThisとwindowが同じオブジェクトを指します。globalThisへのプロパティ変更はグローバル識別子に反映され、varと関数宣言は後続スクリプトと共有されます。let・const・classはグローバルオブジェクトのプロパティを作らず、後続の通常スクリプトとモジュールから参照できます。ページを読み込むたびに新しいRealmを作ります。同一文書のスクリプトは組み込みを共有し、iframeには個別のObject・Function・Promise・エラーなどを用意します。親から子の関数を呼んだ場合も関数を生成したRealmを使います。well-known SymbolとSymbol.forのレジストリは同一Agentで共有します。
 
 `WeakRef` と `FinalizationRegistry` はDartの弱参照とファイナライザーを使用します。参照対象の回収と後始末の実行時機はDartのGCとホストに依存し、ECMAScriptのジョブ境界やGCに関わる全条件は未検証です。
 

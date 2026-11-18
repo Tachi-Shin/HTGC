@@ -213,7 +213,7 @@ class GeneratorCompiler(Compiler):
             return temp
         if kind == 'ArrayExpression':
             result = self.name('garray')
-            self.prelude.append(f'final {result} = <dynamic>[];')
+            self.prelude.append(f'final {result} = jRealmValue(<dynamic>[]);')
             for item in node['elements']:
                 value = '_jHole' if item is None else self.expr(item['argument'] if item['type'] == 'SpreadElement' else item)
                 self.prelude.append(f'{result}.addAll(jIterable({value}));' if item and item['type'] == 'SpreadElement' else f'{result}.add({value});')

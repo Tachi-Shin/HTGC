@@ -600,7 +600,7 @@ class Compiler:
                     if item and item["type"] == "SpreadElement"
                     else self.expr(item) if item is not None else "_jHole"
                 )
-            return "<dynamic>[" + ", ".join(parts) + "]"
+            return "jRealmValue(<dynamic>[" + ", ".join(parts) + "])"
         if t == "ObjectExpression":
             parts = []
             for p in n["properties"]:

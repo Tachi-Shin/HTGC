@@ -13,7 +13,7 @@ bool jIsPaired(String source, int index) {
       jHighSurrogate(source.codeUnitAt(index - 1));
 }
 
-final jStringMethods = jBuildStringMethods();
+Map<String, JFunction> get jStringMethods => JRealm.current.stringMethods;
 
 Map<String, JFunction> jBuildStringMethods() {
   final methods = <String, JFunction>{};

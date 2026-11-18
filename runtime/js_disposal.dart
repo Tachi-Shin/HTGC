@@ -225,8 +225,9 @@ JFunction jDisposableStackConstructor(String name, bool asynchronous) {
   return constructor;
 }
 
-final jDisposableStack = jDisposableStackConstructor('DisposableStack', false);
-final jAsyncDisposableStack = jDisposableStackConstructor(
+JFunction get jDisposableStack => JRealm.current.disposableStack;
+JFunction get jAsyncDisposableStack => JRealm.current.asyncDisposableStack;
+JFunction _buildRealmAsyncDisposableStack() => jDisposableStackConstructor(
   'AsyncDisposableStack',
   true,
 );

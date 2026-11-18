@@ -3,7 +3,7 @@ part of 'js_core.dart';
 class JArray extends ListBase<dynamic> {
   final List<dynamic> items;
   final JObject extra = JObject();
-  JArray(this.items);
+  JArray(this.items) { jArrayRealm(this); }
   @override
   int get length => items.length;
   @override
@@ -20,7 +20,7 @@ class JArray extends ListBase<dynamic> {
   }
 }
 
-final jRegExpPrototype = JObject();
+JObject get jRegExpPrototype => JRealm.current.regExpPrototype;
 
 class JRegex extends JObject {
   String pattern, flagText;
