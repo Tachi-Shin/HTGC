@@ -46,6 +46,17 @@ function test() {
     'let temp = value + 1; temp * 2',
     'const temp = 3, other = temp + 1; other',
     '1; let temp;',
+    'let i = 0, sum = 0; while (i < 4) { let n = ++i; if (n === 2) continue; sum += n }; sum',
+    'let i = 0; do { i++ } while (i < 3); i',
+    'let i, sum = 0; for (i = 0; i < 5; i++) { if (i === 1) continue; if (i === 4) break; sum += i }; sum',
+    'while (true) { 42; break; }',
+    'while (true) { 42; try { 5 } finally { break; } }',
+    'try { throw 8 } catch (error) { let result = error + 1; result } finally { 99 }',
+    'try { throw 8 } catch { 6 }',
+    'try { missing } catch (error) { error.name }',
+    'let i = 0; while (i < 3) { try { i++; continue; } finally { i++ } }; i',
+    'value = 99; break;',
+    'value = 99; try {} catch (error) { let error; }',
     'let temp = 3; { let temp = 5; temp }; temp',
     'let temp = 3; { typeof temp; let temp = 5 }',
     '1; { let temp = 2 }',
@@ -86,6 +97,8 @@ body = 'if (arguments[0]) { let result = 3; return result } else { throw 5 }';
 const branch = Function(body);
 console.log(branch(true));
 try { branch(false); } catch (value) { console.log(value); }
+body = 'try { return 3 } finally { return 4 }';
+console.log(Function(body)());
 body = 'throw 17';
 try { Function(body)(); } catch (value) { console.log(value); }
 params = 'a';

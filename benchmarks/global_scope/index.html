@@ -34,7 +34,7 @@
     document.getElementById('status').textContent += ':' + String((0, eval)(source));
     function checkDynamic() { let local = 5; return eval('local' + ' + 2'); }
     document.getElementById('status').textContent += ':' + String(checkDynamic());
-    let functionBody = 'if (shared > 0) { const result = shared + localLexical; return result }';
+    let functionBody = 'if (shared > 0) { let result = shared; try { while (result < shared + localLexical) result++; return result } finally { result = 0 } }';
     document.getElementById('status').textContent += ':' + String(Function(functionBody)());
     source = 'let result = shared > 0 ? readValue() : 0; result';
     document.getElementById('status').textContent += ':' + String(eval(source));

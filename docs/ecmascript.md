@@ -51,4 +51,6 @@
 
 実行時evalのトップレベルにlet・constの単純識別子宣言を追加しました。解析完了後に束縛を予約し、TDZ・const代入・重複宣言を検証します。複数宣言と初期化式、評価値の維持に対応します。var、分割代入宣言、strict／非strictの全条件は未対応です。
 
-実行時evalと通常の動的Functionは、ブロックの字句スコープ、if／else、throwに対応します。動的Functionではlet／constと複数の文を実行し、returnで終了できます。対応する改行位置ではセミコロンを補い、use strict指令を認識してthisと仮引数の一部の規則を適用します。ループ、例外捕捉、var、仮引数の分割代入、strictと非strictの全規則などは未実装です。
+実行時evalと通常の動的Functionは、ブロックの字句スコープ、if／else、throwに対応します。動的Functionではlet／constと複数の文を実行し、returnで終了できます。対応する改行位置ではセミコロンを補い、use strict指令を認識してthisと仮引数の一部の規則を適用します。var、仮引数の分割代入、strictと非strictの全規則などは未実装です。
+
+実行時evalと通常の動的Functionでwhile、do／while、式を使うfor、ラベルなしのbreak・continue、try／catch／finally、前置・後置の++／--に対応します。forの宣言形式、for…in／of、ラベル、catchの分割代入は対象外です。
