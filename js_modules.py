@@ -3,7 +3,12 @@
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from frontend import CompileError
 from js_dart import Compiler, parse, quote
+
+
+class ModuleResolutionError(CompileError):
+    """A parsed module cannot resolve a requested export."""
 
 
 @dataclass
@@ -199,7 +204,7 @@ class DartModules:
         binding = self.resolve(target, name)
         if binding is None or binding is AMBIGUOUS:
             reason = "曖昧なエクスポート" if binding is AMBIGUOUS else "エクスポートが見つかりません"
-            module.compiler.fail({}, f"{reason}: {target} ({name})")
+            raise ModuleResolutionError(f"{module.compiler.path}: {reason}: {target} ({name})")
         return binding
 
     def emit(self):

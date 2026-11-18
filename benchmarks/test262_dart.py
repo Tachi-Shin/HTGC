@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from frontend import CompileError
 from js_dart import JavaScriptSyntaxError, compile_script, parse, quote, runtime_source
-from js_modules import DartModules
+from js_modules import DartModules, ModuleResolutionError
 
 
 # Selected synchronous exception scripts and asynchronous await scripts.
@@ -152,19 +152,21 @@ VERIFY_UNICODE_SETS = r"""  scope.define('testExtendedCharacterClass', jBuiltin(
   scope.define('testPropertyOfStrings', scope.get('testExtendedCharacterClass'));
 """
 
-ASYNC_HARNESS = r"""
-Future<void> main() => runZoned(runTest,
-    zoneValues: {jPromiseRejectionHook: (dynamic reason) {}});
-Future<void> runTest() async {
-  final scope = JScope();
-  installJSBuiltins(scope);
-  JObject hostFor(JScope globals) {
+TEST262_HOST = r"""  JObject hostFor(JScope globals) {
     final host = JObject({'global': globals.globalThisValue});
     host.properties['createRealm'] = jBuiltin((_) => JRealm().run(() {
       final root = JScope();
       installJSBuiltins(root);
       return hostFor(JScope.script(root));
     }));
+    host.properties['detachArrayBuffer'] = jBuiltin((args) {
+      final buffer = jArg(args, 0);
+      if (buffer is! JArrayBuffer || buffer is JSharedArrayBuffer) {
+        throw JThrown(JError('TypeError', 'ArrayBuffer required'));
+      }
+      buffer.detach();
+      return jUndefined;
+    });
     host.properties['evalScript'] = jBuiltin((args) {
       final scriptScope = globals.scriptGlobalScope;
       final parser = _RuntimeEvalParser(jString(jArg(args, 0)), scriptScope, globals.globalThisValue);
@@ -177,6 +179,15 @@ Future<void> runTest() async {
     return host;
   }
   hostFor(scope);
+"""
+
+ASYNC_HARNESS = r"""
+Future<void> main() => runZoned(runTest,
+    zoneValues: {jPromiseRejectionHook: (dynamic reason) {}});
+Future<void> runTest() async {
+  final scope = JScope();
+  installJSBuiltins(scope);
+__TEST262_HOST__
   final done = Completer<void>();
   final assertFn = jNative((a) {
     if (!jTruthy(jArg(a, 0))) throw StateError('assert: ${jString(jArg(a, 1))}');
@@ -255,7 +266,8 @@ __VERIFY_UNICODE_SETS__
   await done.future.timeout(const Duration(seconds: 5));
 }
 """.replace("__VERIFY_PROPERTY__\n", VERIFY_PROPERTY).replace(
-    "__VERIFY_UNICODE_SETS__\n", VERIFY_UNICODE_SETS)
+    "__VERIFY_UNICODE_SETS__\n", VERIFY_UNICODE_SETS).replace(
+    "__TEST262_HOST__\n", TEST262_HOST)
 
 BUILTIN_HARNESS = ASYNC_HARNESS.replace(
     '  await done.future.timeout(const Duration(seconds: 5));', '')
@@ -293,15 +305,165 @@ def compile_module(source, path, test_root):
     return modules.emit(), f"await jAwait(scope.modules(htgcModules).evaluate({quote(key)}))"
 
 
+def metadata_list(metadata, name):
+    field = re.search(r"^" + re.escape(name) + r":[ \t]*\[([^\]]*)\]", metadata, re.M)
+    if field:
+        return [value.strip() for value in field[1].split(",") if value.strip()]
+    block = re.search(r"^" + re.escape(name) + r":[ \t]*\n((?:[ \t]+-[ \t]+[^\n]+\n)+)", metadata, re.M)
+    return re.findall(r"^[ \t]+-[ \t]+([^\n]+)", block[1], re.M) if block else []
+
+
+def source_metadata(source):
+    return source.partition("/*---")[2].partition("---*/")[0]
+
+
+def discovered_cases(root, pattern):
+    for path in sorted(root.rglob("*.js")):
+        name = path.relative_to(root).as_posix()
+        if "_FIXTURE" in path.name or not fnmatch.fnmatch(name, pattern):
+            continue
+        flags = metadata_list(source_metadata(path.read_text(encoding="utf-8")), "flags")
+        if "module" in flags:
+            yield path, "module"
+        elif "raw" in flags:
+            yield path, "raw"
+        else:
+            if "onlyStrict" not in flags:
+                yield path, "sloppy"
+            if "noStrict" not in flags:
+                yield path, "strict"
+
+
+DISCOVERED_HARNESS = r"""
+Future<void> main() => runZoned(runTest,
+    zoneValues: {jPromiseRejectionHook: (dynamic reason) {}});
+
+Future<void> runTest() async {
+  final root = JScope();
+  installJSBuiltins(root);
+  final scope = JScope.script(root);
+__TEST262_HOST__
+  final done = Completer<void>();
+  root.defineGlobal('print', jBuiltin((args) {
+    final output = jString(jArg(args, 0));
+    if (output == 'Test262:AsyncTestComplete') {
+      done.complete();
+    } else if (output.startsWith('Test262:AsyncTestFailure:')) {
+      done.completeError(StateError(output));
+    } else {
+      print(output);
+    }
+    return jUndefined;
+  }));
+  __SETUP__
+  __EXECUTE__
+  __DONE__
+}
+""".replace("__TEST262_HOST__\n", TEST262_HOST)
+
+
+def compile_discovered(case, checkout):
+    path, mode = case
+    source = path.read_text(encoding="utf-8")
+    metadata = source_metadata(source)
+    if mode == "strict":
+        source = '"use strict";\n' + source
+    if not metadata:
+        raise CompileError("Missing Test262 metadata")
+    negative = re.search(r"^negative:[ \t]*\n((?:[ \t]+[^\n]+(?:\n|$))+)", metadata, re.M)
+    expected = dict(re.findall(r"^[ \t]+(phase|type):[ \t]*(\w+)", negative[1], re.M)) if negative else {}
+    phase, error_name = expected.get("phase", ""), expected.get("type", "")
+    if negative and (phase not in ("parse", "early", "resolution", "runtime") or not error_name):
+        raise CompileError("Unsupported Test262 negative metadata")
+    source_type = "module" if mode == "module" else "script"
+    if phase in ("parse", "early"):
+        try:
+            parse(source, path, source_type=source_type, syntax_only=True)
+        except JavaScriptSyntaxError:
+            if error_name == "SyntaxError":
+                return None, ""
+            raise
+        return None, f"Parser accepted input expecting {error_name}"
+
+    try:
+        if mode == "module":
+            code, call = compile_module(source, path, checkout / "test")
+        else:
+            code = compile_script(source, path, source_type="script")
+            call = "htgcScript(scope)"
+    except ModuleResolutionError:
+        if phase == "resolution" and error_name == "SyntaxError":
+            return None, ""
+        raise
+    if phase == "resolution":
+        return None, f"Module resolved despite expecting {error_name}"
+
+    flags = metadata_list(metadata, "flags")
+    asynchronous = "async" in flags
+    helper_code = []
+    setup = []
+    if mode != "raw":
+        helpers = ["sta.js", "assert.js", *metadata_list(metadata, "includes")]
+        if asynchronous:
+            helpers.insert(2, "doneprintHandle.js")
+        for index, name in enumerate(dict.fromkeys(helpers)):
+            helper = checkout / "harness" / name
+            function = f"htgcTestSetup{index}"
+            helper_code.append(compile_script(helper.read_text(encoding="utf-8"), helper, function, source_type="script"))
+            setup.append(f"{function}(scope);")
+    if phase == "runtime":
+        execute = (
+            f"try {{ {call}; throw StateError('Expected {error_name}'); }}"
+            f" on JThrown catch (error) {{ if (!identical(jGet(error.value, 'constructor'),"
+            f" scope.get({quote(error_name)}))) rethrow; }}"
+        )
+    else:
+        execute = f"{call};"
+    result = DISCOVERED_HARNESS.replace("__SETUP__", "\n  ".join(setup)).replace(
+        "__EXECUTE__", execute
+    ).replace(
+        "__DONE__", "await done.future.timeout(const Duration(seconds: 5));" if asynchronous else ""
+    )
+    return "\n".join([*helper_code, code, result]), ""
+
+
+def execute_dart(dart, runtime, code, output, parser):
+    output.write_text(runtime + "\n" + code, encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [dart, str(output)], capture_output=True, encoding="utf-8", timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return "FAIL", "Dart execution timed out"
+    except OSError as error:
+        parser.exit(2, f"Dart: {error}\n")
+    return ("PASS" if result.returncode == 0 else "FAIL"), result.stderr.strip()
+
+
+def report_results(cases, jobs, run_case):
+    counts = {"PASS": 0, "FAIL": 0, "UNSUPPORTED": 0}
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        for status, label, details in executor.map(run_case, enumerate(cases)):
+            counts[status] += 1
+            print(f"{status} {label}")
+            if details:
+                print(details)
+    print(", ".join(f"{count} {status}" for status, count in counts.items()))
+    return int(counts["PASS"] != len(cases))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", type=Path, help="path to a Test262 checkout")
     parser.add_argument("--dart", default="dart", help="Dart SDK executable")
     parser.add_argument("--filter", default="*", help="test path glob")
     parser.add_argument("--jobs", type=int, default=1, help="number of concurrent Dart processes")
+    parser.add_argument("--discover", action="store_true", help="discover official tests and run their declared modes")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
+    if args.discover:
+        return run_discovered(args, parser)
     tests = [(args.checkout / "test/language/statements/try" / name, HARNESS) for name in TESTS]
     tests += [(args.checkout / "test/language/expressions/await" / name, ASYNC_HARNESS)
               for name in ASYNC_TESTS]
@@ -322,7 +484,6 @@ def main():
     if missing:
         parser.error(f"Test262 files missing: {', '.join(missing)}")
     runtime = runtime_source()
-    counts = {"PASS": 0, "FAIL": 0, "UNSUPPORTED": 0}
     with TemporaryDirectory(prefix="htgc-test262-") as temporary:
         def run_case(entry):
             index, (path, harness) = entry
@@ -386,28 +547,33 @@ def main():
                 status, details = "UNSUPPORTED", str(error)
             else:
                 output = Path(temporary) / f"{index}-{path.stem}.dart"
-                output.write_text(runtime + "\n" + code + harness, encoding="utf-8")
-                try:
-                    result = subprocess.run(
-                        [args.dart, str(output)], capture_output=True,
-                        encoding="utf-8", timeout=30,
-                    )
-                    status = "PASS" if result.returncode == 0 else "FAIL"
-                    details = result.stderr.strip()
-                except subprocess.TimeoutExpired:
-                    status, details = "FAIL", "Dart execution timed out"
-                except OSError as error:
-                    parser.exit(2, f"Dart: {error}\n")
+                status, details = execute_dart(args.dart, runtime, code + harness, output, parser)
             return status, name, details
 
-        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
-            for status, name, details in executor.map(run_case, enumerate(tests)):
-                counts[status] += 1
-                print(f"{status} {name}")
-                if details:
-                    print(details)
-    print(", ".join(f"{count} {status}" for status, count in counts.items()))
-    return int(counts["PASS"] != len(tests))
+        return report_results(tests, args.jobs, run_case)
+
+
+def run_discovered(args, parser):
+    cases = list(discovered_cases(args.checkout / "test", args.filter))
+    if not cases:
+        parser.error("No Test262 cases match the requested filter")
+    runtime = runtime_source()
+    with TemporaryDirectory(prefix="htgc-test262-") as temporary:
+        def run_case(entry):
+            index, case = entry
+            path, mode = case
+            label = f"{path.relative_to(args.checkout / 'test').as_posix()} [{mode}]"
+            try:
+                code, details = compile_discovered(case, args.checkout)
+            except (CompileError, OSError) as error:
+                return "UNSUPPORTED", label, str(error)
+            if code is None:
+                return ("FAIL" if details else "PASS"), label, details
+            output = Path(temporary) / f"{index}-{path.stem}.dart"
+            status, details = execute_dart(args.dart, runtime, code, output, parser)
+            return status, label, details
+
+        return report_results(cases, args.jobs, run_case)
 
 
 if __name__ == "__main__":

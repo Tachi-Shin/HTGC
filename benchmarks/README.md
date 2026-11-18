@@ -49,6 +49,16 @@ BigIntの試験では、2〜36進数の文字列化、整数変換と構文エ�
 
 ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue/notSameValue`、`assert.compareArray`、`assert.throws`、`assert.throwsAsync`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。Array、Symbol、Annex Bのオブジェクトアクセサーのケースは指定がある場合にTest262のpropertyHelper.jsを読み込みます。Array.fromAsyncの一部はtemporalHelpers.jsのプロパティ観測用関数を使います。isConstructor.jsはハーネスに代替実装があります。Unicode集合の生成テストではリテラルと、実行時にsource・flagsから再構築したRegExpの両方について、各入力のマッチ可否を検証します。Realm試験の `$262.createRealm()` は別のDart上のRealmに組み込みとグローバル環境を初期化します。非同期完了は5秒でタイムアウトします。with文のディレクトリでは全ファイルをScriptとして検証し、parse phaseではパーサーによるSyntaxError、runtime phaseでは実行時の例外名を確認します。クラス定義とトップレベルawaitのモジュール試験はHTGCのモジュールリンカーを使います。全テストのstrict/sloppy両モード実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
 
+## Test262の公式ケースを列挙して実行する
+
+`--discover` はチェックアウトの `test/` 以下からケースを探します。依存ファイルの `_FIXTURE` は単独で実行せず、モジュールから参照されたときに読み込みます。通常のScriptはstrict・sloppyの両方で、`onlyStrict`、`noStrict`、`module`、`raw` のケースは指定されたモードで実行します。`--filter` で試験領域を絞れます。
+
+```sh
+python3 benchmarks/test262_dart.py ../test262 --discover --jobs 4 --filter 'built-ins/Array/prototype/slice/*'
+```
+
+公式のassertとケースが指定した補助ファイルをDartへ変換して実行します。構文エラーはパーサーで、モジュールの解決エラーはリンカーで、実行時の例外は生成コードで確認します。変換に失敗したケースは `UNSUPPORTED`、実行・アサーションに失敗したケースは `FAIL` として出力します。 `--filter` を省略するとチェックアウト全体を対象にできます。ホストAPIのうち `$262.agent` などは実装が残っています。
+
 ## 非同期実行と条件付きCSSの回帰試験
 
 ```sh

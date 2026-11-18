@@ -14,6 +14,7 @@ try {
       })
     : acorn.Parser;
   const ast = parser.parse(input, {ecmaVersion: 'latest', sourceType: process.argv.includes('--script') ? 'script' : 'module', locations: true});
+  if (process.argv.includes('--syntax-only')) process.exit(0);
   function rewriteUnicodeSets(pattern, flags) {
     return require('regexpu-core')(pattern, flags, {
       unicodeSetsFlag: 'transform',

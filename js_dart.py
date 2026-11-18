@@ -31,7 +31,7 @@ class JavaScriptSyntaxError(CompileError):
     """The JavaScript parser rejected the input grammar."""
 
 
-def parse(source, path, *, source_type="module", allow_new_target=False, allow_super=False):
+def parse(source, path, *, source_type="module", allow_new_target=False, allow_super=False, syntax_only=False):
     node = shutil.which("node")
     parser = Path(__file__).parent / "javascript" / "parse.cjs"
     if not node:
@@ -39,7 +39,8 @@ def parse(source, path, *, source_type="module", allow_new_target=False, allow_s
     result = subprocess.run(
         [node, str(parser), *(["--script"] if source_type == "script" else []),
          *(["--eval-new-target"] if allow_new_target else []),
-         *(["--eval-super"] if allow_super else [])],
+         *(["--eval-super"] if allow_super else []),
+         *(["--syntax-only"] if syntax_only else [])],
         input=source, encoding="utf-8", capture_output=True
     )
     if result.returncode == 2:
@@ -48,7 +49,7 @@ def parse(source, path, *, source_type="module", allow_new_target=False, allow_s
         raise CompileError(
             f"{path}: JavaScript解析失敗: {result.stderr.strip()} (npm --prefix javascript ci)"
         )
-    return json.loads(result.stdout)
+    return None if syntax_only else json.loads(result.stdout)
 
 
 RESOURCE_KINDS = ("using", "await using")
