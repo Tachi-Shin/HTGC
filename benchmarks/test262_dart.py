@@ -496,7 +496,7 @@ def main():
                 if not name.startswith("built-ins/RegExp/unicodeSets/generated/"):
                     helpers.append("regExpUtils.js")
                 if name.startswith(("built-ins/Array/", "built-ins/Symbol/", "built-ins/Object/prototype/__")):
-                    helpers.extend(("propertyHelper.js", "temporalHelpers.js"))
+                    helpers.extend(("propertyHelper.js", "temporalHelpers.js", "resizableArrayBufferUtils.js"))
                 for helper in helpers:
                     if re.search(r"^includes:.*\b" + re.escape(helper) + r"\b", metadata, re.M):
                         source = (args.checkout / "harness" / helper).read_text(encoding="utf-8") + "\n" + source

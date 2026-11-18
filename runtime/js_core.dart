@@ -1750,6 +1750,9 @@ void jDefineClassMethod(
   Object key,
   JFunction method,
 ) {
+  if (isStatic && key == 'prototype') {
+    throw JThrown(JError('TypeError', 'Cannot replace the class prototype'));
+  }
   final owner = isStatic
       ? constructor
       : constructor.properties['prototype'] as JObject;

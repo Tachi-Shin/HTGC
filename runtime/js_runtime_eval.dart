@@ -421,6 +421,19 @@ class _RuntimeEvalParser {
     if (take('switch')) return switchStatement();
     if (take(';')) return () => _jRuntimeEmpty;
     if (peek == '{') return block();
+    if (peek == 'class') {
+      if (!allowLexical) _unsupported();
+      final declaration = scope;
+      final (name, expression) = classExpression(declaration: true);
+      if (!lexicalNames.add(name) ||
+          varNamesByEnvironment.last.contains(name)) {
+        _unsupported();
+      }
+      return () {
+        declaration.current.define(name, expression.read());
+        return _jRuntimeEmpty;
+      };
+    }
     if (peek == 'function') {
       if (!allowLexical) _unsupported();
       return functionDeclaration();
@@ -1474,6 +1487,207 @@ class _RuntimeEvalParser {
     return () => _jRuntimeEmpty;
   }
 
+  _EvalExpr propertyName(bool computed) {
+    if (computed) {
+      final key = sequence();
+      expect(']');
+      return key;
+    }
+    final token = peek;
+    if (RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)) {
+      at++;
+      return _EvalExpr(() => token);
+    }
+    if (token.startsWith('"') ||
+        token.startsWith("'") ||
+        RegExp(r'^\d').hasMatch(token)) {
+      return atom();
+    }
+    _unsupported();
+  }
+
+  _RuntimeEvalParser classInitializerParser(
+    String code,
+    JScope environment,
+    dynamic receiver,
+    JObject home,
+  ) => _RuntimeEvalParser(
+    code,
+    JScope.function(environment),
+    receiver,
+    strictFunction: true,
+    newTarget: jUndefined,
+    home: home,
+  );
+
+  String classFieldInitializer() {
+    if (!take('=')) return '';
+    final start = offsets[at];
+    final parser = classInitializerParser(
+      source.substring(start),
+      scope.current,
+      jUndefined,
+      jObjectPrototype,
+    );
+    parser.expression();
+    final last = parser.at - 1;
+    final end = start + parser.offsets[last] + parser.tokens[last].length;
+    while (offsets[at] < end) {
+      at++;
+    }
+    return source.substring(start, end);
+  }
+
+  (String, _EvalExpr) classExpression({bool declaration = false}) {
+    final start = at;
+    expect('class');
+    final outer = scope;
+    final inner = _RuntimeLexicalScope(outer.current);
+    final strict = strictFunction;
+    strictFunction = true;
+    scope = inner;
+    try {
+      final name = !declaration && const {'extends', '{'}.contains(peek)
+          ? ''
+          : bindingIdentifier();
+      final superclass = take('extends') ? primary() : null;
+      expect('{');
+      final members = <void Function(JClass, JScope, List<void Function()>)>[];
+      while (!take('}')) {
+        if (take(';')) continue;
+        final methodStart = at;
+        const fieldEnd = {'(', '=', ';', '}', ''};
+        final isStatic = peek == 'static' && !fieldEnd.contains(tokens[at + 1]);
+        if (isStatic) at++;
+        if (isStatic && peek == '{') {
+          final code = groupSource('{', '}');
+          classInitializerParser(
+            code,
+            inner.current,
+            jUndefined,
+            jObjectPrototype,
+          ).parse();
+          members.add((constructor, environment, staticSteps) {
+            staticSteps.add(() {
+              final parser = classInitializerParser(
+                code,
+                environment,
+                constructor,
+                constructor,
+              );
+              final statements = parser.parse();
+              parser.instantiate();
+              _runRuntimeStatements(statements);
+            });
+          });
+          continue;
+        }
+        var kind = 'init';
+        if ((peek == 'get' || peek == 'set') &&
+            !fieldEnd.contains(tokens[at + 1])) {
+          kind = tokens[at++];
+        }
+        final computed = take('[');
+        final key = propertyName(computed);
+        if (!computed &&
+            (isStatic
+                ? key.read() == 'prototype'
+                : key.read() == 'constructor')) {
+          _unsupported();
+        }
+        if (peek != '(') {
+          if (kind != 'init') _unsupported();
+          final initializer = classFieldInitializer();
+          if (!take(';') && peek != '}' && !lineBreaks.contains(at))
+            _unsupported();
+          members.add((constructor, environment, staticSteps) {
+            final property = jPropertyKey(key.read());
+            final home = jClassHome(constructor, isStatic);
+            void init(dynamic receiver) {
+              final value = initializer.isEmpty
+                  ? jUndefined
+                  : classInitializerParser(
+                      initializer,
+                      environment,
+                      receiver,
+                      home,
+                    ).expression().readNamed(property);
+              jDefineClassField(receiver, property, value);
+            }
+
+            if (isStatic) {
+              staticSteps.add(() => init(constructor));
+            } else {
+              constructor.fields.add(init);
+            }
+          });
+          continue;
+        }
+        final params = groupSource('(', ')');
+        final body = groupSource('{', '}');
+        final code = _RuntimeFunctionCode(
+          params,
+          body,
+          inner.current,
+          method: true,
+          inheritedStrict: true,
+        );
+        if ((kind == 'get' && code.parameterCount != 0) ||
+            (kind == 'set' &&
+                (code.parameterCount != 1 || code.restParameter))) {
+          _unsupported();
+        }
+        final text = tokenSource(methodStart);
+        final methodKind = kind;
+        members.add((constructor, environment, _) {
+          final property = jPropertyKey(key.read());
+          final fn = code.create(
+            environment,
+            '',
+            text,
+            home: jClassHome(constructor, isStatic),
+          );
+          jDefineClassMethod(constructor, isStatic, methodKind, property, fn);
+        });
+      }
+      final text = tokenSource(start);
+      return (
+        name,
+        _EvalExpr(
+          () {
+            final environment = inner.current = JScope(outer.current);
+            if (name.isNotEmpty) environment.reserve(name);
+            final base = superclass?.read();
+            final constructor = jDefaultClass(
+              name,
+              base,
+              derived: superclass != null,
+              source: text,
+            );
+            final staticSteps = <void Function()>[];
+            for (final define in members) {
+              define(constructor, environment, staticSteps);
+            }
+            if (name.isNotEmpty)
+              environment.define(name, constructor, constant: true);
+            for (final initialize in staticSteps) {
+              initialize();
+            }
+            return constructor;
+          },
+          null,
+          null,
+          null,
+          null,
+          name.isEmpty,
+        ),
+      );
+    } finally {
+      scope = outer;
+      strictFunction = strict;
+    }
+  }
+
   _EvalExpr objectLiteral() {
     final entries = <void Function(JObject)>[];
     var hasPrototype = false;
@@ -1494,20 +1708,7 @@ class _RuntimeEvalParser {
         }
         final computed = take('[');
         final token = peek;
-        late final _EvalExpr key;
-        if (computed) {
-          key = sequence();
-          expect(']');
-        } else if (RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)) {
-          at++;
-          key = _EvalExpr(() => token);
-        } else if (token.startsWith('"') ||
-            token.startsWith("'") ||
-            RegExp(r'^\d').hasMatch(token)) {
-          key = atom();
-        } else {
-          _unsupported();
-        }
+        final key = propertyName(computed);
         final lexicalScope = scope;
         if (peek == '(') {
           final parameters = groupSource('(', ')');
@@ -1581,6 +1782,7 @@ class _RuntimeEvalParser {
     }
     final token = peek;
     if (token.isEmpty) _unsupported();
+    if (token == 'class') return classExpression().$2;
     if (take('function')) {
       final start = at - 1;
       final name = peek == '(' ? '' : bindingIdentifier();
