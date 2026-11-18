@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from frontend import CompileError
-from js_dart import JavaScriptSyntaxError, compile_script, parse, runtime_source
+from js_dart import JavaScriptSyntaxError, compile_script, parse, quote, runtime_source
+from js_modules import DartModules
 
 
 # Selected synchronous exception scripts and asynchronous await scripts.
@@ -269,6 +270,29 @@ void main() {
 """
 
 
+def compile_module(source, path, test_root):
+    modules = DartModules()
+    root = test_root.resolve()
+    path = path.resolve()
+    key = path.relative_to(root).as_posix()
+
+    def resolve(specifier, owner):
+        target = (root / specifier.lstrip("/") if specifier.startswith("/")
+                  else owner.parent / specifier).resolve()
+        if not target.is_relative_to(root):
+            raise CompileError(f"Module outside Test262 test tree: {target}")
+        return target
+
+    def read(path):
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise CompileError(str(error)) from error
+
+    modules.add(source, key, path, root, read, resolve)
+    return modules.emit(), f"await jAwait(scope.modules(htgcModules).evaluate({quote(key)}))"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", type=Path, help="path to a Test262 checkout")
@@ -343,7 +367,8 @@ def main():
                     harness = harness.replace(VERIFY_PROPERTY, "")
                 if "regExpUtils.js" in selected_helpers:
                     harness = harness.replace(VERIFY_UNICODE_SETS, "")
-                source_type = "script" if global_script else "module"
+                module_test = bool(re.search(r"^flags:\s*\[[^\]]*\bmodule\b", metadata, re.M))
+                source_type = "script" if global_script and not module_test else "module"
                 if re.search(r"^negative:\s*\n\s*phase:\s*parse\s*\n\s*type:\s*SyntaxError", metadata, re.M):
                     try:
                         parse(source, path, source_type=source_type)
@@ -352,7 +377,11 @@ def main():
                     else:
                         status = "FAIL"
                     return status, name + " (parse phase)", ""
-                code = compile_script(source, path, source_type=source_type)
+                if module_test:
+                    code, execute = compile_module(source, path, args.checkout / "test")
+                    harness = harness.replace("htgcScript(scope)", execute)
+                else:
+                    code = compile_script(source, path, source_type=source_type)
             except CompileError as error:
                 status, details = "UNSUPPORTED", str(error)
             else:

@@ -405,7 +405,7 @@ class Compiler:
             if param['type'] in ('AssignmentPattern', 'RestElement'):
                 break
             length += 1
-        name = (node.get('id') or {}).get('name', '')
+        name = node.get('htgcInferredName', (node.get('id') or {}).get('name', ''))
         source = f', source: {quote(node["htgcSource"])}' if "htgcSource" in node else ""
         return f'jNamedFunction({expression}, {quote(name)}, {length}{source})'
 
@@ -1153,10 +1153,30 @@ class Compiler:
                 f'{quote(node["htgcLoweredRegExp"])}, constructing: {constructing})')
 
     def class_expression(self, node):
+        code, constructor = self.class_definition(node)
+        definition = "\n".join(code)
+        if not self.has_await(node):
+            return f"(() {{\n{definition}\nreturn {constructor};\n}})()"
+        evaluation, temporary = self.name("evaluation"), self.temp()
+        return (
+            f"(({temporary} = jEvaluateAsyncClass(({evaluation}) async {{\n"
+            f"try {{\n{definition}\n{evaluation}.complete({constructor});\n"
+            f"}} catch (error, stack) {{ {evaluation}.fail(error, stack); }}\n"
+            f"}})).completed ? {temporary}.value : await {temporary}.pending)"
+        )
+
+    def class_value(self, code, compile_value):
+        return compile_value()
+
+    def class_member_body(self, compile_body):
+        return compile_body()
+
+    def class_definition(self, node):
         body = node["body"]["body"]
-        if self.has_await(node):
-            self.fail(node, "await in class heritage or computed keys")
         name = (node.get("id") or {}).get("name", "")
+        inferred_name = node.get("htgcInferredName")
+        binding = "" if inferred_name is not None else name
+        display = inferred_name if inferred_name is not None else name
         parent = self.scope
         inner, constructor, base = self.name("classScope"), self.name("class"), self.name("base")
         self.scope = inner
@@ -1164,15 +1184,17 @@ class Compiler:
         previous_strict, self.strict = self.strict, True
         try:
             superclass = node.get("superClass")
-            base_expression = "null" if superclass is None else self.expr(superclass)
             source = f', source: {quote(node["htgcSource"])}' if "htgcSource" in node else ""
-            code = [
-                f"final {inner} = JScope({parent});",
-                *([f"{inner}.reserve({quote(name)});"] if name else []),
+            code = [f"final {inner} = JScope({parent});"]
+            if binding:
+                code.append(f"{inner}.reserve({quote(binding)});")
+            base_expression = "null" if superclass is None else self.class_value(
+                code, lambda: self.expr(superclass))
+            code.extend([
                 f"final {base} = {base_expression};",
-                f'final {constructor} = jDefaultClass({quote(name)}, {base}, derived: '
+                f'final {constructor} = jDefaultClass({quote(display)}, {base}, derived: '
                 f'{str(superclass is not None).lower()}{source});',
-            ]
+            ])
             private = {}
             for item in body:
                 key = item.get("key", {})
@@ -1188,7 +1210,8 @@ class Compiler:
                 home = f'jClassHome({constructor}, {str(static).lower()})'
                 if item["type"] == "MethodDefinition":
                     explicit = item["kind"] == "constructor"
-                    key = None if explicit or private_slot else self.property_key(item)
+                    key = None if explicit or private_slot else self.class_value(
+                        code, lambda: self.property_key(item))
                     function = self.function({
                         **item["value"], "htgc_method": True, "htgc_home": home,
                         "htgc_constructor": explicit,
@@ -1210,13 +1233,14 @@ class Compiler:
                     continue
                 if item["type"] == "PropertyDefinition" and not private_slot:
                     key = self.name("field")
-                    code.append(f'final {key} = jPropertyKey({self.property_key(item)});')
+                    expression = self.class_value(code, lambda: self.property_key(item))
+                    code.append(f'final {key} = jPropertyKey({expression});')
                 old_this, old_home, old_context, old_target = self.receiver, self.home, self.construction, self.new_target
                 self.receiver = constructor if static else self.name("instance")
                 self.home, self.construction, self.new_target = home, None, "jUndefined"
                 try:
                     if item["type"] == "PropertyDefinition":
-                        value = self.expr(item.get("value"))
+                        value = self.class_member_body(lambda: self.expr(item.get("value")))
                         initializer = (f'{private_slot}.install({self.receiver}, {value});' if private_slot
                                        else f'jDefineClassField({self.receiver}, {key}, {value});')
                         if static:
@@ -1225,19 +1249,19 @@ class Compiler:
                             code.append(f'{constructor}.fields.add(({self.receiver}) {{ {initializer} }});')
                     elif item["type"] == "StaticBlock":
                         self.scope = self.name("staticScope")
-                        step = self.block_contents(item["body"], hoist_vars=True)
+                        step = self.class_member_body(
+                            lambda: self.block_contents(item["body"], hoist_vars=True))
                         static_steps.append(f'{{ final {self.scope} = JScope({inner});\n{step}\n}}')
                     else:
                         self.fail(item)
                 finally:
                     self.scope = inner
                     self.receiver, self.home, self.construction, self.new_target = old_this, old_home, old_context, old_target
-            if name:
-                code.append(f"{inner}.define({quote(name)}, {constructor}, constant: true);")
+            if binding:
+                code.append(f"{inner}.define({quote(binding)}, {constructor}, constant: true);")
             code.extend(static_methods)
             code.extend(static_steps)
-            code.append(f"return {constructor};")
-            return "(() {\n" + "\n".join(code) + "\n})()"
+            return code, constructor
         finally:
             self.scope = parent
             self.private_names = previous_private

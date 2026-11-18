@@ -2,10 +2,13 @@ import { events, lazyRuns, failures } from './state.mjs';
 import { answer } from './diamond.mjs';
 import { readCycle } from './cycle-a.mjs';
 import config from './config.json' with { type: 'json' };
+import PreparedClass, { key as preparedKey } from './class-module.mjs';
 function equal(actual, expected) {
   if (actual !== expected) throw new Error('expected ' + expected + ', got ' + actual);
 }
 equal(answer, 42);
+equal(PreparedClass.name, "default");
+equal(new PreparedClass()[preparedKey](), 12);
 equal(readCycle(), 5);
 equal(events.join(','), 'left:start,right:start,left:end,right:end,diamond');
 equal(lazyRuns, 0);

@@ -329,6 +329,7 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 
 - 配列の派生クラスを生成できます。`map`、`filter`、`slice`、`concat`、`splice`、`flat`、`flatMap` は `Symbol.species` に従います。`Array.from`、`Array.fromAsync`、`Array.of` は呼び出しに使ったコンストラクターから結果を生成します。
 - 配列の穴・数値添字・`length` の記述子と、`Object.freeze`、`Object.seal`、`Object.preventExtensions` を扱います。配列を包むProxyにも記述子と拡張制御を適用します。大きな添字を持つ配列リテラルと `Array(length)` の未設定の要素は省メモリで保持します。
+- クラスの `extends` と計算プロパティ名では、非同期関数やモジュールの `await` とジェネレーターの `yield` を扱います。
 - `Symbol.prototype` の `description`、`toString`、`valueOf`、`Symbol.toPrimitive` を使えます。`Object(symbol)` で生成したラッパーも同じ組み込みメソッドを使います。
 - Annex Bの `Object.prototype.__proto__`、`__defineGetter__`、`__defineSetter__`、`__lookupGetter__`、`__lookupSetter__` に対応します。
 

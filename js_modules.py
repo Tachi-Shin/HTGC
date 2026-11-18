@@ -141,10 +141,13 @@ class DartModules:
                 if declaration["type"] in ("FunctionDeclaration", "ClassDeclaration"):
                     if declaration["id"] is None:
                         declaration["id"] = {"type": "Identifier", "name": DEFAULT}
+                        declaration["htgcInferredName"] = "default"
                     name = identifier(declaration["id"])
                     module.statements.append(declaration)
                 else:
                     name = DEFAULT
+                    if declaration["type"] in ("FunctionExpression", "ArrowFunctionExpression", "ClassExpression") and not declaration.get("id"):
+                        declaration["htgcInferredName"] = "default"
                     module.statements.append({
                         "type": "VariableDeclaration", "kind": "const",
                         "declarations": [{

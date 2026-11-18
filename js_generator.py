@@ -40,6 +40,33 @@ class GeneratorCompiler(Compiler):
         finally:
             self.active = active
 
+    def class_value(self, code, compile_value):
+        if not self.active:
+            return super().class_value(code, compile_value)
+        prefix, value = self.capture(compile_value)
+        if prefix:
+            code.append(prefix)
+        return value
+
+    def class_member_body(self, compile_body):
+        active, self.active = self.active, False
+        try:
+            return compile_body()
+        finally:
+            self.active = active
+
+    def class_expression(self, node):
+        if not self.active:
+            return super().class_expression(node)
+        code, constructor = self.class_definition(node)
+        result = self.name("gclass")
+        self.prelude.append(
+            f"late final JClass {result};\n{{\n"
+            + "\n".join(code)
+            + f"\n{result} = {constructor};\n}}"
+        )
+        return result
+
     def member_value(self, node, call=False, optional_call=False):
         if node['object']['type'] == 'Super':
             if self.home is None:

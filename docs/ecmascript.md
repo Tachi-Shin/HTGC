@@ -6,7 +6,7 @@
 | --- | --- |
 | 実行コンテキスト、Realm、Agent | 文書ごとにグローバル環境と組み込みを分離。Realm間の全呼び出し・ジョブの検証、グローバル宣言の競合、複数Agentとメモリモデルが残る。globalThisとWindowの同一性、通常スクリプト間のvar・関数・字句束縛の共有、モジュールの字句束縛の分離は対応 |
 | 宣言と関数 | 非strictスクリプトの残りの規則、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunction/AsyncGeneratorFunctionコンストラクターとevalの構文・意味の大部分。実行時評価の対応範囲を下記に記載 |
-| クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
+| クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロック、extends式と計算プロパティ名でのawait・yieldに対応 |
 | 式と文 | 細部の評価順と例外。非strictのwith、Symbol.unscopables、オブジェクト環境に束縛された関数のthisに対応。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
 | モジュール | ソースフェーズ、実行時の外部モジュール読み込み、ホストローダーとの連携と複数環境での評価。ローカルのモジュールグラフ、import.meta、JSONモジュールとtype属性は一部対応済み |
 | オブジェクトと補助操作 | 厳密なプロトタイプ・Functionの組み込みメソッドとメタデータ、全組み込み型のnewTargetと内部例外の種類。配列の添字・lengthの記述子とProxyを経由した拡張制御に対応 |

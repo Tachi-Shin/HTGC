@@ -1620,6 +1620,38 @@ JFunction jNamedFunction(
   return function;
 }
 
+// Class heritage and computed keys run synchronously until an evaluated await.
+// A skipped await must not suspend the surrounding async function or module.
+class JAsyncClassEvaluation {
+  JClass? _value;
+  Object? _error;
+  Completer<JClass>? _completion;
+
+  bool get completed => _value != null || _error != null;
+  JClass get value {
+    if (_error case final error?) throw error;
+    return _value!;
+  }
+
+  Future<JClass> get pending => (_completion ??= Completer<JClass>.sync()).future;
+
+  void complete(JClass value) {
+    _value = value;
+    _completion?.complete(value);
+  }
+
+  void fail(Object error, StackTrace stack) {
+    _error = error;
+    _completion?.completeError(error, stack);
+  }
+}
+
+JAsyncClassEvaluation jEvaluateAsyncClass(void Function(JAsyncClassEvaluation) run) {
+  final evaluation = JAsyncClassEvaluation();
+  run(evaluation);
+  return evaluation;
+}
+
 class JClass extends JFunction {
   JFunction? body;
   final privateMethods = <JPrivateName>[];
