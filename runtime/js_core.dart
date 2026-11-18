@@ -1142,7 +1142,7 @@ bool jSetPrototype(JObject object, dynamic prototype) {
   final proxy = jProxyState(object);
   if (proxy != null) return proxy.setPrototype(prototype);
   if (identical(object.prototype, parent)) return true;
-  if (!object.extensible) return false;
+  if (!object.extensible || identical(object, object.realm.objectPrototype)) return false;
   for (var cursor = parent; cursor != null; cursor = cursor.prototype) {
     if (identical(cursor, object)) return false;
     if (jProxyState(cursor) != null) break;
@@ -2605,15 +2605,7 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
           : jUndefined;
     final method = jStringMethods[name];
     if (method != null) return method;
-    switch (name) {
-      case 'split':
-      case 'match':
-      case 'matchAll':
-      case 'replace':
-      case 'replaceAll':
-      case 'search':
-        return jBuiltin((a) => jStringRegExp(name, value, a));
-    }
+
   }
   if (value is String) return jStringPrototype.read(name, value);
   if (value is JSymbol) return jSymbolPrototype.read(name, value);
@@ -3128,6 +3120,53 @@ void installJSSymbols(JScope scope) {
   scope.define('Symbol', symbol);
 }
 
+void installJSLegacyObjectAccessors(JObject prototype) {
+  const proto = '__proto__';
+  prototype.properties[proto] = jUndefined;
+  prototype.getters[proto] = jBuiltinMethod('get __proto__', 0, (_, receiver) =>
+      jPrototype(jObject(jRequireCoercible(receiver))));
+  prototype.setters[proto] = jBuiltinMethod('set __proto__', 1, (args, receiver) {
+    jRequireCoercible(receiver);
+    final prototype = jArg(args, 0);
+    if ((prototype == null || jIsObject(prototype)) && jIsObject(receiver) &&
+        !jSetPrototype(jRequireObject(receiver), prototype)) {
+      throw JThrown(JError('TypeError', 'Cannot set prototype'));
+    }
+    return jUndefined;
+  });
+
+  for (final getter in [true, false]) {
+    final suffix = getter ? 'Getter' : 'Setter';
+    final accessor = getter ? 'get' : 'set';
+    final define = '__define${suffix}__', lookup = '__lookup${suffix}__';
+    prototype.properties[define] = jBuiltinMethod(define, 2, (args, receiver) {
+      final object = jRequireObject(jObject(jRequireCoercible(receiver)));
+      final function = jArg(args, 1);
+      if (function is! JFunction) {
+        throw JThrown(JError('TypeError', 'Accessor is not callable'));
+      }
+      final key = jPropertyKey(jArg(args, 0));
+      final descriptor = JObject.root({
+        accessor: function, 'enumerable': true, 'configurable': true,
+      });
+      if (!jDefineProperty(object, key, descriptor, normalized: true)) {
+        throw JThrown(JError('TypeError', 'Cannot define accessor'));
+      }
+      return jUndefined;
+    });
+    prototype.properties[lookup] = jBuiltinMethod(lookup, 1, (args, receiver) {
+      dynamic object = jObject(jRequireCoercible(receiver));
+      final key = jPropertyKey(jArg(args, 0));
+      while (object != null) {
+        final descriptor = jDescriptor(object, key);
+        if (descriptor is JObject) return jGet(descriptor, accessor);
+        object = jPrototype(object);
+      }
+      return jUndefined;
+    });
+  }
+}
+
 void installJSObjects(JScope scope) {
   installJSSymbols(scope);
   late final JFunction object;
@@ -3280,6 +3319,7 @@ void installJSObjects(JScope scope) {
       }),
   });
   jObjectPrototype.properties['constructor'] = object;
+  installJSLegacyObjectAccessors(jObjectPrototype);
   jBuiltinProperties(object);
   jBuiltinProperties(jObjectPrototype);
   scope.define('Object', object);

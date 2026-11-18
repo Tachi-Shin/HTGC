@@ -2,6 +2,7 @@
 """Run a focused set of Test262 scripts after lowering them to Dart."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import fnmatch
 from pathlib import Path
 import re
@@ -130,6 +131,26 @@ VERIFY_PROPERTY = """  scope.define('verifyProperty', jNative((a) {
   }));
 """
 
+VERIFY_UNICODE_SETS = r"""  scope.define('testExtendedCharacterClass', jBuiltin((a) {
+    final config = a[0], literal = jGet(config, 'regExp');
+    final reconstructed = jNew(scope.get('RegExp'), [jGet(literal, 'source'), jGet(literal, 'flags')]);
+    for (final regex in [literal, reconstructed]) {
+      for (final key in ['matchStrings', 'nonMatchStrings']) {
+        final inputs = jGet(config, key);
+        if (key == 'nonMatchStrings' && identical(inputs, jUndefined)) continue;
+        for (final value in jIterable(inputs)) {
+          final matches = jInvoke(regex, 'test', [value]);
+          if (matches != (key == 'matchStrings')) {
+            throw StateError('Unexpected match for ${jString(value)} using ${jGet(config, 'expression')}');
+          }
+        }
+      }
+    }
+    return jUndefined;
+  }));
+  scope.define('testPropertyOfStrings', scope.get('testExtendedCharacterClass'));
+"""
+
 ASYNC_HARNESS = r"""
 Future<void> main() => runZoned(runTest,
     zoneValues: {jPromiseRejectionHook: (dynamic reason) {}});
@@ -151,6 +172,7 @@ Future<void> runTest() async {
       return _runRuntimeStatements(statements);
     });
     globals.root.defineGlobal(r'$262', host);
+    globals.root.defineGlobal('print', jGet(globals.get('console'), 'log'));
     return host;
   }
   hostFor(scope);
@@ -207,24 +229,7 @@ Future<void> runTest() async {
     }
   }));
 __VERIFY_PROPERTY__
-  scope.define('testExtendedCharacterClass', jBuiltin((a) {
-    final config = a[0], literal = jGet(config, 'regExp');
-    final reconstructed = jNew(scope.get('RegExp'), [jGet(literal, 'source'), jGet(literal, 'flags')]);
-    for (final regex in [literal, reconstructed]) {
-      for (final key in ['matchStrings', 'nonMatchStrings']) {
-        final inputs = jGet(config, key);
-        if (key == 'nonMatchStrings' && identical(inputs, jUndefined)) continue;
-        for (final value in jIterable(inputs)) {
-          final matches = jInvoke(regex, 'test', [value]);
-          if (matches != (key == 'matchStrings')) {
-            throw StateError('Unexpected match for ${jString(value)} using ${jGet(config, 'expression')}');
-          }
-        }
-      }
-    }
-    return jUndefined;
-  }));
-  scope.define('testPropertyOfStrings', scope.get('testExtendedCharacterClass'));
+__VERIFY_UNICODE_SETS__
   scope.define('assert', assertFn);
   late final JFunction testError;
   testError = jNative((args) => JError('Test262Error', jString(jArg(args, 0)))..properties['constructor'] = testError);
@@ -248,7 +253,8 @@ __VERIFY_PROPERTY__
   htgcScript(scope);
   await done.future.timeout(const Duration(seconds: 5));
 }
-""".replace("__VERIFY_PROPERTY__\n", VERIFY_PROPERTY)
+""".replace("__VERIFY_PROPERTY__\n", VERIFY_PROPERTY).replace(
+    "__VERIFY_UNICODE_SETS__\n", VERIFY_UNICODE_SETS)
 
 BUILTIN_HARNESS = ASYNC_HARNESS.replace(
     '  await done.future.timeout(const Duration(seconds: 5));', '')
@@ -268,7 +274,10 @@ def main():
     parser.add_argument("checkout", type=Path, help="path to a Test262 checkout")
     parser.add_argument("--dart", default="dart", help="Dart SDK executable")
     parser.add_argument("--filter", default="*", help="test path glob")
+    parser.add_argument("--jobs", type=int, default=1, help="number of concurrent Dart processes")
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be positive")
     tests = [(args.checkout / "test/language/statements/try" / name, HARNESS) for name in TESTS]
     tests += [(args.checkout / "test/language/expressions/await" / name, ASYNC_HARNESS)
               for name in ASYNC_TESTS]
@@ -291,19 +300,22 @@ def main():
     runtime = runtime_source()
     counts = {"PASS": 0, "FAIL": 0, "UNSUPPORTED": 0}
     with TemporaryDirectory(prefix="htgc-test262-") as temporary:
-        for path, harness in tests:
+        def run_case(entry):
+            index, (path, harness) = entry
             name = str(path.relative_to(args.checkout / 'test'))
             try:
                 source = path.read_text(encoding="utf-8")
                 metadata = source.partition("/*---")[2].partition("---*/")[0]
-                official_property_helper = False
-                helpers = ["promiseHelper.js", "proxyTrapsHelper.js"]
-                if name.startswith(("built-ins/Array/", "built-ins/Symbol/")):
+                selected_helpers = set()
+                helpers = ["promiseHelper.js", "proxyTrapsHelper.js", "compareIterator.js"]
+                if not name.startswith("built-ins/RegExp/unicodeSets/generated/"):
+                    helpers.append("regExpUtils.js")
+                if name.startswith(("built-ins/Array/", "built-ins/Symbol/", "built-ins/Object/prototype/__")):
                     helpers.extend(("propertyHelper.js", "temporalHelpers.js"))
                 for helper in helpers:
                     if re.search(r"^includes:.*\b" + re.escape(helper) + r"\b", metadata, re.M):
                         source = (args.checkout / "harness" / helper).read_text(encoding="utf-8") + "\n" + source
-                        official_property_helper |= helper == "propertyHelper.js"
+                        selected_helpers.add(helper)
                 negative = re.search(r"^negative:\s*\n\s*phase:\s*runtime\s*\n\s*type:\s*(\w+)", metadata, re.M)
                 if negative:
                     expected = negative.group(1)
@@ -319,6 +331,7 @@ def main():
                     "language/global-code/decl-", "built-ins/global/", "language/eval-code/",
                     "language/arguments-object/", "language/statements/with/", "built-ins/Array/", "built-ins/Symbol/",
                 )) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
+                global_script |= bool(re.search(r"^flags:\s*\[[^\]]*\bnoStrict\b", metadata, re.M))
                 if global_script:
                     harness = harness.replace(
                         '  final scope = JScope();\n  installJSBuiltins(scope);',
@@ -326,8 +339,10 @@ def main():
                     )
                 if global_script and re.search(r"^flags:\s*\[[^\]]*\bonlyStrict\b", metadata, re.M):
                     source = '"use strict";\n' + source
-                if official_property_helper:
+                if "propertyHelper.js" in selected_helpers:
                     harness = harness.replace(VERIFY_PROPERTY, "")
+                if "regExpUtils.js" in selected_helpers:
+                    harness = harness.replace(VERIFY_UNICODE_SETS, "")
                 source_type = "script" if global_script else "module"
                 if re.search(r"^negative:\s*\n\s*phase:\s*parse\s*\n\s*type:\s*SyntaxError", metadata, re.M):
                     try:
@@ -336,14 +351,12 @@ def main():
                         status = "PASS"
                     else:
                         status = "FAIL"
-                    counts[status] += 1
-                    print(f"{status} {name} (parse phase)")
-                    continue
+                    return status, name + " (parse phase)", ""
                 code = compile_script(source, path, source_type=source_type)
             except CompileError as error:
                 status, details = "UNSUPPORTED", str(error)
             else:
-                output = Path(temporary) / f"{path.stem}.dart"
+                output = Path(temporary) / f"{index}-{path.stem}.dart"
                 output.write_text(runtime + "\n" + code + harness, encoding="utf-8")
                 try:
                     result = subprocess.run(
@@ -356,10 +369,14 @@ def main():
                     status, details = "FAIL", "Dart execution timed out"
                 except OSError as error:
                     parser.exit(2, f"Dart: {error}\n")
-            counts[status] += 1
-            print(f"{status} {name}")
-            if details:
-                print(details)
+            return status, name, details
+
+        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            for status, name, details in executor.map(run_case, enumerate(tests)):
+                counts[status] += 1
+                print(f"{status} {name}")
+                if details:
+                    print(details)
     print(", ".join(f"{count} {status}" for status, count in counts.items()))
     return int(counts["PASS"] != len(tests))
 

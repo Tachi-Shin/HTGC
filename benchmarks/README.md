@@ -40,14 +40,14 @@ HTGCのルートから実行します。Python 3.10以上、Node.js/npm、Dart S
 npm --prefix javascript ci
 git clone https://github.com/tc39/test262.git ../test262
 git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
-python3 benchmarks/test262_dart.py ../test262
+python3 benchmarks/test262_dart.py ../test262 --jobs 4
 ```
 
 選定ケースは `test262_dart.py` と `test262_extended.txt` で確認できます。RegExp Unicode集合はチェックアウトの `test/built-ins/RegExp/unicodeSets/generated/*.js` を全件収集します。`eval-code` と `arguments-object` はグローバルのScript環境で実行し、`onlyStrict` のケースには厳格モードを適用します。
 
 BigIntの試験では、2〜36進数の文字列化、整数変換と構文エラー、`asIntN/asUintN` の算術・型変換・副作用の順序、プロトタイプと関数の記述子、呼び出し時の例外を検証します。BigIntの全試験ではなく、複数Realm、Functionの継承、スクリプトのグローバル `this`、Dateと組み合わせた変換などは対象外です。
 
-ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue/notSameValue`、`assert.compareArray`、`assert.throws`、`assert.throwsAsync`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。ArrayとSymbolのケースは指定がある場合にTest262のpropertyHelper.jsを読み込みます。Array.fromAsyncの一部はtemporalHelpers.jsのプロパティ観測用関数を使います。isConstructor.jsはハーネスに代替実装があります。Unicode集合の生成テストではリテラルと、実行時にsource・flagsから再構築したRegExpの両方について、各入力のマッチ可否を検証します。Realm試験の `$262.createRealm()` は別のDart上のRealmに組み込みとグローバル環境を初期化します。非同期完了は5秒でタイムアウトします。with文のディレクトリでは全ファイルをScriptとして検証し、parse phaseではパーサーによるSyntaxError、runtime phaseでは実行時の例外名を確認します。この選定ランナーでは、モジュール形式のTest262や全テストのstrict/sloppy両モード実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue/notSameValue`、`assert.compareArray`、`assert.throws`、`assert.throwsAsync`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。Array、Symbol、Annex Bのオブジェクトアクセサーのケースは指定がある場合にTest262のpropertyHelper.jsを読み込みます。Array.fromAsyncの一部はtemporalHelpers.jsのプロパティ観測用関数を使います。isConstructor.jsはハーネスに代替実装があります。Unicode集合の生成テストではリテラルと、実行時にsource・flagsから再構築したRegExpの両方について、各入力のマッチ可否を検証します。Realm試験の `$262.createRealm()` は別のDart上のRealmに組み込みとグローバル環境を初期化します。非同期完了は5秒でタイムアウトします。with文のディレクトリでは全ファイルをScriptとして検証し、parse phaseではパーサーによるSyntaxError、runtime phaseでは実行時の例外名を確認します。この選定ランナーでは、モジュール形式のTest262や全テストのstrict/sloppy両モード実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
 
 ## 非同期実行と条件付きCSSの回帰試験
 

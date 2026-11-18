@@ -12,7 +12,7 @@
 | オブジェクトと補助操作 | 厳密なプロトタイプ・Functionの組み込みメソッドとメタデータ、全組み込み型のnewTargetと内部例外の種類。配列の添字・lengthの記述子とProxyを経由した拡張制御に対応 |
 | 基本オブジェクト・エラー | Function.prototypeと組み込み記述子の整合、Annex Bの残り。bind、関数の元ソース表示、Errorのcause、SuppressedError、Error.isErrorとURIグローバル関数は対応 |
 | 数値、日時、文字列 | Number/Math/BigIntの境界とメタデータ、Dateの実装依存の旧式書式・時刻規則、ロケール依存の完全な照合・大小文字変換、Unicodeの網羅検証。Unicode 17.0のString.normalize、String.raw、コード単位・コードポイント、検索・抽出・パディング等は対応 |
-| RegExp | 重複する名前付きグループ、Speciesと汎用メソッド、最新Unicodeや全キャプチャ条件の差。vリテラルと動的なパターンの集合演算に対応 |
+| RegExp | Dart SDKのUnicodeデータや全キャプチャ条件の差。選択肢ごとに重複する名前付きグループとindices、split・matchAllのSpecies、vリテラルと動的パターンの集合演算に対応 |
 | インデックス付きコレクション | TypedArrayの全変換順・記述子・全メソッドの派生型。配列の継承、穴・length、Symbol.species、Array.from／of／fromAsync、Uint8ArrayのBase64・16進変換に対応 |
 | キー付き・弱参照コレクション | Map/Set/WeakMap/WeakSetの例外・副作用順序の全条件、弱参照のGCや後始末の時機。各コレクションの構築時に派生プロトタイプを使用し、上書きしたset・addを初期値にも適用。WeakRefとFinalizationRegistryの基本APIに対応。Map・WeakMapのgetOrInsert/getOrInsertComputedは対応 |
 | バイナリデータとメモリモデル | 複数Agentで共有するSharedArrayBuffer・ブロッキングAtomics.wait、ArrayBuffer新APIとSpecies、バッファ制限。単一Agent用のSharedArrayBufferとAtomicsは今回の変更で対応 |
@@ -47,7 +47,7 @@
 - `let`・`const`・`var`、配列・オブジェクトの分割束縛と代入、計算プロパティ名、スプレッドを扱います。非strictなevalのvar・関数宣言は外側の変数環境を使用し、外側のlet等との衝突を実行前に検査します。strictなevalではこれらの宣言がeval内に留まります。
 - 非strictの単純な仮引数リストでは、`arguments[0]` 等と対応する仮引数の値を同期します。添字の削除、アクセサー化、書き込み不可への変更で連動を解除します。
 - `new`、`new.target`、`in`、`instanceof`、オプショナルチェーン、条件・代入・カンマ演算を扱います。`switch` のフォールスルー、ラベル付きループのbreak・continue、try/catch/finallyにも対応します。非strictの `with` では、プロパティ・外側の束縛・`Symbol.unscopables` を解決します。
-- 実行時パーサーにはクラス宣言、非同期・ジェネレーター関数の生成、テンプレート・正規表現リテラルなどが残っています。変換時にAcornで解析できる構文と、実行時の文字列で使える構文には差があります。
+- 実行時パーサーにはクラス宣言、非同期・ジェネレーター関数の生成、テンプレートリテラルなどが残っています。正規表現リテラルは式やreturnなどで扱い、スラッシュの字句解析はすべての文脈で検証していません。変換時にAcornで解析できる構文と、実行時の文字列で使える構文には差があります。
 
 ## 実行時のRegExp Unicode集合
 

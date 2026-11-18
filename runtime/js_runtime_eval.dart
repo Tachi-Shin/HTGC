@@ -102,6 +102,7 @@ class _RuntimeEvalParser {
   final bool functionBody;
   final List<String> tokens = [];
   final offsets = <int>[];
+  final regexLiterals = <int, (String pattern, String flags)>{};
   final hoisted = [<void Function()>[]];
   bool strictDirective = false;
   final dynamic newTarget;
@@ -143,23 +144,147 @@ class _RuntimeEvalParser {
       r'''\s+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\\n\r])*"|'(?:\\.|[^'\\\n\r])*')|(?:\.\.\.|\?\.(?!\d)|>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[{}()\[\].,:?&|^+\-*/%<>=!~;]''',
     );
     var pos = 0;
+    final parens = <bool>[];
+    final controlHeads = const {
+      'if',
+      'while',
+      'for',
+      'with',
+      'switch',
+      'catch',
+    };
+    bool afterControlHead = false;
     while (pos < source.length) {
+      final previous = tokens.isEmpty ? '' : tokens.last;
+      final member =
+          tokens.length > 1 && ['.', '?.'].contains(tokens[tokens.length - 2]);
+      if (source[pos] == '/' &&
+          pos + 1 < source.length &&
+          !const {'/', '*'}.contains(source[pos + 1]) &&
+          (afterControlHead || (!member && _regexPrefix.contains(previous)))) {
+        final literal = _readRegexLiteral(pos);
+        if (literal != null) {
+          final (pattern, flags, end) = literal;
+          regexLiterals[tokens.length] = (pattern, flags);
+          offsets.add(pos);
+          tokens.add(source.substring(pos, end));
+          pos = end;
+          afterControlHead = false;
+          continue;
+        }
+      }
       final match = token.matchAsPrefix(source, pos);
-      if (match == null) _unsupported();
-      final word = match.group(0)!;
+      // Preserve invalid code units as tokens so the parser itself rejects
+      // them, including a slash expression with an unterminated pattern.
+      final word = match?.group(0) ?? source[pos];
       if (word.trim().isNotEmpty &&
           !word.startsWith('//') &&
           !word.startsWith('/*')) {
         offsets.add(pos);
         tokens.add(word);
+        afterControlHead = false;
+        if (word == '(') {
+          parens.add(!member && controlHeads.contains(previous));
+        } else if (word == ')' && parens.isNotEmpty) {
+          afterControlHead = parens.removeLast();
+        }
       } else if (RegExp(r'[\n\r\u2028\u2029]').hasMatch(word)) {
         lineBreaks.add(tokens.length);
       }
-      pos = match.end;
+      pos = match?.end ?? pos + 1;
     }
     offsets.add(source.length);
     tokens.add('');
   }
+
+  static const _regexPrefix = {
+    '',
+    ';',
+    ':',
+    '(',
+    '[',
+    '{',
+    ',',
+    '?',
+    '=',
+    '=>',
+    'return',
+    'throw',
+    'case',
+    'else',
+    'do',
+    'void',
+    'typeof',
+    'delete',
+    'in',
+    'instanceof',
+    '!',
+    '~',
+    '+',
+    '-',
+    '*',
+    '/',
+    '%',
+    '**',
+    '<',
+    '>',
+    '<=',
+    '>=',
+    '==',
+    '!=',
+    '===',
+    '!==',
+    '&',
+    '|',
+    '^',
+    '&&',
+    '||',
+    '??',
+    '<<',
+    '>>',
+    '>>>',
+    '+=',
+    '-=',
+    '*=',
+    '/=',
+    '%=',
+    '**=',
+    '&&=',
+    '||=',
+    '??=',
+    '&=',
+    '|=',
+    '^=',
+    '<<=',
+    '>>=',
+    '>>>=',
+  };
+  static final _regexFlags = RegExp(
+    r'[$_\p{ID_Continue}\\\u200c\u200d]*',
+    unicode: true,
+  );
+
+  (String, String, int)? _readRegexLiteral(int start) {
+    var characterClass = false;
+    for (var pos = start + 1; pos < source.length; pos++) {
+      final c = source[pos];
+      if ('\r\n\u2028\u2029'.contains(c)) return null;
+      if (c == r'\') {
+        pos++;
+        if (pos == source.length || '\r\n\u2028\u2029'.contains(source[pos]))
+          return null;
+      } else if (c == '/' && !characterClass) {
+        final flags = _regexFlags.matchAsPrefix(source, pos + 1)!;
+        return (source.substring(start + 1, pos), flags.group(0)!, flags.end);
+      } else if (c == '[') {
+        characterClass = true;
+      } else if (c == ']') {
+        characterClass = false;
+      }
+    }
+    return null;
+  }
+
   Never _unsupported() => throw JThrown(
     JError('SyntaxError', 'Unsupported or invalid runtime eval syntax'),
   );
@@ -852,7 +977,8 @@ class _RuntimeEvalParser {
               at++;
               final binding = scope;
               target = assignmentLeaf(
-                () => JRef.scope(binding.current, token, strict: strictFunction),
+                () =>
+                    JRef.scope(binding.current, token, strict: strictFunction),
               );
             } else {
               target = identifierPattern();
@@ -1419,7 +1545,9 @@ class _RuntimeEvalParser {
             _unsupported();
           final value = hasValue
               ? expression()
-              : _EvalExpr(() => lexicalScope.current.get(token, strict: strictFunction));
+              : _EvalExpr(
+                  () => lexicalScope.current.get(token, strict: strictFunction),
+                );
           final prototype = !computed && hasValue && key.read() == '__proto__';
           if (prototype && hasPrototype) _unsupported();
           hasPrototype |= prototype;
@@ -1446,6 +1574,11 @@ class _RuntimeEvalParser {
   }
 
   _EvalExpr atom() {
+    if (regexLiterals[at] case (final pattern, final flags)) {
+      at++;
+      JRegex(pattern, flags); // Validate the literal during parsing.
+      return _EvalExpr(() => JRegex(pattern, flags));
+    }
     final token = peek;
     if (token.isEmpty) _unsupported();
     if (take('function')) {
@@ -1509,7 +1642,10 @@ class _RuntimeEvalParser {
         final name = tokens[at++];
         final lexicalScope = scope;
         return _EvalExpr(
-          () => jUnary('typeof', lexicalScope.current.getForTypeof(name, strict: strictFunction)),
+          () => jUnary(
+            'typeof',
+            lexicalScope.current.getForTypeof(name, strict: strictFunction),
+          ),
         );
       }
       final argument = primary();
