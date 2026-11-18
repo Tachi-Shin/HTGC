@@ -54,14 +54,20 @@ typedef _BindValue = void Function(String name, dynamic value);
 
 class _RuntimeBinding {
   final List<String> names;
-  final void Function(dynamic, _BindValue) bind;
+  final void Function(_EvalRead, _BindValue) bindFrom;
   final bool simple;
   final bool hasDefault;
   _RuntimeBinding(
     this.names,
-    this.bind, {
+    this.bindFrom, {
     this.simple = false,
     this.hasDefault = false,
+  });
+
+  void bind(dynamic value, _BindValue write) => bindFrom(() => value, write);
+
+  void assign(dynamic value) => bind(value, (_, _) {
+    throw StateError('Unexpected identifier binding in assignment pattern');
   });
 }
 
@@ -332,6 +338,7 @@ class _RuntimeEvalParser {
       _EvalRead? start;
       _EvalExpr? target;
       _RuntimeBinding? binding;
+      _RuntimeBinding? assignment;
       if (lexical || variable) {
         final kind = tokens[at++];
         final pattern = bindingPattern();
@@ -342,12 +349,15 @@ class _RuntimeEvalParser {
           start = declaration(kind: kind, first: pattern);
         }
       } else if (peek != ';') {
-        target = sequence();
-        start = target.read;
+        assignment = assignmentPattern(const {'in', 'of'});
+        if (assignment == null) {
+          target = sequence();
+          start = target.read;
+        }
       }
       if (peek == 'in' || peek == 'of') {
         final of = tokens[at++] == 'of';
-        final assign = binding == null
+        final assign = binding == null && assignment == null
             ? (target == null ? _unsupported() : assignmentReference(target))
             : null;
         final source = of ? expression() : sequence();
@@ -373,6 +383,8 @@ class _RuntimeEvalParser {
                 constant: constant,
                 variable: variable,
               );
+            } else if (assignment != null) {
+              assignment.assign(item);
             } else {
               assign!().write(item);
             }
@@ -537,27 +549,54 @@ class _RuntimeEvalParser {
     final name = bindingIdentifier();
     return _RuntimeBinding(
       [name],
-      (value, bind) => bind(name, value),
+      (read, bind) => bind(name, read()),
       simple: true,
     );
   }
 
-  _RuntimeBinding bindingElement([_RuntimeBinding? pattern]) {
-    final target = pattern ?? bindingPattern();
+  _RuntimeBinding bindingElement({
+    _RuntimeBinding? pattern,
+    bool assignment = false,
+  }) {
+    final target = pattern ?? bindingPattern(assignment: assignment);
     if (!take('=')) return target;
     final fallback = expression();
-    return _RuntimeBinding(target.names, (value, bind) {
-      target.bind(identical(value, jUndefined) ? fallback.read() : value, bind);
+    return _RuntimeBinding(target.names, (read, bind) {
+      target.bindFrom(() {
+        final value = read();
+        return identical(value, jUndefined) ? fallback.read() : value;
+      }, bind);
     }, hasDefault: true);
   }
 
-  _RuntimeBinding bindingPattern() {
-    if (take('[')) return arrayBinding();
-    if (take('{')) return objectBinding();
-    return identifierPattern();
+  _RuntimeBinding? assignmentPattern(Set<String> terminators) {
+    if (peek != '[' && peek != '{') return null;
+    final start = at;
+    try {
+      final pattern = bindingPattern(assignment: true);
+      if (terminators.contains(peek)) return pattern;
+    } on JThrown {
+      // The same prefix can be an ordinary array or object expression.
+    }
+    at = start;
+    return null;
   }
 
-  _RuntimeBinding arrayBinding() {
+  _RuntimeBinding assignmentLeaf(JRef Function() reference) =>
+      _RuntimeBinding(const [], (read, _) {
+        final target = reference();
+        target.write(read());
+      });
+
+  _RuntimeBinding bindingPattern({bool assignment = false}) {
+    if (take('[')) return arrayBinding(assignment);
+    if (take('{')) return objectBinding(assignment);
+    return assignment
+        ? assignmentLeaf(assignmentReference(primary()))
+        : identifierPattern();
+  }
+
+  _RuntimeBinding arrayBinding(bool assignment) {
     final entries = <_RuntimeBinding?>[];
     _RuntimeBinding? rest;
     while (!take(']')) {
@@ -566,11 +605,11 @@ class _RuntimeEvalParser {
         continue;
       }
       if (take('...')) {
-        rest = bindingPattern();
+        rest = bindingPattern(assignment: assignment);
         expect(']');
         break;
       }
-      entries.add(bindingElement());
+      entries.add(bindingElement(assignment: assignment));
       if (!take(',')) {
         expect(']');
         break;
@@ -578,18 +617,23 @@ class _RuntimeEvalParser {
     }
     return _RuntimeBinding(
       [for (final entry in entries) ...?entry?.names, ...?rest?.names],
-      (value, bind) {
-        final iterator = jGetIterator(value);
+      (read, bind) {
+        final iterator = jGetIterator(read());
+        dynamic readElement() =>
+            iterator.advance() ? iterator.current : jUndefined;
         try {
           for (final entry in entries) {
-            final element = iterator.advance() ? iterator.current : jUndefined;
-            entry?.bind(element, bind);
+            if (entry == null) {
+              iterator.advance();
+            } else {
+              entry.bindFrom(readElement, bind);
+            }
           }
-          if (rest != null) {
+          rest?.bindFrom(() {
             final remaining = <dynamic>[];
             while (iterator.advance()) remaining.add(iterator.current);
-            rest.bind(remaining, bind);
-          }
+            return remaining;
+          }, bind);
         } on JThrown {
           iterator.close(suppressErrors: true);
           rethrow;
@@ -600,12 +644,14 @@ class _RuntimeEvalParser {
     );
   }
 
-  _RuntimeBinding objectBinding() {
+  _RuntimeBinding objectBinding(bool assignment) {
     final entries = <(_EvalRead, _RuntimeBinding)>[];
     _RuntimeBinding? rest;
     while (!take('}')) {
       if (take('...')) {
-        rest = identifierPattern();
+        rest = assignment
+            ? assignmentLeaf(assignmentReference(primary()))
+            : identifierPattern();
         expect('}');
         break;
       }
@@ -613,15 +659,29 @@ class _RuntimeEvalParser {
         final key = expression();
         expect(']');
         expect(':');
-        entries.add((key.read, bindingElement()));
+        entries.add((key.read, bindingElement(assignment: assignment)));
       } else {
         final token = peek;
         if (RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)) {
           if (tokens[at + 1] == ':') {
             at += 2;
-            entries.add((() => token, bindingElement()));
+            entries.add((() => token, bindingElement(assignment: assignment)));
           } else {
-            entries.add((() => token, bindingElement(identifierPattern())));
+            late final _RuntimeBinding target;
+            if (assignment) {
+              if (!_runtimeBindingName(token)) _unsupported();
+              at++;
+              final binding = scope;
+              target = assignmentLeaf(
+                () => JRef(
+                  () => binding.current.get(token),
+                  (value) => binding.current.put(token, value),
+                ),
+              );
+            } else {
+              target = identifierPattern();
+            }
+            entries.add((() => token, bindingElement(pattern: target)));
           }
         } else {
           if (!token.startsWith('"') &&
@@ -630,7 +690,7 @@ class _RuntimeEvalParser {
             _unsupported();
           final key = atom();
           expect(':');
-          entries.add((key.read, bindingElement()));
+          entries.add((key.read, bindingElement(assignment: assignment)));
         }
       }
       if (!take(',')) {
@@ -640,15 +700,15 @@ class _RuntimeEvalParser {
     }
     return _RuntimeBinding(
       [for (final (_, pattern) in entries) ...pattern.names, ...?rest?.names],
-      (value, bind) {
-        final object = jRequireCoercible(value);
+      (read, bind) {
+        final object = jRequireCoercible(read());
         final keys = <Object>[];
         for (final (readKey, pattern) in entries) {
           final key = jPropertyKey(readKey());
           keys.add(key);
-          pattern.bind(jGet(object, key), bind);
+          pattern.bindFrom(() => jGet(object, key), bind);
         }
-        rest?.bind(jCopyProperties(object, excluding: keys), bind);
+        rest?.bindFrom(() => jCopyProperties(object, excluding: keys), bind);
       },
     );
   }
@@ -759,6 +819,18 @@ class _RuntimeEvalParser {
   }
 
   _EvalExpr expression([int min = 0]) {
+    if (min == 0) {
+      final pattern = assignmentPattern(const {'='});
+      if (pattern != null) {
+        expect('=');
+        final right = expression();
+        return _EvalExpr(() {
+          final value = right.read();
+          pattern.assign(value);
+          return value;
+        });
+      }
+    }
     var left = primary();
     while (true) {
       final op = peek;

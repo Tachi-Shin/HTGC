@@ -51,6 +51,27 @@ function test() {
   const entries = [[1, 2], [3, 4]];
   const nested = { list: [undefined, 6], other: 8 };
   const objKey = 'list';
+  const getterSource = { get entry() { order += 'g'; return 9; } };
+  const distinctIterable = {
+    [Symbol.iterator]() {
+      return {
+        next() { order += 'n'; return {done: false, value: 5}; },
+        return() { order += 'c'; return {}; },
+      };
+    },
+  };
+  for (const expression of [
+    '[base()[key()]] = distinctIterable; obj.value',
+    '({entry: base()[key()]} = getterSource).entry',
+    'let x = 0, y = 0; for ([x, y] of entries) {}; x + y',
+    'let a, tail; [a = 4, ...tail] = nested.list; a + tail[0]',
+    'let a, tail; ({a, ...tail} = object); a + tail.b',
+    'let a, b; [a, [b]] = [1, [2]]; a + b',
+    'let a; [a] = [3]; a',
+  ]) {
+    order = '';
+    console.log(eval(expression), order);
+  }
   function* uninitialized() {
     try { yield undefined; yield 2; }
     finally { closed++; }
