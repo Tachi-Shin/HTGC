@@ -42,7 +42,21 @@ function test() {
   source = 'obj.value ||= rhs()';
   order = '';
   console.log(eval(source), order);
+  let closed = 0;
+  function* numbers() {
+    try { yield 1; yield 2; }
+    finally { closed++; }
+  }
+  const object = { a: 1, b: 2 };
   for (const expression of [
+    'let total = 0; for (let i = 0, end = 4; i < end; i++) { if (i === 1) continue; total += i }; total',
+    'for (const i = 1; ; ) { i; break }',
+    'let total = 0; for (const item of numbers()) { total += item; break }; total',
+    'let value; for (value of numbers()) { if (value === 1) continue; value }; value',
+    'for (object.a of numbers()) { break }; object.a',
+    'let names = ""; for (let key in object) { names += key }; names',
+    'let source = object; for (const source in source) {}',
+    'try { for (const item of numbers()) { throw item } } catch (error) { error }',
     'let temp = value + 1; temp * 2',
     'const temp = 3, other = temp + 1; other',
     '1; let temp;',
@@ -71,7 +85,7 @@ function test() {
     try { console.log(eval(expression)); }
     catch (error) { console.log(error.name); }
   }
-  console.log(value, typeof temp);
+  console.log(value, typeof temp, closed);
   const nonString = {};
   console.log(eval(nonString) === nonString);
 }
@@ -98,6 +112,8 @@ const branch = Function(body);
 console.log(branch(true));
 try { branch(false); } catch (value) { console.log(value); }
 body = 'try { return 3 } finally { return 4 }';
+console.log(Function(body)());
+body = 'for (const letter of "ab") { return letter }';
 console.log(Function(body)());
 body = 'throw 17';
 try { Function(body)(); } catch (value) { console.log(value); }

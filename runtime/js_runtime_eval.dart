@@ -163,20 +163,7 @@ class _RuntimeEvalParser {
   _EvalRead statement({bool allowLexical = true}) {
     if (take(';')) return () => _jRuntimeEmpty;
     if (peek == '{') return block();
-    if (take('for')) {
-      expect('(');
-      final start = peek == ';' ? null : expression();
-      expect(';');
-      final condition = peek == ';' ? _EvalExpr(() => true) : expression();
-      expect(';');
-      final update = peek == ')' ? null : expression();
-      expect(')');
-      final body = loopBody();
-      return () {
-        start?.read();
-        return runLoop(condition, body, update: update);
-      };
-    }
+    if (take('for')) return forStatement();
     if (take('while')) {
       expect('(');
       final condition = expression();
@@ -273,6 +260,109 @@ class _RuntimeEvalParser {
     }
   }
 
+  _EvalRead forStatement() {
+    expect('(');
+    final parent = scope;
+    final parentNames = lexicalNames;
+    final loopScope = _RuntimeLexicalScope(parent.current);
+    final names = <String>{};
+    scope = loopScope;
+    lexicalNames = names;
+    try {
+      final lexical = peek == 'let' || peek == 'const';
+      final constant = peek == 'const';
+      final iterationDeclaration =
+          lexical &&
+          (tokens.elementAtOrNull(at + 2) == 'in' ||
+              tokens.elementAtOrNull(at + 2) == 'of');
+      _EvalRead? start;
+      _EvalExpr? target;
+      String? binding;
+      if (iterationDeclaration) {
+        at++;
+        binding = bindingIdentifier();
+        names.add(binding);
+      } else if (lexical) {
+        start = lexicalDeclaration();
+      } else if (peek != ';') {
+        target = expression();
+        start = target.read;
+      }
+      if (peek == 'in' || peek == 'of') {
+        final of = tokens[at++] == 'of';
+        final assign = binding == null
+            ? (target == null ? _unsupported() : assignmentReference(target))
+            : null;
+        final source = expression();
+        expect(')');
+        final body = loopBody();
+        return () {
+          loopScope.current = JScope(parent.current);
+          if (binding != null) loopScope.current.reserve(binding);
+          final input = source.read();
+          dynamic iteration(dynamic item) {
+            if (binding != null) {
+              loopScope.current = JScope(parent.current)
+                ..define(binding, item, constant: constant);
+            } else {
+              assign!().write(item);
+            }
+            return body();
+          }
+
+          return of ? runForOf(input, iteration) : runForIn(input, iteration);
+        };
+      }
+      expect(';');
+      final condition = peek == ';' ? _EvalExpr(() => true) : expression();
+      expect(';');
+      final update = peek == ')' ? null : expression();
+      expect(')');
+      final body = loopBody();
+      final iterationNames = !constant ? names.toList() : <String>[];
+      void nextEnvironment() {
+        if (iterationNames.isNotEmpty) {
+          loopScope.current = loopScope.current.copyIteration(iterationNames);
+        }
+      }
+
+      return () {
+        loopScope.current = JScope(parent.current);
+        for (final name in names) loopScope.current.reserve(name);
+        start?.call();
+        nextEnvironment();
+        return runLoop(
+          condition,
+          body,
+          update: () {
+            nextEnvironment();
+            update?.read();
+          },
+        );
+      };
+    } finally {
+      scope = parent;
+      lexicalNames = parentNames;
+    }
+  }
+
+  dynamic runForOf(dynamic source, dynamic Function(dynamic) body) {
+    final iterator = jGetIterator(source);
+    try {
+      return runLoop(_EvalExpr(iterator.advance), () => body(iterator.current));
+    } on JThrown {
+      iterator.close(suppressErrors: true);
+      rethrow;
+    } finally {
+      iterator.close();
+    }
+  }
+
+  dynamic runForIn(dynamic source, dynamic Function(dynamic) body) {
+    final keys = jForInKeys(source).iterator;
+    return runLoop(_EvalExpr(keys.moveNext), () => body(keys.current));
+  }
+
   _EvalRead loopBody() {
     loopDepth++;
     try {
@@ -286,7 +376,7 @@ class _RuntimeEvalParser {
     _EvalExpr condition,
     _EvalRead body, {
     bool first = false,
-    _EvalExpr? update,
+    void Function()? update,
   }) {
     dynamic result = jUndefined;
     while (first || jTruthy(condition.read())) {
@@ -298,7 +388,7 @@ class _RuntimeEvalParser {
         if (!identical(jump.value, _jRuntimeEmpty)) result = jump.value;
         if (jump.isBreak) break;
       }
-      update?.read();
+      update?.call();
     }
     return result;
   }
@@ -346,58 +436,44 @@ class _RuntimeEvalParser {
     }
     if (peek == 'let' || peek == 'const') {
       if (!allowLexical) _unsupported();
-      final declarationScope = scope;
-      final constant = tokens[at++] == 'const';
-      final declarations = <_EvalRead>[];
-      do {
-        final name = peek;
-        if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name) ||
-            const {
-              'let',
-              'const',
-              'var',
-              'return',
-              'this',
-              'true',
-              'false',
-              'null',
-              'function',
-              'class',
-              'new',
-              'if',
-              'else',
-              'for',
-              'while',
-              'throw',
-              'import',
-              'export',
-              'super',
-              'delete',
-              'void',
-              'typeof',
-            }.contains(name) ||
-            !lexicalNames.add(name))
-          _unsupported();
-        at++;
-        final initialized = take('=');
-        if (constant && !initialized) _unsupported();
-        final initializer = initialized
-            ? expression()
-            : _EvalExpr(() => jUndefined);
-        declarations.add(
-          () => declarationScope.current.define(
-            name,
-            initializer.read(),
-            constant: constant,
-          ),
-        );
-      } while (take(','));
-      return () {
-        for (final declaration in declarations) declaration();
-        return _jRuntimeEmpty;
-      };
+      return lexicalDeclaration();
     }
     return expression().read;
+  }
+
+  String bindingIdentifier() {
+    final name = peek;
+    if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name) ||
+        !_runtimeBindingName(name))
+      _unsupported();
+    at++;
+    return name;
+  }
+
+  _EvalRead lexicalDeclaration() {
+    final declarationScope = scope;
+    final constant = tokens[at++] == 'const';
+    final declarations = <_EvalRead>[];
+    do {
+      final name = bindingIdentifier();
+      if (!lexicalNames.add(name)) _unsupported();
+      final initialized = take('=');
+      if (constant && !initialized) _unsupported();
+      final initializer = initialized
+          ? expression()
+          : _EvalExpr(() => jUndefined);
+      declarations.add(
+        () => declarationScope.current.define(
+          name,
+          initializer.read(),
+          constant: constant,
+        ),
+      );
+    } while (take(','));
+    return () {
+      for (final declaration in declarations) declaration();
+      return _jRuntimeEmpty;
+    };
   }
 
   void instantiate() {
@@ -444,7 +520,7 @@ class _RuntimeEvalParser {
     return left;
   }
 
-  JRef Function() updateReference(_EvalExpr operand) {
+  JRef Function() assignmentReference(_EvalExpr operand) {
     final member = operand.reference;
     if (member != null) return member;
     final write = operand.write;
@@ -455,7 +531,7 @@ class _RuntimeEvalParser {
   _EvalExpr primary() {
     if (peek == '++' || peek == '--') {
       final delta = tokens[at++] == '++' ? 1 : -1;
-      final reference = updateReference(primary());
+      final reference = assignmentReference(primary());
       return _EvalExpr(() => jUpdate(reference(), delta, true));
     }
     var value = atom();
@@ -500,7 +576,7 @@ class _RuntimeEvalParser {
       } else {
         if (!lineBreaks.contains(at) && (peek == '++' || peek == '--')) {
           final delta = tokens[at++] == '++' ? 1 : -1;
-          final reference = updateReference(value);
+          final reference = assignmentReference(value);
           return _EvalExpr(() => jUpdate(reference(), delta, false));
         }
         return value;

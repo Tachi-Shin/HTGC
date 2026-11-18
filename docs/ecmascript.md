@@ -53,4 +53,6 @@
 
 実行時evalと通常の動的Functionは、ブロックの字句スコープ、if／else、throwに対応します。動的Functionではlet／constと複数の文を実行し、returnで終了できます。対応する改行位置ではセミコロンを補い、use strict指令を認識してthisと仮引数の一部の規則を適用します。var、仮引数の分割代入、strictと非strictの全規則などは未実装です。
 
-実行時evalと通常の動的Functionでwhile、do／while、式を使うfor、ラベルなしのbreak・continue、try／catch／finally、前置・後置の++／--に対応します。forの宣言形式、for…in／of、ラベル、catchの分割代入は対象外です。
+実行時evalと通常の動的Functionでwhile、do／while、式を使うfor、ラベルなしのbreak・continue、try／catch／finally、前置・後置の++／--に対応します。ラベル、catchの分割代入は対象外です。
+
+通常のforは単純識別子のlet／const宣言に対応します。for…in／ofでは単純識別子のlet／const、既存の変数、プロパティへの代入を扱います。for…ofではbreak、return、例外で反復を抜ける際にIteratorCloseを行います。var、分割代入、for await…ofは対象外です。
