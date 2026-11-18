@@ -55,4 +55,6 @@
 
 実行時evalと通常の動的Functionでwhile、do／while、式を使うfor、ラベルなしのbreak・continue、try／catch／finally、前置・後置の++／--に対応します。ラベル、catchの分割代入は対象外です。
 
-通常のforは単純識別子のlet／const宣言に対応します。for…in／ofでは単純識別子のlet／const、既存の変数、プロパティへの代入を扱います。for…ofではbreak、return、例外で反復を抜ける際にIteratorCloseを行います。var、分割代入、for await…ofは対象外です。
+通常のforは単純識別子のlet／const宣言に対応します。for…in／ofでは単純識別子のlet／const、既存の変数、プロパティへの代入を扱います。for…ofではbreak、return、例外で反復を抜ける際にIteratorCloseを行います。分割代入とfor await…ofは対象外です。
+
+実行時に生成する通常のFunctionと、use strictを明示した実行時evalで、単純識別子のvar宣言と巻き上げに対応します。ブロック内のvar、仮引数の再宣言、for／for…in／for…ofのvar宣言、let／constとの競合を扱います。非strictのevalと、呼び出し元のstrictモードを継承するevalでのvarは未対応です。

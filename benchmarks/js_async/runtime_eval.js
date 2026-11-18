@@ -59,6 +59,11 @@ function test() {
     'try { for (const item of numbers()) { throw item } } catch (error) { error }',
     'let temp = value + 1; temp * 2',
     'const temp = 3, other = temp + 1; other',
+    '"use strict"; var local = 3; local',
+    '"use strict"; var local = 3; 7; var local',
+    '"use strict"; value = 99; { var local; let local; }',
+    '"use strict"; var local = 2; { let local = 3; local }; local',
+    '"use strict"; { let local = 3; local }; var local = 2; local',
     '1; let temp;',
     'let i = 0, sum = 0; while (i < 4) { let n = ++i; if (n === 2) continue; sum += n }; sum',
     'let i = 0; do { i++ } while (i < 3); i',
@@ -85,7 +90,7 @@ function test() {
     try { console.log(eval(expression)); }
     catch (error) { console.log(error.name); }
   }
-  console.log(value, typeof temp, closed);
+  console.log(value, typeof temp, typeof local, closed);
   const nonString = {};
   console.log(eval(nonString) === nonString);
 }
@@ -115,6 +120,15 @@ body = 'try { return 3 } finally { return 4 }';
 console.log(Function(body)());
 body = 'for (const letter of "ab") { return letter }';
 console.log(Function(body)());
+body = 'var first = x; if (false) { var x = 99 }; { var x = 8 }; return typeof first + ":" + x';
+console.log(Function(body)());
+params = 'parameter';
+body = 'var before = parameter; var parameter; parameter += 3; return before + ":" + parameter';
+console.log(Function(params, body)(4));
+body = 'var sum = 0; for (var i = 0; i < 3; i++) sum += i; for (var letter of "ab") sum += letter; return i + ":" + sum + ":" + letter';
+console.log(Function(body)());
+body = 'for (let i = 0; i < 1; i++) { var i; }';
+try { Function(body); } catch (error) { console.log(error.name); }
 body = 'throw 17';
 try { Function(body)(); } catch (value) { console.log(value); }
 params = 'a';

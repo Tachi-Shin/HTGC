@@ -58,13 +58,30 @@ class _RuntimeEvalParser {
   final lineBreaks = <int>{};
   bool strictFunction = false;
   int at = 0;
-  Set<String> lexicalNames = <String>{};
+  final lexicalEnvironments = [<String>{}];
+  final varNamesByEnvironment = [<String>{}];
+  Set<String> get lexicalNames => lexicalEnvironments.last;
+  final variableNames = <String>{};
+  final JScope variableScope;
+
+  void enterEnvironment() {
+    lexicalEnvironments.add(<String>{});
+    varNamesByEnvironment.add(<String>{});
+  }
+
+  void leaveEnvironment() {
+    lexicalEnvironments.removeLast();
+    varNamesByEnvironment.removeLast();
+  }
+
   _RuntimeEvalParser(
     this.source,
     JScope scope,
     this.thisValue, {
     this.functionBody = false,
-  }) : scope = _RuntimeLexicalScope(scope) {
+    JScope? variables,
+  }) : variableScope = variables ?? scope,
+       scope = _RuntimeLexicalScope(scope) {
     final token = RegExp(
       r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[{}()\[\].,:?&|^+\-*/%<>=!~;]''',
     );
@@ -141,7 +158,7 @@ class _RuntimeEvalParser {
   };
   List<_EvalRead> parse({bool inBlock = false}) {
     final statements = <_EvalRead>[];
-    var directives = functionBody && !inBlock;
+    var directives = !inBlock;
     while (peek.isNotEmpty && !(inBlock && peek == '}')) {
       final start = at;
       statements.add(statement());
@@ -156,6 +173,14 @@ class _RuntimeEvalParser {
           strictFunction = true;
         }
       }
+    }
+    if (!inBlock &&
+        !functionBody &&
+        !strictFunction &&
+        variableNames.isNotEmpty) {
+      throw JThrown(
+        JError('SyntaxError', 'Non-strict runtime eval var is unsupported'),
+      );
     }
     return statements;
   }
@@ -239,11 +264,10 @@ class _RuntimeEvalParser {
   _EvalRead block({String? forbiddenName}) {
     expect('{');
     final parent = scope;
-    final parentNames = lexicalNames;
     final blockScope = _RuntimeLexicalScope(parent.current);
-    final blockNames = <String>{};
     scope = blockScope;
-    lexicalNames = blockNames;
+    enterEnvironment();
+    final blockNames = lexicalNames;
     try {
       final statements = parse(inBlock: true);
       expect('}');
@@ -256,23 +280,23 @@ class _RuntimeEvalParser {
       };
     } finally {
       scope = parent;
-      lexicalNames = parentNames;
+      leaveEnvironment();
     }
   }
 
   _EvalRead forStatement() {
     expect('(');
     final parent = scope;
-    final parentNames = lexicalNames;
     final loopScope = _RuntimeLexicalScope(parent.current);
-    final names = <String>{};
     scope = loopScope;
-    lexicalNames = names;
+    enterEnvironment();
+    final names = lexicalNames;
     try {
       final lexical = peek == 'let' || peek == 'const';
       final constant = peek == 'const';
+      final variable = peek == 'var';
       final iterationDeclaration =
-          lexical &&
+          (lexical || variable) &&
           (tokens.elementAtOrNull(at + 2) == 'in' ||
               tokens.elementAtOrNull(at + 2) == 'of');
       _EvalRead? start;
@@ -281,9 +305,13 @@ class _RuntimeEvalParser {
       if (iterationDeclaration) {
         at++;
         binding = bindingIdentifier();
-        names.add(binding);
-      } else if (lexical) {
-        start = lexicalDeclaration();
+        if (variable) {
+          registerVariable(binding);
+        } else {
+          names.add(binding);
+        }
+      } else if (lexical || variable) {
+        start = declaration();
       } else if (peek != ';') {
         target = expression();
         start = target.read;
@@ -298,10 +326,12 @@ class _RuntimeEvalParser {
         final body = loopBody();
         return () {
           loopScope.current = JScope(parent.current);
-          if (binding != null) loopScope.current.reserve(binding);
+          if (binding != null && !variable) loopScope.current.reserve(binding);
           final input = source.read();
           dynamic iteration(dynamic item) {
-            if (binding != null) {
+            if (binding != null && variable) {
+              loopScope.current.put(binding, item);
+            } else if (binding != null) {
               loopScope.current = JScope(parent.current)
                 ..define(binding, item, constant: constant);
             } else {
@@ -342,7 +372,7 @@ class _RuntimeEvalParser {
       };
     } finally {
       scope = parent;
-      lexicalNames = parentNames;
+      leaveEnvironment();
     }
   }
 
@@ -436,8 +466,9 @@ class _RuntimeEvalParser {
     }
     if (peek == 'let' || peek == 'const') {
       if (!allowLexical) _unsupported();
-      return lexicalDeclaration();
+      return declaration();
     }
+    if (peek == 'var') return declaration();
     return expression().read;
   }
 
@@ -450,25 +481,48 @@ class _RuntimeEvalParser {
     return name;
   }
 
-  _EvalRead lexicalDeclaration() {
+  void registerVariable(String name) {
+    if (lexicalEnvironments.any((names) => names.contains(name))) {
+      _unsupported();
+    }
+    variableNames.add(name);
+    for (final names in varNamesByEnvironment) {
+      names.add(name);
+    }
+  }
+
+  _EvalRead declaration() {
     final declarationScope = scope;
-    final constant = tokens[at++] == 'const';
+    final kind = tokens[at++];
+    final constant = kind == 'const';
+    final variable = kind == 'var';
     final declarations = <_EvalRead>[];
     do {
       final name = bindingIdentifier();
-      if (!lexicalNames.add(name)) _unsupported();
-      final initialized = take('=');
-      if (constant && !initialized) _unsupported();
-      final initializer = initialized
-          ? expression()
-          : _EvalExpr(() => jUndefined);
-      declarations.add(
-        () => declarationScope.current.define(
-          name,
-          initializer.read(),
-          constant: constant,
-        ),
-      );
+      if (variable) {
+        registerVariable(name);
+      } else if (varNamesByEnvironment.last.contains(name) ||
+          !lexicalNames.add(name)) {
+        _unsupported();
+      }
+      if (take('=')) {
+        final initializer = expression();
+        declarations.add(
+          () => variable
+              ? declarationScope.current.put(name, initializer.read())
+              : declarationScope.current.define(
+                  name,
+                  initializer.read(),
+                  constant: constant,
+                ),
+        );
+      } else if (constant) {
+        _unsupported();
+      } else if (!variable) {
+        declarations.add(
+          () => declarationScope.current.define(name, jUndefined),
+        );
+      }
     } while (take(','));
     return () {
       for (final declaration in declarations) declaration();
@@ -477,6 +531,7 @@ class _RuntimeEvalParser {
   }
 
   void instantiate() {
+    for (final name in variableNames) variableScope.declareVar(name);
     for (final name in lexicalNames) scope.current.reserve(name);
   }
 
@@ -839,6 +894,7 @@ JFunction jRuntimeFunction(JScope root, List<dynamic> args, String kind) {
       JScope(parametersScope),
       !strict && jNullish(receiver) ? root.globalThisValue : receiver,
       functionBody: true,
+      variables: parametersScope,
     );
     final statements = parser.parse();
     parser.instantiate();
