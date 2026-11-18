@@ -45,21 +45,33 @@ class _EvalExpr {
 
 class _RuntimeEvalParser {
   final String source;
-  final JScope scope;
+  JScope scope;
   final dynamic thisValue;
+  final bool functionBody;
   final List<String> tokens = [];
+  final lineBreaks = <int>{};
+  bool strictFunction = false;
   int at = 0;
-  final lexicalNames = <String>{};
-  _RuntimeEvalParser(this.source, this.scope, this.thisValue) {
+  Set<String> lexicalNames = <String>{};
+  _RuntimeEvalParser(
+    this.source,
+    this.scope,
+    this.thisValue, {
+    this.functionBody = false,
+  }) {
     final token = RegExp(
-      r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[()\[\].,:?&|^+\-*/%<>=!~;]''',
+      r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(?:>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[{}()\[\].,:?&|^+\-*/%<>=!~;]''',
     );
     var pos = 0;
     while (pos < source.length) {
       final match = token.matchAsPrefix(source, pos);
       if (match == null) _unsupported();
       final word = match.group(0)!;
-      if (word.trim().isNotEmpty) tokens.add(word);
+      if (word.trim().isNotEmpty) {
+        tokens.add(word);
+      } else if (RegExp(r'[\n\r\u2028\u2029]').hasMatch(word)) {
+        lineBreaks.add(tokens.length);
+      }
       pos = match.end;
     }
     tokens.add('');
@@ -121,62 +133,138 @@ class _RuntimeEvalParser {
     '||=',
     '??=',
   };
-  List<_EvalRead> parse() {
+  List<_EvalRead> parse({bool inBlock = false}) {
     final statements = <_EvalRead>[];
-    while (peek.isNotEmpty) {
-      if (take(';')) continue;
-      if (peek == 'let' || peek == 'const') {
-        final constant = tokens[at++] == 'const';
-        final declarations = <_EvalRead>[];
-        do {
-          final name = peek;
-          if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name) ||
-              const {
-                'let',
-                'const',
-                'var',
-                'return',
-                'this',
-                'true',
-                'false',
-                'null',
-                'function',
-                'class',
-                'new',
-                'if',
-                'else',
-                'for',
-                'while',
-                'throw',
-                'import',
-                'export',
-                'super',
-                'delete',
-                'void',
-                'typeof',
-              }.contains(name) ||
-              !lexicalNames.add(name))
-            _unsupported();
-          at++;
-          final initialized = take('=');
-          if (constant && !initialized) _unsupported();
-          final initializer = initialized
-              ? expression()
-              : _EvalExpr(() => jUndefined);
-          declarations.add(
-            () => scope.define(name, initializer.read(), constant: constant),
-          );
-        } while (take(','));
-        statements.add(() {
-          for (final declaration in declarations) declaration();
-          return _jRuntimeEmpty;
-        });
-      } else {
-        statements.add(expression().read);
+    var directives = functionBody && !inBlock;
+    while (peek.isNotEmpty && !(inBlock && peek == '}')) {
+      final start = at;
+      statements.add(statement());
+      if (directives) {
+        final first = tokens[start];
+        directives =
+            (at == start + 1 ||
+                (at == start + 2 && tokens[start + 1] == ';')) &&
+            (first.startsWith('"') || first.startsWith("'"));
+        if (directives &&
+            (first == '"use strict"' || first == "'use strict'")) {
+          strictFunction = true;
+        }
       }
-      if (peek.isNotEmpty) expect(';');
     }
     return statements;
+  }
+
+  _EvalRead statement({bool allowLexical = true}) {
+    if (take(';')) return () => _jRuntimeEmpty;
+    if (take('{')) {
+      final parent = scope;
+      final parentNames = lexicalNames;
+      final block = JScope(parent);
+      final blockNames = <String>{};
+      scope = block;
+      lexicalNames = blockNames;
+      try {
+        final statements = parse(inBlock: true);
+        expect('}');
+        return () {
+          for (final name in blockNames) block.reserve(name);
+          return _runRuntimeStatements(statements, initial: _jRuntimeEmpty);
+        };
+      } finally {
+        scope = parent;
+        lexicalNames = parentNames;
+      }
+    }
+    if (take('if')) {
+      expect('(');
+      final condition = expression();
+      expect(')');
+      final yes = statement(allowLexical: false);
+      final no = take('else') ? statement(allowLexical: false) : null;
+      return () {
+        final value = jTruthy(condition.read())
+            ? yes()
+            : (no == null ? jUndefined : no());
+        return identical(value, _jRuntimeEmpty) ? jUndefined : value;
+      };
+    }
+    final simple = simpleStatement(allowLexical);
+    if (!take(';') &&
+        peek.isNotEmpty &&
+        peek != '}' &&
+        !lineBreaks.contains(at))
+      _unsupported();
+    return simple;
+  }
+
+  _EvalRead simpleStatement(bool allowLexical) {
+    if (take('return')) {
+      if (!functionBody) _unsupported();
+      final value =
+          peek.isEmpty || peek == ';' || peek == '}' || lineBreaks.contains(at)
+          ? _EvalExpr(() => jUndefined)
+          : expression();
+      return () => throw _RuntimeReturn(value.read());
+    }
+    if (take('throw')) {
+      if (lineBreaks.contains(at)) _unsupported();
+      final value = expression();
+      return () => throw JThrown(value.read());
+    }
+    if (peek == 'let' || peek == 'const') {
+      if (!allowLexical) _unsupported();
+      final declarationScope = scope;
+      final constant = tokens[at++] == 'const';
+      final declarations = <_EvalRead>[];
+      do {
+        final name = peek;
+        if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name) ||
+            const {
+              'let',
+              'const',
+              'var',
+              'return',
+              'this',
+              'true',
+              'false',
+              'null',
+              'function',
+              'class',
+              'new',
+              'if',
+              'else',
+              'for',
+              'while',
+              'throw',
+              'import',
+              'export',
+              'super',
+              'delete',
+              'void',
+              'typeof',
+            }.contains(name) ||
+            !lexicalNames.add(name))
+          _unsupported();
+        at++;
+        final initialized = take('=');
+        if (constant && !initialized) _unsupported();
+        final initializer = initialized
+            ? expression()
+            : _EvalExpr(() => jUndefined);
+        declarations.add(
+          () => declarationScope.define(
+            name,
+            initializer.read(),
+            constant: constant,
+          ),
+        );
+      } while (take(','));
+      return () {
+        for (final declaration in declarations) declaration();
+        return _jRuntimeEmpty;
+      };
+    }
+    return expression().read;
   }
 
   void instantiate() {
@@ -296,7 +384,10 @@ class _RuntimeEvalParser {
           RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek) &&
           !const {'.', '[', '('}.contains(tokens[at + 1])) {
         final name = tokens[at++];
-        return _EvalExpr(() => jUnary('typeof', scope.getForTypeof(name)));
+        final lexicalScope = scope;
+        return _EvalExpr(
+          () => jUnary('typeof', lexicalScope.getForTypeof(name)),
+        );
       }
       final argument = primary();
       return _EvalExpr(() => jUnary(token, argument.read()));
@@ -358,9 +449,10 @@ class _RuntimeEvalParser {
       'instanceof',
     };
     if (reserved.contains(token)) _unsupported();
+    final lexicalScope = scope;
     return _EvalExpr(
-      () => scope.get(token),
-      (value) => scope.put(token, value),
+      () => lexicalScope.get(token),
+      (value) => lexicalScope.put(token, value),
     );
   }
 }
@@ -370,7 +462,14 @@ dynamic jRuntimeEval(dynamic value, JScope scope, dynamic thisValue) {
   final parser = _RuntimeEvalParser(value, JScope(scope), thisValue);
   final statements = parser.parse();
   parser.instantiate();
-  dynamic result = jUndefined;
+  return _runRuntimeStatements(statements);
+}
+
+dynamic _runRuntimeStatements(
+  List<_EvalRead> statements, {
+  dynamic initial = jUndefined,
+}) {
+  dynamic result = initial;
   for (final statement in statements) {
     final value = statement();
     if (!identical(value, _jRuntimeEmpty)) result = value;
@@ -387,8 +486,11 @@ dynamic jDirectRuntimeEval(
     ? jRuntimeEval(jArg(args, 0), scope, thisValue)
     : jCall(callee, args);
 
-// Runtime Function currently accepts identifier parameters and a single return
-// expression. Validate before constructing; unsupported bodies never execute.
+class _RuntimeReturn implements Exception {
+  final dynamic value;
+  _RuntimeReturn(this.value);
+}
+
 JFunction jRuntimeFunction(JScope root, List<dynamic> args, String kind) {
   if (kind != 'normal') {
     throw JThrown(JError('TypeError', 'Unsupported dynamic function kind'));
@@ -427,33 +529,43 @@ JFunction jRuntimeFunction(JScope root, List<dynamic> args, String kind) {
       throw JThrown(JError('SyntaxError', 'Unsupported Function parameters'));
     }
   }
-  var expression = body.trim();
-  final returns = RegExp(r'^return(?:\s|;|$)').hasMatch(expression);
-  if (returns) expression = expression.substring(6).trim();
-  if (expression.endsWith(';'))
-    expression = expression.substring(0, expression.length - 1).trim();
   final validation = _RuntimeEvalParser(
-    expression,
+    body,
     JScope(root.scriptGlobalScope),
     jUndefined,
+    functionBody: true,
   );
-  final parsed = validation.parse();
-  if (parsed.length > 1 || validation.lexicalNames.isNotEmpty)
-    throw JThrown(JError('SyntaxError', 'Unsupported Function body'));
+  validation.parse();
+  final strict = validation.strictFunction;
+  if (names.any(validation.lexicalNames.contains) ||
+      (strict &&
+          (names.toSet().length != names.length ||
+              names.contains('eval') ||
+              names.contains('arguments')))) {
+    throw JThrown(JError('SyntaxError', 'Invalid Function parameter binding'));
+  }
   final function = jFunction((actual, receiver, newTarget) {
-    final local = JScope(root.scriptGlobalScope);
-    for (final name in names.toSet())
-      local.define(name, jArg(actual, names.lastIndexOf(name)));
-    if (!names.contains('arguments'))
-      local.define('arguments', jArgumentsObject(actual));
-    final statements = _RuntimeEvalParser(
-      expression,
-      local,
-      jNullish(receiver) ? root.globalThisValue : receiver,
-    ).parse();
-    dynamic value = jUndefined;
-    for (final statement in statements) value = statement();
-    return returns ? value : jUndefined;
+    final parametersScope = JScope(root.scriptGlobalScope);
+    for (final name in names.toSet()) {
+      parametersScope.define(name, jArg(actual, names.lastIndexOf(name)));
+    }
+    if (!names.contains('arguments')) {
+      parametersScope.define('arguments', jArgumentsObject(actual));
+    }
+    final parser = _RuntimeEvalParser(
+      body,
+      JScope(parametersScope),
+      !strict && jNullish(receiver) ? root.globalThisValue : receiver,
+      functionBody: true,
+    );
+    final statements = parser.parse();
+    parser.instantiate();
+    try {
+      for (final statement in statements) statement();
+    } on _RuntimeReturn catch (completion) {
+      return completion.value;
+    }
+    return jUndefined;
   });
   return jNamedFunction(
     function,

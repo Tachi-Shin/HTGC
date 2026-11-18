@@ -46,6 +46,13 @@ function test() {
     'let temp = value + 1; temp * 2',
     'const temp = 3, other = temp + 1; other',
     '1; let temp;',
+    'let temp = 3; { let temp = 5; temp }; temp',
+    'let temp = 3; { typeof temp; let temp = 5 }',
+    '1; { let temp = 2 }',
+    '1; if (false) { 2 }',
+    'if (true) { null } else { missing }',
+    'if (false) missing; else 9',
+    'value = 99; if (false) { let temp; let temp; }',
     'let temp = temp',
     'const temp = 1; temp = 2',
     'value = 99; let temp; let temp;',
@@ -67,4 +74,21 @@ body = 'return this.value';
 console.log(Function(body).call({value: 15}));
 body = 'return arguments[1]';
 console.log(Function(body)(1, 8));
+body = 'let x = 3; const y = x + 2; x += y; return x; missing()';
+console.log(Function(body)());
+body = 'let x = 1\nx += 2\nreturn x';
+console.log(Function(body)());
+body = 'return\n42';
+console.log(Function(body)());
+body = '"use strict"\nreturn this';
+console.log(Function(body)() === undefined);
+body = 'if (arguments[0]) { let result = 3; return result } else { throw 5 }';
+const branch = Function(body);
+console.log(branch(true));
+try { branch(false); } catch (value) { console.log(value); }
+body = 'throw 17';
+try { Function(body)(); } catch (value) { console.log(value); }
+params = 'a';
+body = 'return 1; let a;';
+try { Function(params, body); } catch (error) { console.log(error.name); }
 $DONE();
