@@ -8,6 +8,7 @@ class GeneratorCompiler(Compiler):
         self.serial, self.scope, self.receiver = parent.serial, parent.scope, parent.receiver
         self.module_owner = parent.module_owner
         self.module_key = parent.module_key
+        self.strict = parent.strict
         self.script_name = parent.script_name
         self.private_names = parent.private_names
         self.constructor_aliases = parent.constructor_aliases
@@ -155,6 +156,8 @@ class GeneratorCompiler(Compiler):
                         return self.save(f'jCompiledEval({target}, {values}, {compiled})')
                     construct = str(kind == 'NewExpression').lower()
                     return self.save(f'jCompiledFunction({target}, {values}, {compiled}, construct: {construct}, kind: {quote(constructor_kind)})')
+                if kind == 'CallExpression' and name == 'eval':
+                    return self.save(self.runtime_eval(self.expr(callee), self.arguments(arguments)))
             constructor_kind = self.function_constructor_kind(callee)
             if (constructor_kind is not None and callee['type'] == 'MemberExpression'
                     and not node.get('optional') and not callee.get('optional')

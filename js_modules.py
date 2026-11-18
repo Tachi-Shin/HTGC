@@ -75,6 +75,7 @@ class DartModules:
         module = self.modules[key] = Module(Compiler(key), f"htgcModule{len(self.modules)}")
         module.compiler.module_owner = owner.relative_to(root).as_posix()
         module.compiler.module_key = key
+        module.compiler.strict = True
         if json_module:
             module.json_source = source
             module.exports["default"] = (None, DEFAULT)

@@ -59,6 +59,7 @@ class Compiler:
             "jUndefined",
         )
         self.asynchronous = False
+        self.strict = False
         self.new_target = "jUndefined"
         self.home = None
         self.construction = None
@@ -261,12 +262,26 @@ class Compiler:
                     f'return {scope}.define({name}, {result}, constant: true); }})()')
         return self.function_value(node)
 
+    @staticmethod
+    def strict_directive(statements):
+        for statement in statements:
+            directive = statement.get("directive")
+            if directive is None:
+                return False
+            if directive == "use strict":
+                return True
+        return False
+
     def function_value(self, node):
+        previous_strict = self.strict
+        body = node["body"]
+        self.strict = self.strict or self.strict_directive(body.get("body", []))
         previous, self.eval_completion = self.eval_completion, None
         try:
             return self.function_body(node)
         finally:
             self.eval_completion = previous
+            self.strict = previous_strict
 
     def function_body(self, node):
         if node.get("generator"):
@@ -353,6 +368,10 @@ class Compiler:
             )
         return False
 
+    def runtime_eval(self, target, arguments):
+        return (f'jDirectRuntimeEval({target}, {arguments}, {self.scope}, {self.receiver}, '
+                f'strict: {str(self.strict).lower()})')
+
     def compiled_eval(self, source, *, indirect=False):
         try:
             ast = parse(source, f"{self.path}:eval", source_type="script" if indirect else "module")
@@ -373,6 +392,8 @@ class Compiler:
             self.receiver = f'{scope}.globalScope.globalThisValue'
             self.new_target, self.home = 'jUndefined', None
         completion = self.eval_completion
+        previous_strict = self.strict
+        self.strict = (self.strict and not indirect) or self.strict_directive(nodes)
         try:
             body = self.block_contents(nodes, hoist_vars=True)
         except CompileError:
@@ -380,6 +401,7 @@ class Compiler:
         finally:
             self.scope, self.eval_completion, self.receiver = parent, previous, old_receiver
             self.new_target, self.home = old_target, old_home
+            self.strict = previous_strict
         environment = f'{parent}.globalScope' if indirect else parent
         return (f'() {{\n// ignore: unused_local_variable\nfinal {scope} = JScope({environment});\n'
                 f'dynamic {completion} = jUndefined;\n{body}\nreturn {completion}; }}')
@@ -436,8 +458,12 @@ class Compiler:
             return '() { throw JThrown(JError("SyntaxError", "Invalid Function source")); }'
         parent, self.scope = self.scope, self.name('global')
         scope = self.scope
-        expression = self.function(function)
-        self.scope = parent
+        previous_strict, self.strict = self.strict, False
+        try:
+            expression = self.function(function)
+        finally:
+            self.scope = parent
+            self.strict = previous_strict
         return f'() {{ final {scope} = {parent}.globalScope; return {expression}; }}'
 
     def expr(self, n):
@@ -578,7 +604,7 @@ class Compiler:
                         and isinstance(arguments[0].get("value"), str)):
                     return f'jCompiledEval({self.expr(callee)}, {args}, {self.compiled_eval(arguments[0]["value"])})'
                 if t == "CallExpression" and name == "eval":
-                    return f'jDirectRuntimeEval({self.expr(callee)}, {args}, {self.scope}, {self.receiver})'
+                    return self.runtime_eval(self.expr(callee), args)
                 constructor_kind = self.function_constructor_kind(callee)
                 if (constructor_kind is not None and all(item["type"] == "Literal" and
                         isinstance(item.get("value"), str) for item in arguments)):
@@ -1044,6 +1070,7 @@ class Compiler:
         inner, constructor, base = self.name("classScope"), self.name("class"), self.name("base")
         self.scope = inner
         previous_private = self.private_names
+        previous_strict, self.strict = self.strict, True
         try:
             superclass = node.get("superClass")
             base_expression = "null" if superclass is None else self.expr(superclass)
@@ -1123,10 +1150,12 @@ class Compiler:
         finally:
             self.scope = parent
             self.private_names = previous_private
+            self.strict = previous_strict
 
     def compile(self, ast, name):
         self.script_name = name
         self.receiver = 'scope.scriptThis'
+        self.strict = ast.get('sourceType') == 'module' or self.strict_directive(ast['body'])
         self.collect_constructor_aliases(ast)
         body = self.block_contents(ast["body"], hoist_vars=True, global_functions=True)
         return (

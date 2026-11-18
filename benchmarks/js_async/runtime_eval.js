@@ -48,6 +48,28 @@ function test() {
     finally { closed++; }
   }
   const object = { a: 1, b: 2 };
+  const entries = [[1, 2], [3, 4]];
+  const nested = { list: [undefined, 6], other: 8 };
+  const objKey = 'list';
+  function* uninitialized() {
+    try { yield undefined; yield 2; }
+    finally { closed++; }
+  }
+  function compiledStrict(source) {
+    'use strict';
+    return eval(source);
+  }
+  console.log(compiledStrict('var outer = 2; outer'), typeof outer);
+  class StrictContext {
+    method(source) { return eval(source); }
+  }
+  console.log(new StrictContext().method('var inside = 7; inside'));
+  function* strictGenerator(source) {
+    'use strict';
+    yield eval(source);
+  }
+  console.log(strictGenerator('var inside = 6; inside').next().value);
+  function forward(...items) { return items.join(''); }
   for (const expression of [
     'let total = 0; for (let i = 0, end = 4; i < end; i++) { if (i === 1) continue; total += i }; total',
     'for (const i = 1; ; ) { i; break }',
@@ -64,6 +86,28 @@ function test() {
     '"use strict"; value = 99; { var local; let local; }',
     '"use strict"; var local = 2; { let local = 3; local }; local',
     '"use strict"; { let local = 3; local }; var local = 2; local',
+    'var local = 7; local',
+    'const [first, , ...tail] = "abcd"; first + tail.join("")',
+    'const [first, ...tail] = [1, ...[2, 3],]; first + tail[0] + tail[1]',
+    'const { [objKey]: [a = 4, b], ...remaining } = { ...nested }; a + b + remaining.other',
+    'const [first] = [1,,3]; first',
+    'forward(...["a", "b"], "c")',
+    'let i = 1; (i++, i *= 3, i)',
+    '({__proto__: object, a: 9}).b',
+    '({__proto__: object, "__proto__": object})',
+    'typeof eval("var inner = 2; inner") + ":" + typeof inner',
+    'let [first = missing] = uninitialized(); first',
+    'let [first, second = first + 2] = numbers(); first + second',
+    'let [first] = numbers(); first',
+    'let [first = missing] = entries[99]; first',
+    'let [first] = numbers(); let [second = missing] = numbers(); first + second',
+    'let [first] = "a"; for (const [left, right] of entries) first += left + right; first',
+    'const { [objKey]: [a = 4, b], ...remaining } = nested; a + b + remaining.other',
+    'try { throw nested } catch ({ list: [, score] }) { score }',
+    'try { throw numbers() } catch ([first]) { first }',
+    'try { throw numbers() } catch ([item]) { let item }',
+    'value = 99; let [local, local] = numbers()',
+    'const [local = local] = nested.list; local',
     '1; let temp;',
     'let i = 0, sum = 0; while (i < 4) { let n = ++i; if (n === 2) continue; sum += n }; sum',
     'let i = 0; do { i++ } while (i < 3); i',
@@ -129,6 +173,17 @@ body = 'var sum = 0; for (var i = 0; i < 3; i++) sum += i; for (var letter of "a
 console.log(Function(body)());
 body = 'for (let i = 0; i < 1; i++) { var i; }';
 try { Function(body); } catch (error) { console.log(error.name); }
+params = '{ a: first }, [second = first], ...tail';
+body = 'return first + second + tail[0]';
+const destructured = Function(params, body);
+console.log(destructured.length, destructured({a: 3}, [], 4));
+params = 'first = second, second = 3';
+try { Function(params, body)(); } catch (error) { console.log(error.name); }
+params = '[x]';
+body = 'var x; return x';
+console.log(Function(params, body)([7]));
+body = '"use strict"; return x';
+try { Function(params, body); } catch (error) { console.log(error.name); }
 body = 'throw 17';
 try { Function(body)(); } catch (value) { console.log(value); }
 params = 'a';

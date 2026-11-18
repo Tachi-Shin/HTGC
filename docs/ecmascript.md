@@ -45,16 +45,18 @@
 
 実行時evalはドット・角括弧のプロパティ参照と代入、関数・メソッド呼び出しに対応します。メソッドのthisと代入先の評価順を保持します。optional chaining、new、関数・クラス定義などは未対応です。
 
-動的な通常のFunctionは、識別子だけの仮引数と、下記の対応範囲の本体から作成できます。グローバル環境、this、argumentsを参照します。デフォルト引数、分割代入、非同期・ジェネレーター形式の動的生成は未対応です。
+動的な通常のFunctionは、識別子・分割束縛・既定値・残余の仮引数と、下記の対応範囲の本体から作成できます。グローバル環境、this、argumentsを参照します。非同期・ジェネレーター形式の動的生成は未対応です。
 
 実行時評価の式解析をAcorn（MIT）の構造に基づき拡充し、条件演算子、ビット演算、算術・ビット複合代入、論理代入に対応しました。参照元と利用条件はTHIRD_PARTY_NOTICES.mdに記載しています。
 
-実行時evalのトップレベルにlet・constの単純識別子宣言を追加しました。解析完了後に束縛を予約し、TDZ・const代入・重複宣言を検証します。複数宣言と初期化式、評価値の維持に対応します。var、分割代入宣言、strict／非strictの全条件は未対応です。
+実行時evalのトップレベルにlet・constの単純識別子宣言を追加しました。解析完了後に束縛を予約し、TDZ・const代入・重複宣言を検証します。複数宣言と初期化式、評価値の維持に対応します。strict／非strictの全条件は未対応です。
 
-実行時evalと通常の動的Functionは、ブロックの字句スコープ、if／else、throwに対応します。動的Functionではlet／constと複数の文を実行し、returnで終了できます。対応する改行位置ではセミコロンを補い、use strict指令を認識してthisと仮引数の一部の規則を適用します。var、仮引数の分割代入、strictと非strictの全規則などは未実装です。
+実行時evalと通常の動的Functionは、ブロックの字句スコープ、if／else、throwに対応します。動的Functionではlet／constと複数の文を実行し、returnで終了できます。対応する改行位置ではセミコロンを補い、use strict指令を認識してthisと仮引数の一部の規則を適用します。strictと非strictの全規則などは未実装です。
 
-実行時evalと通常の動的Functionでwhile、do／while、式を使うfor、ラベルなしのbreak・continue、try／catch／finally、前置・後置の++／--に対応します。ラベル、catchの分割代入は対象外です。
+実行時evalと通常の動的Functionでwhile、do／while、式を使うfor、ラベルなしのbreak・continue、try／catch／finally、前置・後置の++／--に対応します。ラベルは対象外です。
 
-通常のforは単純識別子のlet／const宣言に対応します。for…in／ofでは単純識別子のlet／const、既存の変数、プロパティへの代入を扱います。for…ofではbreak、return、例外で反復を抜ける際にIteratorCloseを行います。分割代入とfor await…ofは対象外です。
+通常のforは単純識別子のlet／const宣言に対応します。for…in／ofでは単純識別子のlet／const、既存の変数、プロパティへの代入を扱います。for…ofではbreak、return、例外で反復を抜ける際にIteratorCloseを行います。for await…ofは対象外です。
 
-実行時に生成する通常のFunctionと、use strictを明示した実行時evalで、単純識別子のvar宣言と巻き上げに対応します。ブロック内のvar、仮引数の再宣言、for／for…in／for…ofのvar宣言、let／constとの競合を扱います。非strictのevalと、呼び出し元のstrictモードを継承するevalでのvarは未対応です。
+実行時に生成する通常のFunctionと、use strictを明示した実行時evalで、単純識別子のvar宣言と巻き上げに対応します。ブロック内のvar、仮引数の再宣言、for／for…in／for…ofのvar宣言、let／constとの競合を扱います。直接evalはコンパイル済みのモジュール・クラス・関数や、実行時パーサーで評価中のコードからstrictモードを継承します。非strictの実行時evalでのvarは未対応です。
+
+実行時evalと動的Functionで、変数宣言・for…in／ofの宣言・catch・仮引数に配列とオブジェクトの分割束縛を使えます。既定値、計算プロパティ名、残余・省略要素に対応し、配列の途中で束縛を終えるとIteratorCloseを行います。配列・オブジェクトリテラル、配列・オブジェクト・呼び出しでのスプレッド、カンマ演算子にも対応します。既存の変数・プロパティへの分割代入式、オブジェクトリテラルのメソッド構文などは未対応です。
