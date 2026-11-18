@@ -1,11 +1,11 @@
 part of 'js_core.dart';
 
 bool jIsObject(dynamic value) => value is JObject || value is List;
-bool jExtensible(dynamic value) =>
-    value is JObject ? value.extensible : value is List;
-dynamic jPrototype(dynamic value) =>
-    value is JObject ? value.prototype :
-    value is List ? jArrayRealm(value).arrayPrototypeObject : jObjectPrototype;
+bool jExtensible(dynamic value) => jIsObject(value) && jRequireObject(value).extensible;
+dynamic jPrototype(dynamic value) {
+  final prototype = jIsObject(value) ? jRequireObject(value).prototype : jObjectPrototype;
+  return prototype is JArrayProperties ? prototype.external : prototype;
+}
 JProxy? jProxyState(dynamic value) => value is JProxy
     ? value
     : value is JProxyFunction
@@ -13,7 +13,7 @@ JProxy? jProxyState(dynamic value) => value is JProxy
     : null;
 bool jIsArray(dynamic value) {
   final proxy = jProxyState(value);
-  if (proxy == null) return value is List;
+  if (proxy == null) return value is List || value is JArrayProperties;
   if (proxy.handler == null) jProxyError('Cannot use a revoked proxy');
   return jIsArray(proxy.target);
 }
@@ -48,9 +48,7 @@ class JProxy extends JObject {
   dynamic read(Object key, dynamic receiver) {
     final method = trap('get');
     if (identical(method, jUndefined))
-      return target is JObject
-          ? (target as JObject).read(key, receiver)
-          : jGet(target, key);
+      return jRequireObject(target).read(key, receiver);
     final result = callTrap(method, [target, key, receiver]);
     final desc = jDescriptor(target, key);
     if (desc is JObject && !jTruthy(desc.get('configurable'))) {
@@ -70,10 +68,7 @@ class JProxy extends JObject {
   bool write(Object key, dynamic value, dynamic receiver) {
     final method = trap('set');
     if (identical(method, jUndefined)) {
-      if (target is JObject)
-        return (target as JObject).write(key, value, receiver);
-      jSet(target, key, value);
-      return true;
+      return jRequireObject(target).write(key, value, receiver);
     }
     if (!jTruthy(callTrap(method, [target, key, value, receiver])))
       return false;
@@ -187,11 +182,7 @@ class JProxy extends JObject {
   bool define(Object key, JObject desc) {
     final method = trap('defineProperty');
     if (identical(method, jUndefined)) {
-      if (target is! JObject)
-        throw UnsupportedError(
-          'Array property descriptors are not implemented',
-        );
-      return jDefineProperty(target, key, desc, normalized: true);
+      return jDefineProperty(jRequireObject(target), key, desc, normalized: true);
     }
     if (!jTruthy(
       callTrap(method, [
@@ -221,13 +212,13 @@ class JProxy extends JObject {
   @override
   JObject? get prototype {
     final method = trap('getPrototypeOf');
-    if (identical(method, jUndefined)) return jPrototype(target);
+    if (identical(method, jUndefined)) return jRequireObject(target).prototype;
     final result = callTrap(method, [target]);
-    if (result != null && result is! JObject)
+    if (result != null && !jIsObject(result))
       jProxyError('Invalid proxy prototype');
     if (!jExtensible(target) && !identical(result, jPrototype(target)))
       jProxyError('Proxy changes a fixed prototype');
-    return result;
+    return result == null ? null : jRequireObject(result);
   }
 
   bool setPrototype(dynamic value) {

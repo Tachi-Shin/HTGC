@@ -9,11 +9,11 @@
 | クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
 | 式と文 | 細部の評価順と例外。非strictのwith、Symbol.unscopables、オブジェクト環境に束縛された関数のthisに対応。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
 | モジュール | ソースフェーズ、実行時の外部モジュール読み込み、ホストローダーとの連携と複数環境での評価。ローカルのモジュールグラフ、import.meta、JSONモジュールとtype属性は一部対応済み |
-| オブジェクトと補助操作 | Arrayの特殊プロパティ記述子、厳密なプロトタイプ・Functionの組み込みメソッドとメタデータ、Proxyの配列転送、全組み込み型のnewTarget、内部例外の種類 |
+| オブジェクトと補助操作 | 厳密なプロトタイプ・Functionの組み込みメソッドとメタデータ、全組み込み型のnewTargetと内部例外の種類。配列の添字・lengthの記述子とProxyを経由した拡張制御に対応 |
 | 基本オブジェクト・エラー | Function.prototypeと組み込み記述子の整合、Annex Bの残り。bind、関数の元ソース表示、Errorのcause、SuppressedError、Error.isErrorとURIグローバル関数は対応 |
 | 数値、日時、文字列 | Number/Math/BigIntの境界とメタデータ、Dateの実装依存の旧式書式・時刻規則、ロケール依存の完全な照合・大小文字変換、Unicodeの網羅検証。Unicode 17.0のString.normalize、String.raw、コード単位・コードポイント、検索・抽出・パディング等は対応 |
 | RegExp | 重複する名前付きグループ、Speciesと汎用メソッド、最新Unicodeや全キャプチャ条件の差。vリテラルと動的なパターンの集合演算に対応 |
-| インデックス付きコレクション | 配列の継承、穴・length・Speciesの細部、TypedArrayの全変換順・記述子・全メソッドの派生型。Array.fromAsyncと不足していた配列メソッド、Uint8ArrayのBase64・16進変換は対応 |
+| インデックス付きコレクション | TypedArrayの全変換順・記述子・全メソッドの派生型。配列の継承、穴・length、Symbol.species、Array.from／of／fromAsync、Uint8ArrayのBase64・16進変換に対応 |
 | キー付き・弱参照コレクション | Map/Set/WeakMap/WeakSetの例外・副作用順序の全条件、弱参照のGCや後始末の時機。各コレクションの構築時に派生プロトタイプを使用し、上書きしたset・addを初期値にも適用。WeakRefとFinalizationRegistryの基本APIに対応。Map・WeakMapのgetOrInsert/getOrInsertComputedは対応 |
 | バイナリデータとメモリモデル | 複数Agentで共有するSharedArrayBuffer・ブロッキングAtomics.wait、ArrayBuffer新APIとSpecies、バッファ制限。単一Agent用のSharedArrayBufferとAtomicsは今回の変更で対応 |
 | 非同期・反復 | AsyncIteratorの全仕様、Promiseのジョブ順・Realm境界を含む全条件の検証。Promiseの派生クラス、then・finallyでのSpecies選択、静的メソッドの汎用呼び出しに対応。同期Iteratorのzip、zipKeyed、map、filter、flatMap、take、drop、reduce、includes、joinなど、非同期IteratorのSymbol.asyncDispose、DisposableStackとAsyncDisposableStackは対応 |
@@ -21,7 +21,7 @@
 
 実装の参照元は [V8のTypedArray構築とSpecies](https://github.com/v8/v8/blob/main/src/builtins/typed-array-createtypedarray.tq)、 [V8の文字クラス集合パーサー](https://chromium.googlesource.com/v8/v8.git/+/refs/heads/lkgr/src/regexp/regexp-parser.cc)、[regexpu-core](https://github.com/mathiasbynens/regexpu-core)、[QuickJS](https://github.com/bellard/quickjs/blob/master/quickjs.c)、適合試験は [Test262](https://github.com/tc39/test262) です。regexpu-coreは変換機としてビルド時に使用します。
 
-2026-11-17の追加実装は、引き続きJavaScriptからネイティブDartを生成します。変換時に固定の文字列で渡される直接evalと通常のFunction生成は一部対応しています。実行時文字列にはDartのパーサーを使用します。タグ付きテンプレートの同一性は実行スコープごとに保存します。ロケール系のメソッドにはDartの文字変換や基本の文字列化を使うため、ECMA-402のIntlと同じ書式・照合・言語別処理は保証しません。配列の追加メソッドはDart上の既存の配列表現を使用するため、全配列メソッドのSpeciesや配列の記述子は引き続き未完です。
+2026-11-17の追加実装は、引き続きJavaScriptからネイティブDartを生成します。変換時に固定の文字列で渡される直接evalと通常のFunction生成は一部対応しています。実行時文字列にはDartのパーサーを使用します。タグ付きテンプレートの同一性は実行スコープごとに保存します。ロケール系のメソッドにはDartの文字変換や基本の文字列化を使うため、ECMA-402のIntlと同じ書式・照合・言語別処理は保証しません。配列の継承・記述子・Speciesの選択を試験し、実装範囲はREADMEに記載しています。
 
 2026-11-17の追加分では、イテレーターの共通プロトタイプ、Iterator.from／concat、同期ヘルパー、using／await usingとDisposableStack系、ローカルJSONモジュール、import.meta、String.normalizeを追加しました。正規化データはUnicode 17.0.0のUCDに基づき、生成スクリプトは `tools/generate_normalization.py`、利用条件は `runtime/UNICODE-LICENSE.txt` にあります。
 

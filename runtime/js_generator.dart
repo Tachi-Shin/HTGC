@@ -203,7 +203,7 @@ class JAsyncIteratorRecord {
   dynamic current = jUndefined;
   JAsyncIteratorRecord(this.object, this.synchronous)
     : next = jGet(object, 'next');
-  JPromise advance() => jAsync((promise) async {
+  JPromise advance({bool readCompletionValue = true}) => jAsync((promise) async {
     try {
       if (done) {
         promise.resolve(false);
@@ -214,7 +214,9 @@ class JAsyncIteratorRecord {
       if (!jIsObject(result))
         throw JThrown(JError('TypeError', 'Iterator result must be an object'));
       final finished = jTruthy(jGet(result, 'done'));
-      dynamic value = jGet(result, 'value');
+      dynamic value = !finished || synchronous || readCompletionValue
+          ? jGet(result, 'value')
+          : jUndefined;
       if (synchronous) {
         try {
           value = await jAwait(value);

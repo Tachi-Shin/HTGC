@@ -129,7 +129,7 @@ class Compiler:
                 return f'{self.private_name(node["property"])}.reference({self.expr(node["object"])})'
             if node["object"]["type"] == "Super":
                 return self.super_reference(node)
-            return f'JRef.member({self.expr(node["object"])}, {self.key(node)})'
+            return f'JRef.member({self.expr(node["object"])}, {self.key(node)}, strict: {str(self.strict).lower()})'
         self.fail(node, "assignment target")
 
     def key(self, node):
@@ -600,7 +600,7 @@ class Compiler:
                     if item and item["type"] == "SpreadElement"
                     else self.expr(item) if item is not None else "_jHole"
                 )
-            return "jRealmValue(<dynamic>[" + ", ".join(parts) + "])"
+            return "JArray(<dynamic>[" + ", ".join(parts) + "])"
         if t == "ObjectExpression":
             parts = []
             for p in n["properties"]:

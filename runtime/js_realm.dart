@@ -27,7 +27,8 @@ class JRealm {
   }
 
   late final Map<String, JFunction> arrayMethods = jBuildArrayMethods();
-  late final JObject arrayPrototypeObject = _buildRealmArrayPrototypeObject();
+  late final JArrayProperties arrayPrototypeObject = _buildRealmArrayPrototypeObject();
+  late final JFunction arrayConstructor = jBuildArrayConstructor();
   late final JObject sharedArrayBufferPrototype = JObject();
   late final JObject arrayBufferPrototype = JObject();
   late final JObject dataViewPrototype = JObject();
@@ -41,6 +42,7 @@ class JRealm {
   late final JObject numberPrototype = JObject();
   late final JObject bigIntPrototype = JObject();
   late final JObject stringPrototype = JObject();
+  late final JObject symbolPrototype = JObject();
   late final JObject booleanPrototype = JObject();
   late final Map<String, JObject> builtinIteratorPrototypes = <String, JObject>{};
   late final JObject mapPrototype = jBuildMapPrototype(false);

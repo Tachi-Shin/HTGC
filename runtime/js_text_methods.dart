@@ -329,6 +329,9 @@ class JTemplateArray extends JArray {
       );
     }
     extra.extensible = false;
+    for (var index = 0; index < length; index++) {
+      extra.flags['$index'] = JPropertyFlags(writable: false, configurable: false);
+    }
   }
 }
 

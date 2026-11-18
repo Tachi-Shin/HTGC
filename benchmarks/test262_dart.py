@@ -119,6 +119,17 @@ NUMERIC_TESTS = (
     "BigInt/valueof-throws.js",
 )
 
+VERIFY_PROPERTY = """  scope.define('verifyProperty', jNative((a) {
+    final target = a[0], key = jPropertyKey(a[1]);
+    final expected = a[2] as JObject, actual = jDescriptor(target, key);
+    if (actual is! JObject) throw StateError('Missing own property');
+    for (final name in expected.properties.keys) {
+      if (!same(jGet(actual, name), expected.get(name))) throw StateError('Descriptor mismatch: $name');
+    }
+    return jUndefined;
+  }));
+"""
+
 ASYNC_HARNESS = r"""
 Future<void> main() => runZoned(runTest,
     zoneValues: {jPromiseRejectionHook: (dynamic reason) {}});
@@ -195,15 +206,7 @@ Future<void> runTest() async {
       }
     }
   }));
-  scope.define('verifyProperty', jNative((a) {
-    final target = a[0] as JObject, key = jPropertyKey(a[1]);
-    final expected = a[2] as JObject, actual = jDescriptor(target, key);
-    if (actual is! JObject) throw StateError('Missing own property');
-    for (final name in expected.properties.keys) {
-      if (!same(jGet(actual, name), expected.get(name))) throw StateError('Descriptor mismatch: $name');
-    }
-    return jUndefined;
-  }));
+__VERIFY_PROPERTY__
   scope.define('testExtendedCharacterClass', jBuiltin((a) {
     final config = a[0], literal = jGet(config, 'regExp');
     final reconstructed = jNew(scope.get('RegExp'), [jGet(literal, 'source'), jGet(literal, 'flags')]);
@@ -245,7 +248,7 @@ Future<void> runTest() async {
   htgcScript(scope);
   await done.future.timeout(const Duration(seconds: 5));
 }
-"""
+""".replace("__VERIFY_PROPERTY__\n", VERIFY_PROPERTY)
 
 BUILTIN_HARNESS = ASYNC_HARNESS.replace(
     '  await done.future.timeout(const Duration(seconds: 5));', '')
@@ -293,9 +296,14 @@ def main():
             try:
                 source = path.read_text(encoding="utf-8")
                 metadata = source.partition("/*---")[2].partition("---*/")[0]
-                for helper in ('promiseHelper.js', 'proxyTrapsHelper.js'):
+                official_property_helper = False
+                helpers = ["promiseHelper.js", "proxyTrapsHelper.js"]
+                if name.startswith(("built-ins/Array/", "built-ins/Symbol/")):
+                    helpers.extend(("propertyHelper.js", "temporalHelpers.js"))
+                for helper in helpers:
                     if re.search(r"^includes:.*\b" + re.escape(helper) + r"\b", metadata, re.M):
                         source = (args.checkout / "harness" / helper).read_text(encoding="utf-8") + "\n" + source
+                        official_property_helper |= helper == "propertyHelper.js"
                 negative = re.search(r"^negative:\s*\n\s*phase:\s*runtime\s*\n\s*type:\s*(\w+)", metadata, re.M)
                 if negative:
                     expected = negative.group(1)
@@ -307,7 +315,10 @@ def main():
                     )
                 if harness == BUILTIN_HARNESS and re.search(r"^flags:\s*\[[^\]]*\basync\b", metadata, re.M):
                     harness = ASYNC_HARNESS
-                global_script = name.startswith(("language/global-code/decl-", "built-ins/global/", "language/eval-code/", "language/arguments-object/", "language/statements/with/")) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
+                global_script = name.startswith((
+                    "language/global-code/decl-", "built-ins/global/", "language/eval-code/",
+                    "language/arguments-object/", "language/statements/with/", "built-ins/Array/", "built-ins/Symbol/",
+                )) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
                 if global_script:
                     harness = harness.replace(
                         '  final scope = JScope();\n  installJSBuiltins(scope);',
@@ -315,6 +326,8 @@ def main():
                     )
                 if global_script and re.search(r"^flags:\s*\[[^\]]*\bonlyStrict\b", metadata, re.M):
                     source = '"use strict";\n' + source
+                if official_property_helper:
+                    harness = harness.replace(VERIFY_PROPERTY, "")
                 source_type = "script" if global_script else "module"
                 if re.search(r"^negative:\s*\n\s*phase:\s*parse\s*\n\s*type:\s*SyntaxError", metadata, re.M):
                     try:

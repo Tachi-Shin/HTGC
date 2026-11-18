@@ -1,25 +1,5 @@
 part of 'js_core.dart';
 
-class JArray extends ListBase<dynamic> {
-  final List<dynamic> items;
-  final JObject extra = JObject();
-  JArray(this.items) { jArrayRealm(this); }
-  @override
-  int get length => items.length;
-  @override
-  set length(int value) {
-    while (items.length < value) items.add(_jHole);
-    items.length = value;
-  }
-
-  @override
-  dynamic operator [](int index) => items[index];
-  @override
-  void operator []=(int index, dynamic value) {
-    items[index] = value;
-  }
-}
-
 JObject get jRegExpPrototype => JRealm.current.regExpPrototype;
 
 class JRegex extends JObject {

@@ -1158,7 +1158,7 @@ class _RuntimeEvalParser {
 
         JRef reference() {
           final object = previous.read();
-          return JRef.member(object, jPropertyKey(key.read()));
+          return JRef.member(object, key.read(), strict: strictFunction);
         }
 
         value = _EvalExpr(
@@ -1460,7 +1460,7 @@ class _RuntimeEvalParser {
     }
     if (take('[')) {
       final elements = expressionList(']', holes: true);
-      return _EvalExpr(() => jRealmValue(evaluateList(elements)));
+      return _EvalExpr(() => JArray(evaluateList(elements)));
     }
     if (take('{')) return objectLiteral();
     if (take('super')) {
