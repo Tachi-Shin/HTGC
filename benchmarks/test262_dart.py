@@ -185,17 +185,23 @@ Future<void> main() async {
     return jUndefined;
   }));
   scope.define('testExtendedCharacterClass', jBuiltin((a) {
-    final config = a[0], regex = jGet(config, 'regExp');
-    for (final key in ['matchStrings', 'nonMatchStrings']) {
-      for (final value in jIterable(jGet(config, key))) {
-        final matches = jInvoke(regex, 'test', [value]);
-        if (matches != (key == 'matchStrings')) {
-          throw StateError('Unexpected match for ${jString(value)} using ${jGet(config, 'expression')}');
+    final config = a[0], literal = jGet(config, 'regExp');
+    final reconstructed = jNew(scope.get('RegExp'), [jGet(literal, 'source'), jGet(literal, 'flags')]);
+    for (final regex in [literal, reconstructed]) {
+      for (final key in ['matchStrings', 'nonMatchStrings']) {
+        final inputs = jGet(config, key);
+        if (key == 'nonMatchStrings' && identical(inputs, jUndefined)) continue;
+        for (final value in jIterable(inputs)) {
+          final matches = jInvoke(regex, 'test', [value]);
+          if (matches != (key == 'matchStrings')) {
+            throw StateError('Unexpected match for ${jString(value)} using ${jGet(config, 'expression')}');
+          }
         }
       }
     }
     return jUndefined;
   }));
+  scope.define('testPropertyOfStrings', scope.get('testExtendedCharacterClass'));
   scope.define('assert', assertFn);
   late final JFunction testError;
   testError = jNative((args) => JError('Test262Error', jString(jArg(args, 0)))..properties['constructor'] = testError);
@@ -247,8 +253,12 @@ def main():
     tests += [(args.checkout / "test" / name, BUILTIN_HARNESS)
               for name in (ROOT / 'benchmarks/test262_extended.txt').read_text().splitlines()
               if name and not name.startswith('#')]
+    tests.extend((path, BUILTIN_HARNESS) for path in sorted(
+        (args.checkout / "test/built-ins/RegExp/unicodeSets/generated").glob("*.js")))
     tests = [(path, harness) for path, harness in tests
              if fnmatch.fnmatch(str(path.relative_to(args.checkout / 'test')), args.filter)]
+    if not tests:
+        parser.error("No Test262 cases match the requested filter")
     missing = [str(path) for path, _ in tests if not path.is_file()]
     if missing:
         parser.error(f"Test262 files missing: {', '.join(missing)}")
@@ -271,12 +281,14 @@ def main():
                     )
                 if harness == BUILTIN_HARNESS and re.search(r"^flags:\s*\[[^\]]*\basync\b", metadata, re.M):
                     harness = ASYNC_HARNESS
-                global_script = name.startswith(("language/global-code/decl-", "built-ins/global/")) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
+                global_script = name.startswith(("language/global-code/decl-", "built-ins/global/", "language/eval-code/", "language/arguments-object/")) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
                 if global_script:
                     harness = harness.replace(
                         '  final scope = JScope();\n  installJSBuiltins(scope);',
                         '  final root = JScope();\n  installJSBuiltins(root);\n  final scope = JScope.script(root);',
                     )
+                if global_script and re.search(r"^flags:\s*\[[^\]]*\bonlyStrict\b", metadata, re.M):
+                    source = '"use strict";\n' + source
                 code = compile_script(source, path, source_type="script" if global_script else "module")
             except CompileError as error:
                 status, details = "UNSUPPORTED", str(error)

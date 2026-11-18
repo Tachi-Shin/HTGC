@@ -32,6 +32,11 @@ THE SOFTWARE.
 // A deliberately small runtime parser. Parse the complete input before running
 // any expression so unsupported syntax cannot cause partial side effects.
 final _jRuntimeEmpty = Object();
+const _noNewTarget = _NoNewTarget();
+
+class _NoNewTarget {
+  const _NoNewTarget();
+}
 
 typedef _EvalRead = dynamic Function();
 
@@ -40,14 +45,26 @@ class _EvalExpr {
   final dynamic Function(dynamic)? write;
   final JRef Function()? reference;
   final JCallSite Function()? callSite;
-  final bool directEval;
+  final String? identifier;
+  final bool anonymous;
+  final bool Function()? remove;
+  bool get directEval => identifier == "eval";
   _EvalExpr(
     this.read, [
     this.write,
     this.reference,
     this.callSite,
-    this.directEval = false,
+    this.identifier,
+    this.anonymous = false,
+    this.remove,
   ]);
+  dynamic readNamed(dynamic key) {
+    final value = read();
+    if (anonymous && key != null) {
+      (value as JFunction).properties['name'] = jFunctionKeyName(key);
+    }
+    return value;
+  }
 }
 
 typedef _BindValue = void Function(String name, dynamic value);
@@ -79,10 +96,16 @@ class _RuntimeLexicalScope {
 class _RuntimeEvalParser {
   final String source;
   _RuntimeLexicalScope scope;
-  int loopDepth = 0;
+  int loopDepth = 0, switchDepth = 0;
+  final activeLabels = <String, bool>{};
   final dynamic thisValue;
   final bool functionBody;
   final List<String> tokens = [];
+  final offsets = <int>[];
+  final hoisted = [<void Function()>[]];
+  bool strictDirective = false;
+  final dynamic newTarget;
+  final JObject? home;
   final lineBreaks = <int>{};
   bool strictFunction;
   int at = 0;
@@ -90,14 +113,17 @@ class _RuntimeEvalParser {
   final varNamesByEnvironment = [<String>{}];
   Set<String> get lexicalNames => lexicalEnvironments.last;
   final variableNames = <String>{};
+  final functionNames = <String>{};
   final JScope variableScope;
 
   void enterEnvironment() {
+    hoisted.add([]);
     lexicalEnvironments.add(<String>{});
     varNamesByEnvironment.add(<String>{});
   }
 
   void leaveEnvironment() {
+    hoisted.removeLast();
     lexicalEnvironments.removeLast();
     varNamesByEnvironment.removeLast();
   }
@@ -107,25 +133,31 @@ class _RuntimeEvalParser {
     JScope scope,
     this.thisValue, {
     this.functionBody = false,
+    this.newTarget = _noNewTarget,
+    this.home,
     JScope? variables,
     this.strictFunction = false,
   }) : variableScope = variables ?? scope,
        scope = _RuntimeLexicalScope(scope) {
     final token = RegExp(
-      r'''\s+|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\\n\r])*"|'(?:\\.|[^'\\\n\r])*')|(?:\.\.\.|>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[{}()\[\].,:?&|^+\-*/%<>=!~;]''',
+      r'''\s+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\\n\r])*"|'(?:\\.|[^'\\\n\r])*')|(?:\.\.\.|\?\.(?!\d)|>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[{}()\[\].,:?&|^+\-*/%<>=!~;]''',
     );
     var pos = 0;
     while (pos < source.length) {
       final match = token.matchAsPrefix(source, pos);
       if (match == null) _unsupported();
       final word = match.group(0)!;
-      if (word.trim().isNotEmpty) {
+      if (word.trim().isNotEmpty &&
+          !word.startsWith('//') &&
+          !word.startsWith('/*')) {
+        offsets.add(pos);
         tokens.add(word);
       } else if (RegExp(r'[\n\r\u2028\u2029]').hasMatch(word)) {
         lineBreaks.add(tokens.length);
       }
       pos = match.end;
     }
+    offsets.add(source.length);
     tokens.add('');
   }
   Never _unsupported() => throw JThrown(
@@ -153,6 +185,8 @@ class _RuntimeEvalParser {
     '!=': 6,
     '===': 6,
     '!==': 6,
+    'in': 7,
+    'instanceof': 7,
     '<': 7,
     '>': 7,
     '<=': 7,
@@ -199,31 +233,56 @@ class _RuntimeEvalParser {
             (first.startsWith('"') || first.startsWith("'"));
         if (directives &&
             (first == '"use strict"' || first == "'use strict'")) {
+          strictDirective = true;
           strictFunction = true;
         }
       }
     }
-    if (!inBlock &&
-        !functionBody &&
-        !strictFunction &&
-        variableNames.isNotEmpty) {
-      throw JThrown(
-        JError('SyntaxError', 'Non-strict runtime eval var is unsupported'),
-      );
-    }
     return statements;
   }
 
-  _EvalRead statement({bool allowLexical = true}) {
+  _EvalRead statement({
+    bool allowLexical = true,
+    Set<String> labels = const {},
+  }) {
+    if (peek.isNotEmpty && tokens[at + 1] == ':') {
+      final nested = <String>{};
+      while (peek.isNotEmpty && tokens[at + 1] == ':') {
+        final name = bindingIdentifier();
+        if (!nested.add(name) || activeLabels.containsKey(name)) _unsupported();
+        expect(':');
+      }
+      final iteration = const {'for', 'while', 'do'}.contains(peek);
+      for (final name in nested) activeLabels[name] = iteration;
+      late final _EvalRead body;
+      try {
+        body = statement(allowLexical: false, labels: nested);
+      } finally {
+        for (final name in nested) activeLabels.remove(name);
+      }
+      return () {
+        try {
+          return body();
+        } on _RuntimeJump catch (jump) {
+          if (jump.isBreak && nested.contains(jump.label)) return jump.value;
+          rethrow;
+        }
+      };
+    }
+    if (take('switch')) return switchStatement();
     if (take(';')) return () => _jRuntimeEmpty;
     if (peek == '{') return block();
-    if (take('for')) return forStatement();
+    if (peek == 'function') {
+      if (!allowLexical) _unsupported();
+      return functionDeclaration();
+    }
+    if (take('for')) return forStatement(labels);
     if (take('while')) {
       expect('(');
       final condition = sequence();
       expect(')');
       final body = loopBody();
-      return () => runLoop(condition, body);
+      return () => runLoop(condition, body, labels: labels);
     }
     if (take('do')) {
       final body = loopBody();
@@ -232,7 +291,7 @@ class _RuntimeEvalParser {
       final condition = sequence();
       expect(')');
       take(';');
-      return () => runLoop(condition, body, first: true);
+      return () => runLoop(condition, body, first: true, labels: labels);
     }
     if (take('try')) {
       final body = block();
@@ -257,6 +316,7 @@ class _RuntimeEvalParser {
           }
           return finishTry(body, (error) {
             final local = JScope(parent.current);
+            if (pattern.simple) local.simpleCatchName = pattern.names.single;
             binding.current = local;
             for (final name in pattern.names) local.reserve(name);
             initializeBinding(
@@ -308,6 +368,7 @@ class _RuntimeEvalParser {
     scope = blockScope;
     enterEnvironment();
     final blockNames = lexicalNames;
+    final functions = hoisted.last;
     try {
       final statements = parse(inBlock: true);
       expect('}');
@@ -316,6 +377,7 @@ class _RuntimeEvalParser {
         final local = JScope(parent.current);
         blockScope.current = local;
         for (final name in blockNames) local.reserve(name);
+        for (final initialize in functions) initialize();
         return _runRuntimeStatements(statements, initial: _jRuntimeEmpty);
       };
     } finally {
@@ -324,7 +386,66 @@ class _RuntimeEvalParser {
     }
   }
 
-  _EvalRead forStatement() {
+  _EvalRead switchStatement() {
+    expect('(');
+    final discriminant = sequence();
+    expect(')');
+    expect('{');
+    final parent = scope;
+    final local = _RuntimeLexicalScope(parent.current);
+    scope = local;
+    enterEnvironment();
+    switchDepth++;
+    final names = lexicalNames;
+    final functions = hoisted.last;
+    final clauses = <(_EvalExpr?, List<_EvalRead>)>[];
+    var fallback = -1;
+    try {
+      while (!take('}')) {
+        _EvalExpr? test;
+        if (take('case')) {
+          test = sequence();
+        } else {
+          expect('default');
+          if (fallback >= 0) _unsupported();
+          fallback = clauses.length;
+        }
+        expect(':');
+        final body = <_EvalRead>[];
+        while (!const {'case', 'default', '}'}.contains(peek))
+          body.add(statement());
+        clauses.add((test, body));
+      }
+    } finally {
+      switchDepth--;
+      leaveEnvironment();
+      scope = parent;
+    }
+    return () {
+      final key = discriminant.read();
+      local.current = JScope(parent.current);
+      for (final name in names) local.current.reserve(name);
+      for (final initialize in functions) initialize();
+      var start = clauses.indexWhere(
+        (entry) =>
+            entry.$1 != null && jBinary('===', key, entry.$1!.read()) == true,
+      );
+      if (start < 0) start = fallback;
+      dynamic value = jUndefined;
+      if (start < 0) return value;
+      try {
+        for (var index = start; index < clauses.length; index++) {
+          value = _runRuntimeStatements(clauses[index].$2, initial: value);
+        }
+      } on _RuntimeJump catch (jump) {
+        if (!jump.isBreak || jump.label != null) rethrow;
+        return jump.value;
+      }
+      return value;
+    };
+  }
+
+  _EvalRead forStatement(Set<String> labels) {
     expect('(');
     final parent = scope;
     final loopScope = _RuntimeLexicalScope(parent.current);
@@ -351,7 +472,7 @@ class _RuntimeEvalParser {
       } else if (peek != ';') {
         assignment = assignmentPattern(const {'in', 'of'});
         if (assignment == null) {
-          target = sequence();
+          target = sequence(noIn: true);
           start = target.read;
         }
       }
@@ -391,7 +512,9 @@ class _RuntimeEvalParser {
             return body();
           }
 
-          return of ? runForOf(input, iteration) : runForIn(input, iteration);
+          return of
+              ? runForOf(input, iteration, labels)
+              : runForIn(input, iteration, labels);
         };
       }
       expect(';');
@@ -415,6 +538,7 @@ class _RuntimeEvalParser {
         return runLoop(
           condition,
           body,
+          labels: labels,
           update: () {
             nextEnvironment();
             update?.read();
@@ -427,10 +551,18 @@ class _RuntimeEvalParser {
     }
   }
 
-  dynamic runForOf(dynamic source, dynamic Function(dynamic) body) {
+  dynamic runForOf(
+    dynamic source,
+    dynamic Function(dynamic) body,
+    Set<String> labels,
+  ) {
     final iterator = jGetIterator(source);
     try {
-      return runLoop(_EvalExpr(iterator.advance), () => body(iterator.current));
+      return runLoop(
+        _EvalExpr(iterator.advance),
+        () => body(iterator.current),
+        labels: labels,
+      );
     } on JThrown {
       iterator.close(suppressErrors: true);
       rethrow;
@@ -439,9 +571,17 @@ class _RuntimeEvalParser {
     }
   }
 
-  dynamic runForIn(dynamic source, dynamic Function(dynamic) body) {
+  dynamic runForIn(
+    dynamic source,
+    dynamic Function(dynamic) body,
+    Set<String> labels,
+  ) {
     final keys = jForInKeys(source).iterator;
-    return runLoop(_EvalExpr(keys.moveNext), () => body(keys.current));
+    return runLoop(
+      _EvalExpr(keys.moveNext),
+      () => body(keys.current),
+      labels: labels,
+    );
   }
 
   _EvalRead loopBody() {
@@ -457,6 +597,7 @@ class _RuntimeEvalParser {
     _EvalExpr condition,
     _EvalRead body, {
     bool first = false,
+    Set<String> labels = const {},
     void Function()? update,
   }) {
     dynamic result = jUndefined;
@@ -466,7 +607,9 @@ class _RuntimeEvalParser {
         final value = body();
         if (!identical(value, _jRuntimeEmpty)) result = value;
       } on _RuntimeJump catch (jump) {
-        if (!identical(jump.value, _jRuntimeEmpty)) result = jump.value;
+        jump.updateEmpty(result);
+        if (jump.label != null && !labels.contains(jump.label)) rethrow;
+        result = jump.value;
         if (jump.isBreak) break;
       }
       update?.call();
@@ -498,9 +641,18 @@ class _RuntimeEvalParser {
 
   _EvalRead simpleStatement(bool allowLexical) {
     if (peek == 'break' || peek == 'continue') {
-      if (loopDepth == 0) _unsupported();
       final isBreak = tokens[at++] == 'break';
-      return () => throw _RuntimeJump(isBreak);
+      String? label;
+      if (!lineBreaks.contains(at) &&
+          RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek)) {
+        label = bindingIdentifier();
+        if (!activeLabels.containsKey(label) ||
+            !isBreak && !activeLabels[label]!)
+          _unsupported();
+      } else if (loopDepth == 0 && (!isBreak || switchDepth == 0)) {
+        _unsupported();
+      }
+      return () => throw _RuntimeJump(isBreak, label);
     }
     if (take('return')) {
       if (!functionBody) _unsupported();
@@ -520,6 +672,7 @@ class _RuntimeEvalParser {
       return declaration();
     }
     if (peek == 'var') return declaration();
+    if (take('debugger')) return () => _jRuntimeEmpty;
     return sequence().read;
   }
 
@@ -564,7 +717,9 @@ class _RuntimeEvalParser {
     return _RuntimeBinding(target.names, (read, bind) {
       target.bindFrom(() {
         final value = read();
-        return identical(value, jUndefined) ? fallback.read() : value;
+        return identical(value, jUndefined)
+            ? fallback.readNamed(target.simple ? target.names.single : null)
+            : value;
       }, bind);
     }, hasDefault: true);
   }
@@ -760,7 +915,7 @@ class _RuntimeEvalParser {
         declarations.add(
           () => initializeBinding(
             target,
-            initializer.read(),
+            initializer.readNamed(target.simple ? target.names.single : null),
             declarationScope.current,
             constant: constant,
             variable: variable,
@@ -802,14 +957,15 @@ class _RuntimeEvalParser {
   void instantiate() {
     for (final name in variableNames) variableScope.declareVar(name);
     for (final name in lexicalNames) scope.current.reserve(name);
+    for (final initialize in hoisted.single) initialize();
   }
 
-  _EvalExpr sequence([_EvalExpr? first]) {
-    final initial = first ?? expression();
+  _EvalExpr sequence({bool noIn = false}) {
+    final initial = expression(0, noIn);
     if (!take(',')) return initial;
     final entries = [initial];
     do {
-      entries.add(expression());
+      entries.add(expression(0, noIn));
     } while (take(','));
     return _EvalExpr(() {
       dynamic result;
@@ -818,12 +974,13 @@ class _RuntimeEvalParser {
     });
   }
 
-  _EvalExpr expression([int min = 0]) {
+  _EvalExpr expression([int min = 0, bool noIn = false]) {
     if (min == 0) {
+      if (startsArrow()) return arrowFunction();
       final pattern = assignmentPattern(const {'='});
       if (pattern != null) {
         expect('=');
-        final right = expression();
+        final right = expression(0, noIn);
         return _EvalExpr(() {
           final value = right.read();
           pattern.assign(value);
@@ -835,9 +992,9 @@ class _RuntimeEvalParser {
     while (true) {
       final op = peek;
       final power = precedence[op];
-      if (power == null || power < min) break;
+      if (power == null || power < min || (noIn && op == 'in')) break;
       at++;
-      final right = expression(power + (op == '**' ? 0 : 1));
+      final right = expression(power + (op == '**' ? 0 : 1), noIn);
       final previous = left;
       left = _EvalExpr(() {
         final value = previous.read();
@@ -851,7 +1008,7 @@ class _RuntimeEvalParser {
       final condition = left;
       final yes = expression();
       expect(':');
-      final no = expression();
+      final no = expression(0, noIn);
       left = _EvalExpr(
         () => jTruthy(condition.read()) ? yes.read() : no.read(),
       );
@@ -859,18 +1016,28 @@ class _RuntimeEvalParser {
     if (min == 0 && assignments.contains(peek)) {
       final operator = tokens[at++];
       final target = left;
-      if (target.write == null && target.reference == null) _unsupported();
-      final right = expression();
+      final getReference = assignmentReference(target);
+      final right = expression(0, noIn);
       left = _EvalExpr(() {
-        final ref =
-            target.reference?.call() ?? JRef(target.read, target.write!);
-        return jAssign(ref, operator, right.read);
+        final ref = getReference();
+        return jAssign(
+          ref,
+          operator,
+          () => right.readNamed(
+            const {'=', '&&=', '||=', '??='}.contains(operator)
+                ? target.identifier
+                : null,
+          ),
+        );
       });
     }
     return left;
   }
 
   JRef Function() assignmentReference(_EvalExpr operand) {
+    if (strictFunction &&
+        const {'eval', 'arguments'}.contains(operand.identifier))
+      _unsupported();
     final member = operand.reference;
     if (member != null) return member;
     final write = operand.write;
@@ -879,62 +1046,134 @@ class _RuntimeEvalParser {
   }
 
   _EvalExpr primary() {
+    if (take('delete')) {
+      final operand = primary();
+      if (operand.identifier != null && strictFunction) _unsupported();
+      return _EvalExpr(() {
+        if (operand.remove != null) return operand.remove!();
+        operand.read();
+        return true;
+      });
+    }
     if (peek == '++' || peek == '--') {
       final delta = tokens[at++] == '++' ? 1 : -1;
       final reference = assignmentReference(primary());
       return _EvalExpr(() => jUpdate(reference(), delta, true));
     }
-    var value = atom();
+    final value = suffixes(newOrAtom());
+    if (!lineBreaks.contains(at) && (peek == '++' || peek == '--')) {
+      final delta = tokens[at++] == '++' ? 1 : -1;
+      final reference = assignmentReference(value);
+      return _EvalExpr(() => jUpdate(reference(), delta, false));
+    }
+    return value;
+  }
+
+  _EvalExpr newOrAtom() {
+    if (!take('new')) return atom();
+    if (take('.')) {
+      expect('target');
+      if (identical(newTarget, _noNewTarget)) _unsupported();
+      return _EvalExpr(() => newTarget);
+    }
+    if (const {'+', '-', '!', '~', 'void', 'typeof', 'delete'}.contains(peek))
+      _unsupported();
+    final constructor = suffixes(newOrAtom(), memberOnly: true);
+    final args = take('(') ? expressionList(')') : <(_EvalExpr?, bool)>[];
+    return _EvalExpr(() => jNew(constructor.read(), evaluateList(args)));
+  }
+
+  _EvalExpr suffixes(_EvalExpr value, {bool memberOnly = false}) {
+    var chain = false;
     while (true) {
       final previous = value;
-      if (peek == '.' || peek == '[') {
-        late _EvalExpr key;
-        if (take('[')) {
-          key = sequence();
-          expect(']');
-        } else {
-          expect('.');
-          final name = peek;
-          if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name))
-            _unsupported();
-          at++;
-          key = _EvalExpr(() => name);
-        }
-        JRef reference() {
-          final object = previous.read();
-          final property = jPropertyKey(key.read());
-          return JRef.member(object, property);
-        }
-
-        value = _EvalExpr(() => reference().read(), null, reference, () {
-          final object = previous.read();
-          final property = jPropertyKey(key.read());
-          return JCallSite.member(object, property);
-        });
-      } else if (take('(')) {
+      final optional = take('?.');
+      if (optional && memberOnly) _unsupported();
+      chain |= optional;
+      if (peek == '(' && !memberOnly) {
+        at++;
         final args = expressionList(')');
         final lexicalScope = scope;
         value = _EvalExpr(() {
           final call = previous.callSite?.call() ?? JCallSite(previous.read());
+          if (call.skipped || optional && jNullish(call.function))
+            return jShortCircuit;
           final arguments = evaluateList(args);
-          if (previous.directEval) {
+          if (previous.directEval && !optional) {
             return jDirectRuntimeEval(
               call.function,
               arguments,
               lexicalScope.current,
               thisValue,
               strict: strictFunction,
+              newTarget: newTarget,
+              home: home,
             );
           }
           return call.call(arguments);
         });
-      } else {
-        if (!lineBreaks.contains(at) && (peek == '++' || peek == '--')) {
-          final delta = tokens[at++] == '++' ? 1 : -1;
-          final reference = assignmentReference(value);
-          return _EvalExpr(() => jUpdate(reference(), delta, false));
+      } else if (optional || peek == '.' || peek == '[') {
+        late _EvalExpr key;
+        if (take('[')) {
+          key = sequence();
+          expect(']');
+        } else {
+          if (!optional) expect('.');
+          final name = peek;
+          if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name))
+            _unsupported();
+          at++;
+          key = _EvalExpr(() => name);
         }
-        return value;
+        JCallSite site() {
+          final object = previous.read();
+          if (identical(object, jShortCircuit) ||
+              optional && jNullish(object)) {
+            return JCallSite(jShortCircuit);
+          }
+          return JCallSite.member(object, key.read());
+        }
+
+        JRef reference() {
+          final object = previous.read();
+          return JRef.member(object, jPropertyKey(key.read()));
+        }
+
+        value = _EvalExpr(
+          () => site().function,
+          null,
+          chain ? null : reference,
+          site,
+          null,
+          false,
+          () {
+            final object = previous.read();
+            if (identical(object, jShortCircuit) ||
+                optional && jNullish(object))
+              return true;
+            return jDelete(object, key.read(), strict: strictFunction);
+          },
+        );
+      } else {
+        if (!chain) return value;
+        final site = value.callSite;
+        return _EvalExpr(
+          () => jEndChain(previous.read()),
+          null,
+          null,
+          site == null
+              ? null
+              : () {
+                  final call = site();
+                  return JCallSite(
+                    jEndChain(call.function),
+                    receiver: call.receiver,
+                  );
+                },
+          null,
+          false,
+          previous.remove,
+        );
       }
     }
   }
@@ -968,6 +1207,125 @@ class _RuntimeEvalParser {
         item.read(),
   ];
 
+  int closingToken(int start, String end) {
+    final open = tokens[start];
+    var depth = 1;
+    for (var index = start + 1; index < tokens.length - 1; index++) {
+      if (tokens[index] == open) depth++;
+      if (tokens[index] == end && --depth == 0) return index;
+    }
+    _unsupported();
+  }
+
+  String groupSource(String open, String end) {
+    final start = at;
+    expect(open);
+    final close = closingToken(start, end);
+    at = close + 1;
+    return source.substring(offsets[start] + open.length, offsets[close]);
+  }
+
+  String tokenSource(int start) =>
+      source.substring(offsets[start], offsets[at - 1] + tokens[at - 1].length);
+
+  bool startsArrow() {
+    if (peek != '(' && !RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek))
+      return false;
+    final next = peek == '(' ? closingToken(at, ')') + 1 : at + 1;
+    return !lineBreaks.contains(next) && tokens[next] == '=>';
+  }
+
+  _EvalExpr arrowFunction() {
+    final start = at;
+    final parameters = peek == '('
+        ? groupSource('(', ')')
+        : bindingIdentifier();
+    expect('=>');
+    final concise = peek != '{';
+    late final String body;
+    if (concise) {
+      final bodyStart = at;
+      expression();
+      body = tokenSource(bodyStart);
+    } else {
+      body = groupSource('{', '}');
+    }
+    final code = _RuntimeFunctionCode(
+      parameters,
+      body,
+      scope.current,
+      arrow: true,
+      concise: concise,
+      inheritedStrict: strictFunction,
+      lexicalTarget: newTarget,
+      lexicalHome: home,
+    );
+    final lexicalScope = scope;
+    final text = tokenSource(start);
+    return _EvalExpr(
+      () => code.create(
+        lexicalScope.current,
+        '',
+        text,
+        lexicalThis: thisValue,
+        home: home,
+      ),
+      null,
+      null,
+      null,
+      null,
+      true,
+    );
+  }
+
+  _EvalExpr functionLiteral(int start, String name, {bool bindName = false}) {
+    final parameters = groupSource('(', ')');
+    final body = groupSource('{', '}');
+    final code = _RuntimeFunctionCode(
+      parameters,
+      body,
+      scope.current,
+      inheritedStrict: strictFunction,
+    );
+    final lexicalScope = scope;
+    final text = tokenSource(start);
+    return _EvalExpr(
+      () {
+        final outer = lexicalScope.current;
+        final environment = bindName ? JScope(outer) : outer;
+        final fn = code.create(environment, name, text);
+        if (bindName) environment.define(name, fn, constant: true);
+        return fn;
+      },
+      null,
+      null,
+      null,
+      null,
+      name.isEmpty,
+    );
+  }
+
+  _EvalRead functionDeclaration() {
+    final start = at;
+    expect('function');
+    final pattern = identifierPattern();
+    final variable = lexicalEnvironments.length == 1;
+    registerBinding(pattern, variable: variable);
+    final name = pattern.names.single;
+    final lexicalScope = scope;
+    if (variable) functionNames.add(name);
+    final definition = functionLiteral(start, name);
+    hoisted.last.add(() {
+      final fn = definition.read();
+      if (variable) {
+        variableScope.declareFunction(name, fn);
+      } else {
+        lexicalScope.current.define(name, fn);
+      }
+    });
+    return () => _jRuntimeEmpty;
+  }
+
   _EvalExpr objectLiteral() {
     final entries = <void Function(JObject)>[];
     var hasPrototype = false;
@@ -980,6 +1338,12 @@ class _RuntimeEvalParser {
           }
         });
       } else {
+        final start = at;
+        var kind = 'init';
+        if ((peek == 'get' || peek == 'set') &&
+            !const {':', ',', '}', '('}.contains(tokens[at + 1])) {
+          kind = tokens[at++];
+        }
         final computed = take('[');
         final token = peek;
         late final _EvalExpr key;
@@ -996,27 +1360,56 @@ class _RuntimeEvalParser {
         } else {
           _unsupported();
         }
-        final hasValue = take(':');
-        if (!hasValue &&
-            (computed ||
-                !_runtimeBindingName(token) ||
-                !RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)))
-          _unsupported();
         final lexicalScope = scope;
-        final value = hasValue
-            ? expression()
-            : _EvalExpr(() => lexicalScope.current.get(token));
-        final prototype = !computed && hasValue && key.read() == '__proto__';
-        if (prototype && hasPrototype) _unsupported();
-        hasPrototype |= prototype;
-        entries.add((object) {
-          final property = jPropertyKey(key.read());
-          jApplyObjectEntry(object, (
-            prototype ? 'prototype' : 'init',
-            property,
-            value.read(),
-          ));
-        });
+        if (peek == '(') {
+          final parameters = groupSource('(', ')');
+          final body = groupSource('{', '}');
+          final code = _RuntimeFunctionCode(
+            parameters,
+            body,
+            scope.current,
+            method: true,
+            inheritedStrict: strictFunction,
+          );
+          if ((kind == 'get' && code.parameterCount != 0) ||
+              (kind == 'set' &&
+                  (code.parameterCount != 1 || code.restParameter)))
+            _unsupported();
+          final text = tokenSource(start);
+          entries.add((object) {
+            final property = jPropertyKey(key.read());
+            final name = jFunctionKeyName(property);
+            final fn = code.create(
+              lexicalScope.current,
+              kind == 'init' ? name : '$kind $name',
+              text,
+              home: object,
+            );
+            jApplyObjectEntry(object, (kind, property, fn));
+          });
+        } else {
+          if (kind != 'init') _unsupported();
+          final hasValue = take(':');
+          if (!hasValue &&
+              (computed ||
+                  !_runtimeBindingName(token) ||
+                  !RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)))
+            _unsupported();
+          final value = hasValue
+              ? expression()
+              : _EvalExpr(() => lexicalScope.current.get(token));
+          final prototype = !computed && hasValue && key.read() == '__proto__';
+          if (prototype && hasPrototype) _unsupported();
+          hasPrototype |= prototype;
+          entries.add((object) {
+            final property = jPropertyKey(key.read());
+            jApplyObjectEntry(object, (
+              prototype ? 'prototype' : 'init',
+              property,
+              prototype ? value.read() : value.readNamed(property),
+            ));
+          });
+        }
       }
       if (!take(',')) {
         expect('}');
@@ -1033,6 +1426,11 @@ class _RuntimeEvalParser {
   _EvalExpr atom() {
     final token = peek;
     if (token.isEmpty) _unsupported();
+    if (take('function')) {
+      final start = at - 1;
+      final name = peek == '(' ? '' : bindingIdentifier();
+      return functionLiteral(start, name, bindName: name.isNotEmpty);
+    }
     if (take('(')) {
       final value = sequence();
       expect(')');
@@ -1043,6 +1441,29 @@ class _RuntimeEvalParser {
       return _EvalExpr(() => evaluateList(elements));
     }
     if (take('{')) return objectLiteral();
+    if (take('super')) {
+      final owner = home;
+      if (owner == null) _unsupported();
+      late final _EvalExpr key;
+      if (take('[')) {
+        key = sequence();
+        expect(']');
+      } else {
+        expect('.');
+        final name = peek;
+        if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name))
+          _unsupported();
+        at++;
+        key = _EvalExpr(() => name);
+      }
+      JRef ref() => jSuperReference(thisValue, owner, key.read());
+      return _EvalExpr(
+        () => ref().read(),
+        null,
+        ref,
+        () => jSuperCallSite(thisValue, owner, key.read()),
+      );
+    }
     if (token == '+' ||
         token == '-' ||
         token == '!' ||
@@ -1058,9 +1479,11 @@ class _RuntimeEvalParser {
             'this',
             'void',
             'typeof',
+            'function',
+            'new',
           }.contains(peek) &&
           RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek) &&
-          !const {'.', '[', '('}.contains(tokens[at + 1])) {
+          !const {'.', '[', '(', '?.'}.contains(tokens[at + 1])) {
         final name = tokens[at++];
         final lexicalScope = scope;
         return _EvalExpr(
@@ -1130,10 +1553,12 @@ class _RuntimeEvalParser {
     final lexicalScope = scope;
     return _EvalExpr(
       () => lexicalScope.current.get(token),
-      (value) => lexicalScope.current.put(token, value),
+      (value) => lexicalScope.current.put(token, value, strict: strictFunction),
       null,
       null,
-      token == "eval",
+      token,
+      false,
+      () => lexicalScope.current.deleteBinding(token),
     );
   }
 }
@@ -1143,6 +1568,8 @@ dynamic jRuntimeEval(
   JScope scope,
   dynamic thisValue, {
   bool strict = false,
+  dynamic newTarget = _noNewTarget,
+  JObject? home,
 }) {
   if (value is! String) return value;
   final parser = _RuntimeEvalParser(
@@ -1150,8 +1577,15 @@ dynamic jRuntimeEval(
     JScope(scope),
     thisValue,
     strictFunction: strict,
+    newTarget: newTarget,
+    home: home,
   );
   final statements = parser.parse();
+  parser.variableScope.prepareEval(
+    parser.strictFunction,
+    parser.variableNames.toList(),
+    parser.functionNames.toList(),
+  );
   parser.instantiate();
   return _runRuntimeStatements(statements);
 }
@@ -1179,14 +1613,24 @@ dynamic jDirectRuntimeEval(
   JScope scope,
   dynamic thisValue, {
   bool strict = false,
+  dynamic newTarget = _noNewTarget,
+  JObject? home,
 }) => callee is JEvalFunction
-    ? jRuntimeEval(jArg(args, 0), scope, thisValue, strict: strict)
+    ? jRuntimeEval(
+        jArg(args, 0),
+        scope,
+        thisValue,
+        strict: strict,
+        newTarget: newTarget,
+        home: home,
+      )
     : jCall(callee, args);
 
 class _RuntimeJump implements Exception {
   final bool isBreak;
+  final String? label;
   dynamic value = _jRuntimeEmpty;
-  _RuntimeJump(this.isBreak);
+  _RuntimeJump(this.isBreak, this.label);
 
   void updateEmpty(dynamic previous) {
     if (identical(value, _jRuntimeEmpty)) value = previous;
@@ -1247,93 +1691,171 @@ JFunction jRuntimeFunction(JScope root, List<dynamic> args, String kind) {
       ? ''
       : strings.take(strings.length - 1).join(',');
   final body = strings.isEmpty ? '' : strings.last;
-  final global = root.scriptGlobalScope;
-  final signature = _RuntimeEvalParser(
-    parameters,
-    JScope(global),
-    jUndefined,
-  ).parameters();
-  final names = [for (final (pattern, _) in signature) ...pattern.names];
-  final simple = signature.every((entry) => entry.$1.simple && !entry.$2);
-  final length = signature
-      .takeWhile((entry) => !entry.$1.hasDefault && !entry.$2)
-      .length;
-  final validation = _RuntimeEvalParser(
-    body,
-    JScope(root.scriptGlobalScope),
-    jUndefined,
-    functionBody: true,
+  return _RuntimeFunctionCode(parameters, body, root).create(
+    root.scriptGlobalScope,
+    'anonymous',
+    'function anonymous($parameters\n) {\n$body\n}',
   );
-  validation.parse();
-  final strict = validation.strictFunction;
-  if (names.any(validation.lexicalNames.contains) ||
-      (!simple && (strict || names.toSet().length != names.length)) ||
-      (strict &&
-          (names.toSet().length != names.length ||
-              names.contains('eval') ||
-              names.contains('arguments')))) {
-    throw JThrown(JError('SyntaxError', 'Invalid Function parameter binding'));
-  }
-  final function = jFunction((actual, receiver, newTarget) {
-    final parametersScope = JScope(global);
-    final thisValue = !strict && jNullish(receiver)
-        ? root.globalThisValue
-        : receiver;
-    if (simple) {
-      for (final name in names.toSet()) {
-        parametersScope.define(name, jArg(actual, names.lastIndexOf(name)));
-      }
-    } else {
-      for (final name in names) parametersScope.reserve(name);
-    }
-    if (!names.contains('arguments')) {
-      parametersScope.define('arguments', jArgumentsObject(actual));
-    }
-    final variables = simple ? parametersScope : JScope(parametersScope);
-    final parser = _RuntimeEvalParser(
+}
+
+class _RuntimeFunctionCode {
+  final String parameters, body;
+  final bool arrow, concise, method;
+  final dynamic lexicalTarget;
+  final JObject? lexicalHome;
+  late final int parameterCount;
+  late final bool restParameter;
+  late final bool strict, simple;
+  late final List<String> names;
+  late final int length;
+  _RuntimeFunctionCode(
+    this.parameters,
+    this.body,
+    JScope scope, {
+    this.arrow = false,
+    this.concise = false,
+    this.method = false,
+    this.lexicalTarget = _noNewTarget,
+    this.lexicalHome,
+    bool inheritedStrict = false,
+  }) {
+    final validation = _RuntimeEvalParser(
       body,
-      JScope(variables),
-      thisValue,
+      JScope(scope),
+      jUndefined,
       functionBody: true,
-      variables: variables,
+      strictFunction: inheritedStrict,
+      newTarget: arrow ? lexicalTarget : jUndefined,
+      home: method ? jObjectPrototype : lexicalHome,
     );
-    if (!simple) {
-      final bindings = _RuntimeEvalParser(
-        parameters,
-        parametersScope,
-        thisValue,
-      ).parameters();
-      for (var index = 0; index < bindings.length; index++) {
-        final (pattern, rest) = bindings[index];
-        final value = rest ? actual.skip(index).toList() : jArg(actual, index);
-        parser.initializeBinding(
-          pattern,
-          value,
-          parametersScope,
-          constant: false,
-          variable: false,
+    if (!concise) parseBody(validation);
+    strict = validation.strictFunction;
+    final signature = _RuntimeEvalParser(
+      parameters,
+      JScope(scope),
+      jUndefined,
+      strictFunction: strict,
+      newTarget: arrow ? lexicalTarget : jUndefined,
+      home: method ? jObjectPrototype : lexicalHome,
+    ).parameters();
+    parameterCount = signature.length;
+    restParameter = signature.isNotEmpty && signature.last.$2;
+    names = [for (final (pattern, _) in signature) ...pattern.names];
+    simple = signature.every((entry) => entry.$1.simple && !entry.$2);
+    length = signature
+        .takeWhile((entry) => !entry.$1.hasDefault && !entry.$2)
+        .length;
+    if (names.any(validation.lexicalNames.contains) ||
+        (!simple && validation.strictDirective) ||
+        ((!simple || strict || arrow || method) &&
+            names.toSet().length != names.length)) {
+      throw JThrown(
+        JError('SyntaxError', 'Invalid function parameter binding'),
+      );
+    }
+  }
+
+  List<_EvalRead> parseBody(_RuntimeEvalParser parser) {
+    if (!concise) return parser.parse();
+    final value = parser.expression();
+    if (parser.peek.isNotEmpty) parser._unsupported();
+    return [() => throw _RuntimeReturn(value.read())];
+  }
+
+  JFunction create(
+    JScope outer,
+    String name,
+    String source, {
+    dynamic lexicalThis,
+    JObject? home,
+  }) {
+    late final JFunction function;
+    dynamic invoke(List<dynamic> actual, dynamic receiver, dynamic target) {
+      final parametersScope = JScope.function(outer);
+      final newTarget = arrow ? lexicalTarget : target;
+      final thisValue = arrow
+          ? lexicalThis
+          : strict
+          ? receiver
+          : jNullish(receiver)
+          ? outer.globalThisValue
+          : jObject(receiver);
+      if (simple) {
+        for (final name in names.toSet()) {
+          parametersScope.define(name, jArg(actual, names.lastIndexOf(name)));
+        }
+      } else {
+        for (final name in names) parametersScope.reserve(name);
+      }
+      if (!arrow && !names.contains('arguments')) {
+        parametersScope.define(
+          'arguments',
+          jArgumentsObject(
+            actual,
+            environment: simple && !strict ? parametersScope : null,
+            names: names,
+            callee: function,
+          ),
         );
       }
-    }
-    final statements = parser.parse();
-    if (!simple) {
-      for (final name in parser.variableNames) {
-        if (names.contains(name))
-          variables.define(name, parametersScope.get(name));
+      final variables = simple
+          ? parametersScope
+          : JScope.function(parametersScope);
+      final parser = _RuntimeEvalParser(
+        body,
+        JScope(variables),
+        thisValue,
+        functionBody: true,
+        variables: variables,
+        strictFunction: strict,
+        newTarget: newTarget,
+        home: home,
+      );
+      if (!simple) {
+        final bindings = _RuntimeEvalParser(
+          parameters,
+          parametersScope,
+          thisValue,
+          strictFunction: strict,
+          newTarget: newTarget,
+          home: home,
+        ).parameters();
+        for (var index = 0; index < bindings.length; index++) {
+          final (pattern, rest) = bindings[index];
+          final value = rest
+              ? actual.skip(index).toList()
+              : jArg(actual, index);
+          parser.initializeBinding(
+            pattern,
+            value,
+            parametersScope,
+            constant: false,
+            variable: false,
+          );
+        }
       }
+      final statements = parseBody(parser);
+      if (!simple) {
+        for (final name in parser.variableNames) {
+          if (names.contains(name))
+            variables.define(name, parametersScope.get(name));
+        }
+      }
+      parser.instantiate();
+      try {
+        for (final statement in statements) statement();
+      } on _RuntimeReturn catch (completion) {
+        return completion.value;
+      }
+      return jUndefined;
     }
-    parser.instantiate();
-    try {
-      for (final statement in statements) statement();
-    } on _RuntimeReturn catch (completion) {
-      return completion.value;
-    }
-    return jUndefined;
-  });
-  return jNamedFunction(
-    function,
-    'anonymous',
-    length,
-    source: 'function anonymous($parameters\n) {\n$body\n}',
-  );
+
+    function = arrow || method
+        ? JFunction(
+            (args, receiver) => invoke(args, receiver, jUndefined),
+            constructible: false,
+          )
+        : jFunction(invoke);
+    return jNamedFunction(function, name, length, source: source);
+  }
 }

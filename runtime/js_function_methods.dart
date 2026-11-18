@@ -198,22 +198,80 @@ void installJSFunctionPrototype(JScope scope) {
   }
 }
 
-JObject jArgumentsObject(List<dynamic> args) {
-  final object = JObject({
+class JMappedArguments extends JObject {
+  final JScope environment;
+  final _parameters = <Object, String>{};
+
+  JMappedArguments(
+    Map<String, dynamic> values,
+    this.environment,
+    List<String> names,
+    int count,
+  ) : super(values) {
+    final seen = <String>{};
+    for (var i = names.length - 1; i >= 0; i--) {
+      if (seen.add(names[i]) && i < count) _parameters['$i'] = names[i];
+    }
+  }
+
+  @override
+  dynamic raw(Object key) {
+    final name = _parameters[key];
+    return name == null ? super.raw(key) : environment.get(name);
+  }
+
+  void propertyDefined(Object key, JObject descriptor) {
+    final name = _parameters[key];
+    if (name == null) return;
+    if (descriptor.own('get') || descriptor.own('set')) {
+      _parameters.remove(key);
+      return;
+    }
+    if (descriptor.own('value')) environment.put(name, descriptor.raw('value'));
+    if (descriptor.own('writable') && !jTruthy(descriptor.raw('writable'))) {
+      store(key, environment.get(name));
+      _parameters.remove(key);
+    }
+  }
+
+  @override
+  bool remove(Object key) {
+    if (!super.remove(key)) return false;
+    _parameters.remove(key);
+    return true;
+  }
+}
+
+final _throwArgumentsCallee = jBuiltin(
+  (_) => throw JThrown(JError('TypeError', 'Restricted arguments.callee')),
+);
+
+JObject jArgumentsObject(
+  List<dynamic> args, {
+  JScope? environment,
+  List<String> names = const [],
+  JFunction? callee,
+}) {
+  final values = {
     for (var index = 0; index < args.length; index++) '$index': args[index],
     'length': args.length.toDouble(),
-  });
+  };
+  final object = environment == null
+      ? JObject(values)
+      : JMappedArguments(values, environment, names, args.length);
   object.flags['length'] = JPropertyFlags(enumerable: false);
-  final restricted = jBuiltin(
-    (_) => throw JThrown(JError('TypeError', 'Restricted arguments.callee')),
-  );
-  object.properties['callee'] = jUndefined;
-  object.getters['callee'] = restricted;
-  object.setters['callee'] = restricted;
-  object.flags['callee'] = JPropertyFlags(
-    enumerable: false,
-    configurable: false,
-  );
+  if (environment != null) {
+    object.properties['callee'] = callee;
+    object.flags['callee'] = JPropertyFlags(enumerable: false);
+  } else {
+    object.properties['callee'] = jUndefined;
+    object.getters['callee'] = _throwArgumentsCallee;
+    object.setters['callee'] = _throwArgumentsCallee;
+    object.flags['callee'] = JPropertyFlags(
+      enumerable: false,
+      configurable: false,
+    );
+  }
   final iterator = jSymbols['iterator']!;
   object.symbols[iterator] = jBuiltin((_) {
     var index = 0;

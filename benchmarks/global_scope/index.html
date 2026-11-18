@@ -10,6 +10,8 @@
   <script>
     globalThis.shared = 4;
     globalThis.added = 3;
+    let dynamicProgram = 'var saved; function make(n) { return () => ++n }; saved = make(4)';
+    eval(dynamicProgram);
     let fromFunction = Function('return localLexical')();
     document.getElementById('status').textContent =
       String(readValue() + added + fromFunction) + ':' + String(globalThis === window && this === window);
@@ -36,6 +38,7 @@
     document.getElementById('status').textContent += ':' + String(checkDynamic());
     let functionBody = 'if (shared > 0) { let result, count; [result, {count}] = [shared, {count: localLexical}]; try { return result + count } finally {} }';
     document.getElementById('status').textContent += ':' + String(Function(functionBody)());
+    document.getElementById('status').textContent += ':' + String(saved()) + ':' + String(saved());
     source = 'let result = shared > 0 ? readValue() : 0; result';
     document.getElementById('status').textContent += ':' + String(eval(source));
   </script>

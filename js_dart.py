@@ -27,13 +27,15 @@ def quote(value):
     return json.dumps(value, ensure_ascii=True).replace("$", r"\$")
 
 
-def parse(source, path, *, source_type="module"):
+def parse(source, path, *, source_type="module", allow_new_target=False, allow_super=False):
     node = shutil.which("node")
     parser = Path(__file__).parent / "javascript" / "parse.cjs"
     if not node:
         raise CompileError("JavaScriptの構文解析にはNode.jsが必要です")
     result = subprocess.run(
-        [node, str(parser), *(["--script"] if source_type == "script" else [])],
+        [node, str(parser), *(["--script"] if source_type == "script" else []),
+         *(["--eval-new-target"] if allow_new_target else []),
+         *(["--eval-super"] if allow_super else [])],
         input=source, encoding="utf-8", capture_output=True
     )
     if result.returncode:
@@ -60,7 +62,7 @@ class Compiler:
         )
         self.asynchronous = False
         self.strict = False
-        self.new_target = "jUndefined"
+        self.new_target = "_noNewTarget"
         self.home = None
         self.construction = None
         self.private_names = {}
@@ -115,7 +117,7 @@ class Compiler:
 
     def ref(self, node):
         if node["type"] == "Identifier":
-            return f'JRef.scope({self.scope}, {quote(node["name"])})'
+            return f'JRef.scope({self.scope}, {quote(node["name"])}, strict: {str(self.strict).lower()})'
         if node["type"] == "MemberExpression":
             if node["property"]["type"] == "PrivateIdentifier":
                 return f'{self.private_name(node["property"])}.reference({self.expr(node["object"])})'
@@ -163,6 +165,17 @@ class Compiler:
                      if call else f"jGet({temp}, {key})")
         skipped = "JCallSite(jShortCircuit)" if call else "jShortCircuit"
         return f"({test} ? {skipped} : {value})"
+
+    def object_entry(self, prop, key):
+        kind = prop.get('kind', 'init')
+        if prop.get('method') or kind in ('get', 'set'):
+            home = self.name('home')
+            value = self.function({**prop['value'], 'htgc_method': True, 'htgc_home': home})
+            return f'({quote(kind)}, {key}, (JObject {home}) => {value})'
+        if (not prop.get('computed') and not prop.get('shorthand')
+                and prop['key'].get('name', prop['key'].get('value')) == '__proto__'):
+            kind = 'prototype'
+        return f'({quote(kind)}, {key}, {self.expr(prop["value"])})'
 
     def property_key(self, node):
         key = node["key"]
@@ -305,20 +318,14 @@ class Compiler:
             self.construction = receiver
             self.receiver = f'{receiver}.thisValue'
             self.new_target = f'{receiver}.newTarget'
-        body = [f"final {scope} = JScope({old_scope});"]
-        if not arrow:
-            body.append(f'{scope}.define("arguments", jArgumentsObject({args}));')
-        for i, param in enumerate(node["params"]):
-            value = f"jArg({args}, {i})"
-            if param["type"] == "RestElement":
-                value = f"{args}.skip({i}).toList()"
-                param = param["argument"]
-            if param["type"] == "AssignmentPattern":
-                value = f'jDefault({value}, () => {self.expr(param["right"])})'
-                param = param["left"]
-            body.append(self.bind(param, value))
+        body = [f"final {scope} = JScope.function({old_scope});"]
+        if not arrow and not self.strict and not node.get("htgc_constructor"):
+            self.receiver = self.name("thisValue")
+            body.append(f'final {self.receiver} = jNullish({receiver}) ? {scope}.globalThisValue : jObject({receiver});')
+        setup, callee = self.function_parameters(node, args)
+        body.extend(setup)
         if node["body"]["type"] == "BlockStatement":
-            body.append(self.block_contents(node["body"]["body"], hoist_vars=True))
+            body.append(self.block_contents(node["body"]["body"], hoist_vars=True, global_functions=True))
             if not self.returns(node["body"]):
                 body.append("throw JAsyncReturn(jUndefined);" if self.asynchronous else "return jUndefined;")
         else:
@@ -336,7 +343,55 @@ class Compiler:
         self.scope, self.receiver, self.new_target = old_scope, old_this, old_target
         self.home, self.construction = old_home, old_construction
         self.asynchronous, self.temps = old_async, old_temps
-        return self.function_metadata(result, node)
+        return self.function_metadata(self.capture_callee(result, callee), node)
+
+    def function_parameters(self, node, args):
+        params = node["params"]
+        simple = all(p["type"] == "Identifier" for p in params)
+        names = [n for p in params for n in self.binding_names(p)]
+        scope = self.scope
+        code = []
+        callee = None
+        statements = node["body"]["body"] if node["body"]["type"] == "BlockStatement" else []
+        shadows_arguments = any(
+            (n["type"] in ("FunctionDeclaration", "ClassDeclaration") and n["id"]["name"] == "arguments") or
+            (n["type"] == "VariableDeclaration" and n["kind"] != "var" and
+             any("arguments" in self.binding_names(d["id"]) for d in n["declarations"]))
+            for n in statements
+        )
+        if (node["type"] != "ArrowFunctionExpression" and "arguments" not in names
+                and not (simple and shadows_arguments)):
+            extras = ""
+            if simple and not self.strict:
+                callee = self.name("callee")
+                formal_names = ", ".join(map(quote, names))
+                extras = f", environment: {scope}, names: [{formal_names}], callee: {callee}"
+            code.append(f'{scope}.define("arguments", jArgumentsObject({args}{extras}));')
+        if not simple:
+            code.extend(f'{scope}.reserve({quote(name)});' for name in names)
+        for i, param in enumerate(params):
+            if simple and param["name"] in names[i + 1:]:
+                continue
+            value = f"jArg({args}, {i})"
+            if param["type"] == "RestElement":
+                value, param = f"{args}.skip({i}).toList()", param["argument"]
+            if param["type"] == "AssignmentPattern":
+                value = f'jDefault({value}, () => {self.expr(param["right"])})'
+                param = param["left"]
+            code.append(self.bind(param, value))
+        if not simple:
+            self.scope = self.name("vars")
+            code.append(f'final {self.scope} = JScope.function({scope});')
+            for name in dict.fromkeys(self.var_names(statements)):
+                if name in names or name == 'arguments' and node["type"] != "ArrowFunctionExpression":
+                    code.append(f'{self.scope}.define({quote(name)}, {scope}.get({quote(name)}));')
+        return code, callee
+
+    @staticmethod
+    def capture_callee(expression, callee):
+        if callee is None:
+            return expression
+        return f'(() {{ late final JFunction {callee}; return {callee} = {expression}; }})()'
 
     def function_metadata(self, expression, node):
         length = 0
@@ -370,11 +425,13 @@ class Compiler:
 
     def runtime_eval(self, target, arguments):
         return (f'jDirectRuntimeEval({target}, {arguments}, {self.scope}, {self.receiver}, '
-                f'strict: {str(self.strict).lower()})')
+                f'strict: {str(self.strict).lower()}, newTarget: {self.new_target}, home: {self.home or "null"})')
 
     def compiled_eval(self, source, *, indirect=False):
         try:
-            ast = parse(source, f"{self.path}:eval", source_type="script" if indirect else "module")
+            ast = parse(source, f"{self.path}:eval", source_type="script" if indirect or not self.strict else "module",
+                        allow_new_target=not indirect and self.new_target != "_noNewTarget",
+                        allow_super=not indirect and self.home is not None)
         except CompileError:
             return '() { throw JThrown(JError("SyntaxError", "Invalid eval source")); }'
         self.collect_constructor_aliases(ast)
@@ -390,20 +447,23 @@ class Compiler:
         old_receiver, old_target, old_home = self.receiver, self.new_target, self.home
         if indirect:
             self.receiver = f'{scope}.globalScope.globalThisValue'
-            self.new_target, self.home = 'jUndefined', None
+            self.new_target, self.home = '_noNewTarget', None
         completion = self.eval_completion
         previous_strict = self.strict
         self.strict = (self.strict and not indirect) or self.strict_directive(nodes)
         try:
-            body = self.block_contents(nodes, hoist_vars=True)
+            vars_ = ", ".join(map(quote, dict.fromkeys(self.var_names(nodes))))
+            functions = ", ".join(quote(n["id"]["name"]) for n in nodes if n["type"] == "FunctionDeclaration")
+            prepare = f'{scope}.prepareEval({str(self.strict).lower()}, [{vars_}], [{functions}]);'
+            body = self.block_contents(nodes, hoist_vars=True, global_functions=True)
         except CompileError:
             return '() { throw JThrown(JError("TypeError", "Unsupported eval source")); }'
         finally:
             self.scope, self.eval_completion, self.receiver = parent, previous, old_receiver
             self.new_target, self.home = old_target, old_home
             self.strict = previous_strict
-        environment = f'{parent}.globalScope' if indirect else parent
-        return (f'() {{\n// ignore: unused_local_variable\nfinal {scope} = JScope({environment});\n'
+        environment = f'{parent}.scriptGlobalScope' if indirect else parent
+        return (f'() {{\n// ignore: unused_local_variable\nfinal {scope} = JScope({environment});\n{prepare}\n'
                 f'dynamic {completion} = jUndefined;\n{body}\nreturn {completion}; }}')
 
     def function_constructor_kind(self, callee):
@@ -449,11 +509,18 @@ class Compiler:
         body = arguments[-1]['value'] if arguments else ''
         prefix = "async " if kind in ("async", "asyncGenerator") else ""
         star = "*" if kind in ("generator", "asyncGenerator") else ""
-        source = f'({prefix}function{star} anonymous({parameters}\n) {{\n{body}\n}})'
+        header = f'({prefix}function{star} anonymous({parameters}\n) '
+        source = f'{header}{{\n{body}\n}})'
         try:
-            ast = parse(source, f"{self.path}:Function")
+            ast = parse(source, f"{self.path}:Function", source_type="script")
             self.collect_constructor_aliases(ast)
-            function = ast['body'][0]['expression']
+            nodes = ast['body']
+            function = nodes[0].get('expression', {}) if len(nodes) == 1 else {}
+            header_end = len(header.encode('utf-16-le', errors='surrogatepass')) // 2
+            if (function.get('type') != 'FunctionExpression' or function['body']['start'] != header_end
+                    or function['end'] != len(source.encode('utf-16-le', errors='surrogatepass')) // 2 - 1):
+                raise CompileError('Invalid dynamic function body or parameters')
+            function = {**function, 'type': 'FunctionDeclaration'}
         except CompileError:
             return '() { throw JThrown(JError("SyntaxError", "Invalid Function source")); }'
         parent, self.scope = self.scope, self.name('global')
@@ -464,7 +531,7 @@ class Compiler:
         finally:
             self.scope = parent
             self.strict = previous_strict
-        return f'() {{ final {scope} = {parent}.globalScope; return {expression}; }}'
+        return f'() {{ final {scope} = {parent}.scriptGlobalScope; return {expression}; }}'
 
     def expr(self, n):
         if n is None:
@@ -529,10 +596,7 @@ class Compiler:
                     parts.append("...jObjectSpread(" + self.expr(p["argument"]) + ")")
                     continue
                 key = self.property_key(p)
-                kind = p.get("kind", "init")
-                if not p.get("computed") and not p.get("method") and not p.get("shorthand") and kind == "init" and p["key"].get("name", p["key"].get("value")) == "__proto__":
-                    kind = "prototype"
-                parts.append(f'({quote(kind)}, jPropertyKey({key}), {self.expr(p["value"])})')
+                parts.append(self.object_entry(p, f'jPropertyKey({key})'))
             return "jObjectLiteral([" + ", ".join(parts) + "])"
         if t in ("FunctionExpression", "ArrowFunctionExpression"):
             return self.function(n)
@@ -638,9 +702,11 @@ class Compiler:
         if t == "UnaryExpression":
             if n["operator"] == "typeof" and n["argument"]["type"] == "Identifier":
                 return f'jUnary("typeof", {self.scope}.getForTypeof({quote(n["argument"]["name"])}))'
+            if n["operator"] == "delete" and n["argument"]["type"] == "Identifier":
+                return f'{self.scope}.deleteBinding({quote(n["argument"]["name"])})'
             if n["operator"] == "delete" and n["argument"]["type"] == "MemberExpression":
                 target = n["argument"]
-                return f'jDelete({self.expr(target["object"])}, {self.key(target)}, strict: true)'
+                return f'jDelete({self.expr(target["object"])}, {self.key(target)}, strict: {str(self.strict).lower()})'
             return f'jUnary({quote(n["operator"])}, {self.expr(n["argument"])})'
         if t == "BinaryExpression":
             if n["left"]["type"] == "PrivateIdentifier" and n["operator"] == "in":
@@ -1033,6 +1099,8 @@ class Compiler:
                 parent = self.scope
                 self.scope = self.name()
                 code += f" catch ({caught}) {{\nfinal {self.scope} = JScope({parent});\n"
+                if (handler.get("param") or {}).get("type") == "Identifier":
+                    code += f'{self.scope}.simpleCatchName = {quote(handler["param"]["name"])};\n'
                 if self.asynchronous:
                     code += f"if ({caught} is JAsyncReturn) rethrow;\n"
                 value = f"{caught} is JThrown ? {caught}.value : {caught}"

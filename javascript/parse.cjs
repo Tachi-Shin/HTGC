@@ -2,7 +2,18 @@ const fs = require('node:fs');
 const acorn = require('acorn');
 try {
   const input = fs.readFileSync(0, 'utf8');
-  const ast = acorn.parse(input, {ecmaVersion: 'latest', sourceType: process.argv.includes('--script') ? 'script' : 'module', locations: true});
+  // Direct eval may inherit a function's new.target binding.
+  const newTarget = process.argv.includes('--eval-new-target');
+  const superProperty = process.argv.includes('--eval-super');
+  const parser = newTarget || superProperty
+    ? acorn.Parser.extend(Base => class extends Base {
+        get allowNewDotTarget() { return super.allowNewDotTarget || newTarget; }
+        get allowSuper() {
+          return super.allowSuper || (superProperty && this.currentThisScope() === this.scopeStack[0]);
+        }
+      })
+    : acorn.Parser;
+  const ast = parser.parse(input, {ecmaVersion: 'latest', sourceType: process.argv.includes('--script') ? 'script' : 'module', locations: true});
   function rewriteUnicodeSets(pattern, flags) {
     return require('regexpu-core')(pattern, flags, {
       unicodeSetsFlag: 'transform',

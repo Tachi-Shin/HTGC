@@ -226,11 +226,8 @@ class GeneratorCompiler(Compiler):
                     self.prelude.append(f'for (final _entry in jObjectSpread({value})) {{ jApplyObjectEntry({result}, _entry); }}')
                 else:
                     key = self.save(f'jPropertyKey({self.property_key(prop)})')
-                    value = self.expr(prop['value'])
-                    mode = prop.get('kind', 'init')
-                    if not prop.get('computed') and not prop.get('method') and not prop.get('shorthand') and mode == 'init' and prop['key'].get('name', prop['key'].get('value')) == '__proto__':
-                        mode = 'prototype'
-                    self.prelude.append(f'jApplyObjectEntry({result}, ({quote(mode)}, {key}, {value}));')
+                    entry = self.object_entry(prop, key)
+                    self.prelude.append(f'jApplyObjectEntry({result}, {entry});')
             return result
         if kind == 'TemplateLiteral':
             parts = []
@@ -385,22 +382,18 @@ def compile_generator(parent, node):
     outer, args, receiver = compiler.scope, compiler.name('ga'), compiler.name('gthis')
     compiler.scope, compiler.generator = compiler.name('gs'), compiler.name('generator')
     compiler.receiver = receiver
-    setup = [
-        f'final {compiler.scope} = JScope({outer});',
-        f'{compiler.scope}.define("arguments", jArgumentsObject({args}));',
-    ]
-    for i, param in enumerate(node['params']):
-        value = f'jArg({args},{i})'
-        if param['type'] == 'RestElement':
-            value, param = f'{args}.skip({i}).toList()', param['argument']
-        if param['type'] == 'AssignmentPattern':
-            value = f'jDefault({value}, () => {compiler.expr(param["right"])})'
-            param = param['left']
-        setup.append(compiler.bind(param, value))
+    compiler.new_target = 'jUndefined'
+    setup = [f'final {compiler.scope} = JScope.function({outer});']
+    if not compiler.strict:
+        compiler.receiver = compiler.name('thisValue')
+        setup.append(f'final {compiler.receiver} = jNullish({receiver}) ? {compiler.scope}.globalThisValue : jObject({receiver});')
+    parameters, callee = compiler.function_parameters(node, args)
+    setup.extend(parameters)
     compiler.active, compiler.asynchronous = True, True
-    body = compiler.block_contents(node['body']['body'], hoist_vars=True)
+    body = compiler.block_contents(node['body']['body'], hoist_vars=True, global_functions=True)
     parent.serial = compiler.serial
-    return (f'jGeneratorFunction(({args}, {receiver}) {{\n' + '\n'.join(setup)
+    result = (f'jGeneratorFunction(({args}, {receiver}) {{\n' + '\n'.join(setup)
             + f'\nreturn JGenerator(({compiler.generator}) sync* {{\n{compiler.temp_declarations()}\ntry {{\n{body}\n'
             + '\nyield JGeneratorStep(jUndefined, done: true);\n} on JAsyncReturn catch (_return) {\nyield JGeneratorStep(_return.value, done: true);\n}\n}'
             + f', asynchronous: {str(node.get("async", False)).lower()});\n}}, asynchronous: {str(node.get("async", False)).lower()})')
+    return compiler.capture_callee(result, callee)

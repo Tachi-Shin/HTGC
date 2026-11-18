@@ -38,13 +38,9 @@ class JRegex extends JObject {
         flags.split('').toSet().length != flags.length ||
         flags.contains('u') && flags.contains('v'))
       throw JThrown(JError('SyntaxError', 'Invalid regular expression flags'));
-    if (flags.contains('v') && lowered == null)
-      throw JThrown(
-        JError(
-          'SyntaxError',
-          'Runtime-created Unicode sets require a precompiled pattern',
-        ),
-      );
+    if (flags.contains('v')) {
+      lowered ??= _RegExpSetParser(pattern, flags.contains('i')).lower();
+    }
     final matchingPattern = lowered ?? pattern;
     try {
       value = RegExp(

@@ -339,7 +339,7 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 | ArrayBuffer / DataView | バッファ共有、resize、slice、transfer、transferToFixedLength、デタッチ判定、エンディアンを指定した整数・浮動小数点・BigIntの読み書き |
 | TypedArray | 符号付き／符号なし整数、Uint8Clamped、Float16/32/64、BigInt64/BigUint64、インデックス操作、from/of、反復、set/subarray/slice、検索・集計・map/filter、安定ソート、変更せずコピーを返す操作、可変長バッファ上のビュー |
 | Date | 時刻値、TimeClip、ISO形式と生成したUTC／ローカル形式の解析、UTC／ローカルのget/set、ISO・UTC文字列、JSON変換、無効日時、年0〜99の変換 |
-| RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し、RegExp.escape、compile。`v` はリテラルとパターン・フラグを文字列リテラルで渡す直接の `RegExp(...)` / `new RegExp(...)` を変換。 |
+| RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し、RegExp.escape、compile。`v` はリテラルと実行時のパターン文字列に対応し、文字集合の積・差、文字列集合、絵文字プロパティを扱います。 |
 | SharedArrayBufferとAtomics | 単一のFlutter isolate内でのバッファ共有、grow、slice、整数・BigIntの原子的な読み書き、waitAsyncのタイムアウトとnotify。FlutterのUIエージェントは同期waitを拒否。 |
 | 組み込み型の派生クラス | 既定コンストラクターのクラス宣言・クラス式。Date、RegExp、ArrayBuffer、SharedArrayBuffer、DataView、TypedArray各型の内部データと派生プロトタイプを保持。`slice` などのバッファ・TypedArray操作でSymbol.speciesを参照。 |
 
@@ -356,7 +356,7 @@ HTGC benchmarks/ecmascript/index.html -o ../portfolio-app/lib/main.dart
 - 完全な関数・クラス・Realm・厳密モードの差、ラベル付き制御構文、タグ付きテンプレート、動的Function/eval、ループの束縛や非同期ジョブの全ケースは未対応または未検証です。
 - Proxyで配列を包んだときの特殊な記述子・拡張禁止など、通常オブジェクトと異なる内部操作は未完です。上表の型では独自newTargetを渡すReflect.constructも扱います。その他の組み込みコンストラクターは未対応です。
 - 明示的なクラスコンストラクター、super、未対応の組み込み派生型、複数エージェント間の共有メモリ、すべての副作用順序・メタデータの互換性は未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
-- 実行時に組み立てた文字列からの `v` パターンは未対応です。変換対象の `v` はregexpu-coreでDartのRegExpが扱える形に書き換えます。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータ・重複する名前付きグループなど最新仕様との差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
+- 固定の `v` パターンは変換時にregexpu-coreで、動的パターンは実行時にDartで書き換えます。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータ・重複する名前付きグループなど最新仕様との差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
 - Dateのタイムゾーン規則は実行環境に依存します。実装依存の旧式日付文字列すべての受理や、Intlによるロケール整形は保証しません。
 
 検証範囲と再実行手順は [benchmarks/README.md](benchmarks/README.md) に記載しています。Test262全体の合格を示すものではありません。

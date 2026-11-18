@@ -9,6 +9,8 @@ part 'js_proxy.dart';
 part 'js_binary.dart';
 part 'js_atomics.dart';
 part 'js_regexp.dart';
+part 'js_regexp_sets.dart';
+part 'js_regexp_set_data.dart';
 part 'js_generator.dart';
 part 'js_array_methods.dart';
 part 'js_text_methods.dart';
@@ -391,6 +393,11 @@ dynamic jDefault(dynamic value, dynamic Function() fallback) =>
 class JScope {
   final JScope? parent;
   final bool isGlobalScript;
+  final bool _functionEnvironment;
+  final Set<String> _lexicalNames = {};
+  final Set<String> _deletableNames = {};
+  JScope? _evalOwner;
+  String? simpleCatchName;
   final Map<String, dynamic> _values = {};
   final Set<String> _constants = {};
   final Map<String, dynamic Function()> _imports = {};
@@ -405,8 +412,9 @@ class JScope {
   ) =>
       parent?.template(site, cooked, raw) ??
       _templates.putIfAbsent(site, () => JTemplateArray(cooked, raw: raw));
-  JScope([this.parent]) : isGlobalScript = false;
-  JScope.script(this.parent) : isGlobalScript = true {
+  JScope([this.parent]) : isGlobalScript = false, _functionEnvironment = false;
+  JScope.function(this.parent) : isGlobalScript = false, _functionEnvironment = true;
+  JScope.script(this.parent) : isGlobalScript = true, _functionEnvironment = false {
     root._scriptScope = this;
   }
   JScope get root => parent?.root ?? this;
@@ -457,6 +465,7 @@ class JScope {
         throw JThrown(JError('SyntaxError', 'Restricted global property: $name'));
       }
     }
+    _lexicalNames.add(name);
     _values[name] = _jUninitialized;
   }
 
@@ -464,7 +473,73 @@ class JScope {
     _imports[name] = read;
   }
 
+  JScope get _variableEnvironment => _evalOwner ??
+      (_functionEnvironment || isGlobalScript || parent == null ? this : parent!._variableEnvironment);
+
+  // EvalDeclarationInstantiation must validate *all* names before introducing
+  // bindings on the caller, including observable global object properties.
+  void prepareEval(bool strict, List<String> vars, List<String> functions) {
+    final owner = strict ? this : parent!._variableEnvironment;
+    _evalOwner = owner;
+    if (strict) return;
+    final names = {...vars, ...functions};
+    for (JScope? env = parent; env != null; env = env.parent) {
+      for (final name in names) {
+        final conflict = identical(env, owner)
+            ? env._lexicalNames.contains(name) || env._imports.containsKey(name)
+            : env.simpleCatchName != name && (env._values.containsKey(name) || env._imports.containsKey(name));
+        if (conflict) throw JThrown(JError('SyntaxError', 'Eval redeclares lexical binding: $name'));
+      }
+      if (identical(env, owner)) break;
+    }
+    final object = owner._declarationObject;
+    if (object == null) return;
+    for (final name in names) {
+      final descriptor = jDescriptor(object, name);
+      final allowed = descriptor is! JObject ? object.extensible :
+          !functions.contains(name) || jTruthy(descriptor.get('configurable')) ||
+          (jTruthy(descriptor.get('writable')) && jTruthy(descriptor.get('enumerable')));
+      if (!allowed) throw JThrown(JError('TypeError', 'Cannot declare global binding: $name'));
+    }
+  }
+
+  JObject? get _declarationObject => isGlobalScript || parent == null ? root._globalObject : null;
+
+  void _declareEval(String name, dynamic value, {required bool function}) {
+    final object = _declarationObject;
+    if (object != null) {
+      final descriptor = jDescriptor(object, name);
+      if (descriptor is! JObject || function && jTruthy(descriptor.get('configurable'))) {
+        root.defineGlobal(name, value, enumerable: true);
+      } else if (function) {
+        jSet(object, name, value);
+      }
+    } else {
+      if (!_values.containsKey(name)) {
+        _deletableNames.add(name);
+        _values[name] = value;
+      } else if (function) {
+        _values[name] = value;
+      }
+    }
+  }
+
+  bool deleteBinding(String name) {
+    if (_values.containsKey(name)) {
+      if (!_deletableNames.remove(name)) return false;
+      _values.remove(name);
+      return true;
+    }
+    if (_imports.containsKey(name)) return false;
+    if (parent != null) return parent!.deleteBinding(name);
+    return _globalObject == null || jDelete(_globalObject, name);
+  }
+
   void declareVar(String name) {
+    if (_evalOwner != null) {
+      _evalOwner!._declareEval(name, jUndefined, function: false);
+      return;
+    }
     if (isGlobalScript) {
       if (_values.containsKey(name) || _imports.containsKey(name)) {
         throw JThrown(JError('SyntaxError', 'Identifier already declared: $name'));
@@ -479,8 +554,12 @@ class JScope {
   }
 
   void declareFunction(String name, dynamic value) {
+    if (_evalOwner != null) {
+      _evalOwner!._declareEval(name, value, function: true);
+      return;
+    }
     if (!isGlobalScript) {
-      define(name, value);
+      _values[name] = value;
       return;
     }
     if (_values.containsKey(name) || _imports.containsKey(name)) {
@@ -539,7 +618,7 @@ class JScope {
     return jUndefined;
   }
 
-  dynamic put(String name, dynamic value) {
+  dynamic put(String name, dynamic value, {bool strict = true}) {
     if (_values.containsKey(name)) {
       if (identical(_values[name], _jUninitialized)) {
         throw JThrown(JError('ReferenceError', '$name is not initialized'));
@@ -550,9 +629,15 @@ class JScope {
     }
     if (_imports.containsKey(name))
       throw JThrown(JError('TypeError', 'Assignment to import: $name'));
-    if (parent != null) return parent!.put(name, value);
+    if (parent != null) return parent!.put(name, value, strict: strict);
     final global = _globalObject;
-    if (global != null && jHasProperty(global, name)) return jSet(global, name, value);
+    if (global != null) {
+      if (!strict) {
+        global.write(name, value, global);
+        return value;
+      }
+      if (jHasProperty(global, name)) return jSet(global, name, value);
+    }
     throw JThrown(
       JError('ReferenceError', 'Assignment to undeclared name: $name'),
     );
@@ -923,6 +1008,7 @@ bool jDefineProperty(
     if (has('value')) object.store(key, field('value'));
     if (has('writable')) attributes.writable = jTruthy(field('writable'));
   }
+  if (object is JMappedArguments) object.propertyDefined(key, descriptor);
   return true;
 }
 
@@ -1027,7 +1113,14 @@ JObject jObjectLiteral(List<JObjectEntry> entries) {
 }
 
 void jApplyObjectEntry(JObject object, JObjectEntry entry) {
-  final (kind, key, value) = entry;
+  final (kind, key, definition) = entry;
+  dynamic value = definition;
+  if (definition is JFunction Function(JObject)) {
+    final function = definition(object);
+    final name = jFunctionKeyName(key);
+    function.properties['name'] = kind == 'init' ? name : '$kind $name';
+    value = function;
+  }
   if (kind == 'get' || kind == 'set') {
     if (!object.accessor(key)) {
       object.getters.remove(key);
@@ -1544,8 +1637,8 @@ class JRef {
   final dynamic Function() read;
   final dynamic Function(dynamic) write;
   JRef(this.read, this.write);
-  factory JRef.scope(JScope scope, String key) =>
-      JRef(() => scope.get(key), (v) => scope.put(key, v));
+  factory JRef.scope(JScope scope, String key, {bool strict = true}) =>
+      JRef(() => scope.get(key), (v) => scope.put(key, v, strict: strict));
   factory JRef.member(dynamic object, dynamic key) =>
       JRef(() => jGet(object, key), (v) => jSet(object, key, v));
 }
@@ -2256,6 +2349,10 @@ void installJSNumbers(JScope scope) {
   scope.define('isNaN', jBuiltin((a) => jNumber(jArg(a, 0)).isNaN));
   scope.define('isFinite', jBuiltin((a) => jNumber(jArg(a, 0)).isFinite));
 }
+
+String jFunctionKeyName(dynamic key) => key is JSymbol
+    ? (key.description == null ? '' : '[${key.description}]')
+    : key as String;
 
 void jNameFunction(JFunction function, String name, int length) {
   function.properties.addAll({'name': name, 'length': length});
