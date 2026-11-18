@@ -552,14 +552,32 @@ class JScope {
     }
   }
 
-  bool deleteBinding(String name) {
+  JScope _bindingScope(String name) {
+    var env = this;
+    while (env.parent != null) {
+      if (env is JWithScope && env.hasBinding(name)) return env;
+      if (env._values.containsKey(name) || env._imports.containsKey(name)) return env;
+      env = env.parent!;
+    }
+    return env;
+  }
+
+  JCallSite callSite(String name, {bool strict = true, bool optional = false}) {
+    final env = _bindingScope(name);
+    return JCallSite(env._read(name, strict: strict),
+        receiver: env is JWithScope ? env.object : jUndefined, optional: optional);
+  }
+
+  bool deleteBinding(String name) => _bindingScope(name)._delete(name);
+
+  bool _delete(String name) {
     if (_values.containsKey(name)) {
       if (!_deletableNames.remove(name)) return false;
       _values.remove(name);
       return true;
     }
     if (_imports.containsKey(name)) return false;
-    if (parent != null) return parent!.deleteBinding(name);
+
     return _globalObject == null || jDelete(_globalObject, name);
   }
 
@@ -609,7 +627,9 @@ class JScope {
     return value;
   }
 
-  dynamic get(String name) {
+  dynamic get(String name, {bool strict = true}) => _bindingScope(name)._read(name, strict: strict);
+
+  dynamic _read(String name, {required bool strict, bool forTypeof = false}) {
     if (_values.containsKey(name)) {
       final value = _values[name];
       if (identical(value, _jUninitialized)) {
@@ -619,12 +639,13 @@ class JScope {
     }
     final read = _imports[name];
     if (read != null) return read();
-    if (parent != null) return parent!.get(name);
+
     final global = _globalObject;
     if (global != null && jHasProperty(global, name)) return jGet(global, name);
     if (name == 'undefined') return jUndefined;
     if (name == 'NaN') return double.nan;
     if (name == 'Infinity') return double.infinity;
+    if (forTypeof) return jUndefined;
     throw JThrown(JError('ReferenceError', '$name is not defined'));
   }
 
@@ -636,17 +657,13 @@ class JScope {
     return copy;
   }
 
-  dynamic getForTypeof(String name) {
-    if (_values.containsKey(name) || _imports.containsKey(name)) return get(name);
-    if (parent != null) return parent!.getForTypeof(name);
-    final global = _globalObject;
-    if (global != null && jHasProperty(global, name)) return jGet(global, name);
-    if (name == 'NaN') return double.nan;
-    if (name == 'Infinity') return double.infinity;
-    return jUndefined;
-  }
+  dynamic getForTypeof(String name, {bool strict = true}) =>
+      _bindingScope(name)._read(name, strict: strict, forTypeof: true);
 
-  dynamic put(String name, dynamic value, {bool strict = true}) {
+  dynamic put(String name, dynamic value, {bool strict = true}) =>
+      _bindingScope(name)._write(name, value, strict: strict);
+
+  dynamic _write(String name, dynamic value, {required bool strict}) {
     if (_values.containsKey(name)) {
       if (identical(_values[name], _jUninitialized)) {
         throw JThrown(JError('ReferenceError', '$name is not initialized'));
@@ -657,7 +674,7 @@ class JScope {
     }
     if (_imports.containsKey(name))
       throw JThrown(JError('TypeError', 'Assignment to import: $name'));
-    if (parent != null) return parent!.put(name, value, strict: strict);
+
     final global = _globalObject;
     if (global != null) {
       if (!strict) {
@@ -670,6 +687,43 @@ class JScope {
       JError('ReferenceError', 'Assignment to undeclared name: $name'),
     );
   }
+}
+
+// Object Environment Record for a non-strict with statement. Resolving a
+// reference and subsequently reading or writing it have distinct HasProperty calls.
+class JWithScope extends JScope {
+  final dynamic object;
+  JWithScope(JScope parent, dynamic value)
+      : object = jObject(jRequireCoercible(value)), super(parent);
+
+  bool hasBinding(String name) {
+    if (!jHasProperty(object, name)) return false;
+    final excluded = jGet(object, jSymbols['unscopables']);
+    return !jIsObject(excluded) || !jTruthy(jGet(excluded, name));
+  }
+
+  @override
+  dynamic _read(String name, {required bool strict, bool forTypeof = false}) {
+    if (jHasProperty(object, name)) return jGet(object, name);
+    if (strict) throw JThrown(JError('ReferenceError', '$name is no longer bound'));
+    return jUndefined;
+  }
+
+  @override
+  dynamic _write(String name, dynamic value, {required bool strict}) {
+    final exists = jHasProperty(object, name);
+    if (!exists && strict) throw JThrown(JError('ReferenceError', '$name is no longer bound'));
+    if (object is JObject) {
+      final ok = (object as JObject).write(name, value, object);
+      if (!ok && strict) throw JThrown(JError('TypeError', 'Cannot assign $name'));
+    } else {
+      jSet(object, name, value);
+    }
+    return value;
+  }
+
+  @override
+  bool _delete(String name) => jDelete(object, name);
 }
 
 class JSymbol {
@@ -930,6 +984,7 @@ bool jHasOwn(dynamic object, Object key) {
 bool jHasProperty(dynamic object, Object key) {
   final proxy = jProxyState(object);
   if (proxy != null) return proxy.has(key);
+  if (object is JTypedArray && jTypedIndex(key) != null) return object.own(key);
   if (jHasOwn(object, key)) return true;
   if (object is JObject)
     return object.prototype != null && jHasProperty(object.prototype, key);
@@ -1665,8 +1720,10 @@ class JRef {
   final dynamic Function() read;
   final dynamic Function(dynamic) write;
   JRef(this.read, this.write);
-  factory JRef.scope(JScope scope, String key, {bool strict = true}) =>
-      JRef(() => scope.get(key), (v) => scope.put(key, v, strict: strict));
+  factory JRef.scope(JScope scope, String key, {bool strict = true}) {
+    final env = scope._bindingScope(key);
+    return JRef(() => env._read(key, strict: strict), (v) => env._write(key, v, strict: strict));
+  }
   factory JRef.member(dynamic object, dynamic key) =>
       JRef(() => jGet(object, key), (v) => jSet(object, key, v));
 }
@@ -2515,6 +2572,7 @@ dynamic jGet(dynamic value, dynamic key, {bool optional = false}) {
     if (identical(property, jSymbols['iterator']) &&
         (value is List || value is String))
       return jNative((_) => jBuiltinIterator(value));
+    if (value is List) return jArrayPrototypeObject.read(property, value);
     return jUndefined;
   }
   final name = property as String;
@@ -2933,7 +2991,7 @@ void installJSBuiltins(JScope scope, {JObject? globalObject}) {
       return values;
     }),
   });
-  final arrayPrototype = JObject(Map<String, dynamic>.of(jArrayMethods));
+  final arrayPrototype = jArrayPrototypeObject;
   arrayPrototype.properties['constructor'] = array;
   arrayPrototype.properties['length'] = 0.0;
   jBuiltinProperties(arrayPrototype);

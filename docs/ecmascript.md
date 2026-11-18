@@ -7,7 +7,7 @@
 | 実行コンテキスト、Realm、Agent | Realmごとのintrinsic・プロトタイプ・エラーの分離、グローバル宣言の競合やホスト仕様の残り、複数Agentとメモリモデル。globalThisとWindowの同一性、通常スクリプト間のvar・関数・字句束縛の共有、モジュールの字句束縛の分離は対応 |
 | 宣言と関数 | 非strictスクリプトの残りの規則、宣言の巻き上げ・TDZ・反復ごとの束縛の残り、実行時の任意文字列からのFunction/GeneratorFunction/AsyncFunction/AsyncGeneratorFunctionコンストラクターとevalの構文・意味の大部分。実行時評価の対応範囲を下記に記載 |
 | クラス | 組み込み型全体のサブクラスとSpecies、派生クラスの初期化や異常終了の全条件。明示コンストラクター、super、new.target、公開・privateフィールド、privateメソッド・アクセサー、静的ブロックは対応 |
-| 式と文 | with、細部の評価順と例外。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
+| 式と文 | 細部の評価順と例外。非strictのwith、Symbol.unscopables、オブジェクト環境に束縛された関数のthisに対応。using／await using、ラベル、for…in、タグ付きテンプレート、分割代入の代入形式は対応。debugger文は受理し、デバッガーを起動せず通過 |
 | モジュール | ソースフェーズ、実行時の外部モジュール読み込み、ホストローダーとの連携と複数環境での評価。ローカルのモジュールグラフ、import.meta、JSONモジュールとtype属性は一部対応済み |
 | オブジェクトと補助操作 | Arrayの特殊プロパティ記述子、厳密なプロトタイプ・Functionの組み込みメソッドとメタデータ、Proxyの配列転送、全組み込み型のnewTarget、内部例外の種類 |
 | 基本オブジェクト・エラー | Function.prototypeと組み込み記述子の整合、Annex Bの残り。bind、関数の元ソース表示、Errorのcause、SuppressedError、Error.isErrorとURIグローバル関数は対応 |
@@ -46,8 +46,8 @@
 - 通常の関数宣言・関数式、アロー関数、オブジェクトのメソッド・getter・setterを評価できます。関数宣言の巻き上げ、名前付き関数式の自己参照、デフォルト引数と残余引数、ループの各反復を捕捉するクロージャーに対応します。
 - `let`・`const`・`var`、配列・オブジェクトの分割束縛と代入、計算プロパティ名、スプレッドを扱います。非strictなevalのvar・関数宣言は外側の変数環境を使用し、外側のlet等との衝突を実行前に検査します。strictなevalではこれらの宣言がeval内に留まります。
 - 非strictの単純な仮引数リストでは、`arguments[0]` 等と対応する仮引数の値を同期します。添字の削除、アクセサー化、書き込み不可への変更で連動を解除します。
-- `new`、`new.target`、`in`、`instanceof`、オプショナルチェーン、条件・代入・カンマ演算を扱います。`switch` のフォールスルー、ラベル付きループのbreak・continue、try/catch/finallyにも対応します。
-- 実行時パーサーにはクラス宣言、非同期・ジェネレーター関数の生成、テンプレート・正規表現リテラル、`with` などが残っています。変換時にAcornで解析できる構文と、実行時の文字列で使える構文には差があります。
+- `new`、`new.target`、`in`、`instanceof`、オプショナルチェーン、条件・代入・カンマ演算を扱います。`switch` のフォールスルー、ラベル付きループのbreak・continue、try/catch/finallyにも対応します。非strictの `with` では、プロパティ・外側の束縛・`Symbol.unscopables` を解決します。
+- 実行時パーサーにはクラス宣言、非同期・ジェネレーター関数の生成、テンプレート・正規表現リテラルなどが残っています。変換時にAcornで解析できる構文と、実行時の文字列で使える構文には差があります。
 
 ## 実行時のRegExp Unicode集合
 

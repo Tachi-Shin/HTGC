@@ -146,7 +146,9 @@ class JTypedArray extends JObject {
   bool write(Object key, dynamic value, dynamic receiver) {
     final index = jTypedIndex(key);
     if (index == null) return super.write(key, value, receiver);
-    if (!identical(receiver, this)) return super.write(key, value, receiver);
+    if (!identical(receiver, this)) {
+      return !valid(index) || super.write(key, value, receiver);
+    }
     final converted = kind.startsWith('Big') ? jBigInt(value) : jNumber(value);
     if (valid(index))
       jWriteElement(

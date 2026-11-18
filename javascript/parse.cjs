@@ -65,5 +65,5 @@ try {
   process.stdout.write(JSON.stringify(ast, (_, value) => typeof value === 'bigint' ? null : value));
 } catch (error) {
   process.stderr.write(error.message + '\n');
-  process.exitCode = 1;
+  process.exitCode = error instanceof SyntaxError ? 2 : 1;
 }

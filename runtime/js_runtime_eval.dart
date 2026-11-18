@@ -269,6 +269,30 @@ class _RuntimeEvalParser {
         }
       };
     }
+    if (take('with')) {
+      if (strictFunction) _unsupported();
+      expect('(');
+      final object = sequence();
+      expect(')');
+      final parent = scope;
+      final nested = _RuntimeLexicalScope(parent.current);
+      scope = nested;
+      try {
+        final body = statement(allowLexical: false);
+        return () {
+          nested.current = JWithScope(parent.current, object.read());
+          try {
+            final value = body();
+            return identical(value, _jRuntimeEmpty) ? jUndefined : value;
+          } on _RuntimeJump catch (jump) {
+            jump.updateEmpty(jUndefined);
+            rethrow;
+          }
+        };
+      } finally {
+        scope = parent;
+      }
+    }
     if (take('switch')) return switchStatement();
     if (take(';')) return () => _jRuntimeEmpty;
     if (peek == '{') return block();
@@ -828,10 +852,7 @@ class _RuntimeEvalParser {
               at++;
               final binding = scope;
               target = assignmentLeaf(
-                () => JRef(
-                  () => binding.current.get(token),
-                  (value) => binding.current.put(token, value),
-                ),
+                () => JRef.scope(binding.current, token, strict: strictFunction),
               );
             } else {
               target = identifierPattern();
@@ -1108,6 +1129,7 @@ class _RuntimeEvalParser {
               strict: strictFunction,
               newTarget: newTarget,
               home: home,
+              receiver: call.receiver,
             );
           }
           return call.call(arguments);
@@ -1397,7 +1419,7 @@ class _RuntimeEvalParser {
             _unsupported();
           final value = hasValue
               ? expression()
-              : _EvalExpr(() => lexicalScope.current.get(token));
+              : _EvalExpr(() => lexicalScope.current.get(token, strict: strictFunction));
           final prototype = !computed && hasValue && key.read() == '__proto__';
           if (prototype && hasPrototype) _unsupported();
           hasPrototype |= prototype;
@@ -1487,7 +1509,7 @@ class _RuntimeEvalParser {
         final name = tokens[at++];
         final lexicalScope = scope;
         return _EvalExpr(
-          () => jUnary('typeof', lexicalScope.current.getForTypeof(name)),
+          () => jUnary('typeof', lexicalScope.current.getForTypeof(name, strict: strictFunction)),
         );
       }
       final argument = primary();
@@ -1552,10 +1574,10 @@ class _RuntimeEvalParser {
     if (reserved.contains(token)) _unsupported();
     final lexicalScope = scope;
     return _EvalExpr(
-      () => lexicalScope.current.get(token),
+      () => lexicalScope.current.get(token, strict: strictFunction),
       (value) => lexicalScope.current.put(token, value, strict: strictFunction),
-      null,
-      null,
+      () => JRef.scope(lexicalScope.current, token, strict: strictFunction),
+      () => lexicalScope.current.callSite(token, strict: strictFunction),
       token,
       false,
       () => lexicalScope.current.deleteBinding(token),
@@ -1615,6 +1637,7 @@ dynamic jDirectRuntimeEval(
   bool strict = false,
   dynamic newTarget = _noNewTarget,
   JObject? home,
+  dynamic receiver = jUndefined,
 }) => callee is JEvalFunction
     ? jRuntimeEval(
         jArg(args, 0),
@@ -1624,7 +1647,7 @@ dynamic jDirectRuntimeEval(
         newTarget: newTarget,
         home: home,
       )
-    : jCall(callee, args);
+    : jCall(callee, args, receiver: receiver);
 
 class _RuntimeJump implements Exception {
   final bool isBreak;

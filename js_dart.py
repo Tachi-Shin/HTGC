@@ -27,6 +27,10 @@ def quote(value):
     return json.dumps(value, ensure_ascii=True).replace("$", r"\$")
 
 
+class JavaScriptSyntaxError(CompileError):
+    """The JavaScript parser rejected the input grammar."""
+
+
 def parse(source, path, *, source_type="module", allow_new_target=False, allow_super=False):
     node = shutil.which("node")
     parser = Path(__file__).parent / "javascript" / "parse.cjs"
@@ -38,6 +42,8 @@ def parse(source, path, *, source_type="module", allow_new_target=False, allow_s
          *(["--eval-super"] if allow_super else [])],
         input=source, encoding="utf-8", capture_output=True
     )
+    if result.returncode == 2:
+        raise JavaScriptSyntaxError(f"{path}: JavaScript SyntaxError: {result.stderr.strip()}")
     if result.returncode:
         raise CompileError(
             f"{path}: JavaScript解析失敗: {result.stderr.strip()} (npm --prefix javascript ci)"
@@ -188,7 +194,7 @@ class Compiler:
             return f'{self.ref(pattern)}.write({value});'
         if pattern["type"] == "Identifier":
             if kind == "var":
-                return f'{self.scope}.put({quote(pattern["name"])}, {value});'
+                return f'{self.ref(pattern)}.write({value});'
             return f'{self.scope}.define({quote(pattern["name"])}, {value}, constant: {str(kind == "const").lower()});'
         if pattern["type"] == "AssignmentPattern":
             temp = self.name("default")
@@ -423,9 +429,15 @@ class Compiler:
             )
         return False
 
-    def runtime_eval(self, target, arguments):
+    def call_site(self, callee, optional=False):
+        if callee["type"] == "Identifier":
+            return (f'{self.scope}.callSite({quote(callee["name"])}, strict: {str(self.strict).lower()}, '
+                    f'optional: {str(optional).lower()})')
+        return f'JCallSite({self.expr(callee)}, optional: {str(optional).lower()})'
+
+    def runtime_eval(self, target, arguments, receiver="jUndefined"):
         return (f'jDirectRuntimeEval({target}, {arguments}, {self.scope}, {self.receiver}, '
-                f'strict: {str(self.strict).lower()}, newTarget: {self.new_target}, home: {self.home or "null"})')
+                f'strict: {str(self.strict).lower()}, newTarget: {self.new_target}, home: {self.home or "null"}, receiver: {receiver})')
 
     def compiled_eval(self, source, *, indirect=False):
         try:
@@ -551,7 +563,7 @@ class Compiler:
         if t == "ClassExpression":
             return self.class_expression(n)
         if t == "Identifier":
-            return f'{self.scope}.get({quote(n["name"])})'
+            return f'{self.scope}.get({quote(n["name"])}, strict: {str(self.strict).lower()})'
         if t == "MetaProperty":
             if n["meta"]["name"] == "new":
                 return self.new_target
@@ -602,7 +614,7 @@ class Compiler:
             return self.function(n)
         if t == "TaggedTemplateExpression":
             tag = n["tag"]
-            callee = self.member(tag, call=True) if tag["type"] == "MemberExpression" else f'JCallSite({self.expr(tag)})'
+            callee = self.member(tag, call=True) if tag["type"] == "MemberExpression" else self.call_site(tag)
             args = [self.template_object(n), *(self.expr(value) for value in n["quasi"]["expressions"])]
             return f'{callee}.call(<dynamic>[{", ".join(args)}])'
         if t == "TemplateLiteral":
@@ -655,7 +667,7 @@ class Compiler:
             if literal_eval and indirect_eval:
                 callsite = (self.member(callee, call=True, optional_call=n.get("optional", False))
                             if callee["type"] == "MemberExpression"
-                            else f'JCallSite({self.expr(callee)}, optional: {optional})')
+                            else self.call_site(callee, n.get("optional", False)))
                 temp = self.temp()
                 return (f'(({temp} = {callsite}).skipped ? jShortCircuit : '
                         f'jCompiledEval({temp}.function, {args}, '
@@ -666,16 +678,20 @@ class Compiler:
                 if (t == "CallExpression" and name == "eval" and arguments
                         and arguments[0]["type"] == "Literal"
                         and isinstance(arguments[0].get("value"), str)):
-                    return f'jCompiledEval({self.expr(callee)}, {args}, {self.compiled_eval(arguments[0]["value"])})'
+                    temp = self.temp()
+                    return (f'jCompiledEval(({temp} = {self.call_site(callee)}).function, {args}, '
+                            f'{self.compiled_eval(arguments[0]["value"])}, receiver: {temp}.receiver)')
                 if t == "CallExpression" and name == "eval":
-                    return self.runtime_eval(self.expr(callee), args)
+                    temp = self.temp()
+                    return self.runtime_eval(f'({temp} = {self.call_site(callee)}).function', args, f'{temp}.receiver')
                 constructor_kind = self.function_constructor_kind(callee)
                 if (constructor_kind is not None and all(item["type"] == "Literal" and
                         isinstance(item.get("value"), str) for item in arguments)):
                     construct = str(t == "NewExpression").lower()
-                    return (f'jCompiledFunction({self.expr(callee)}, {args}, '
+                    temp = self.temp()
+                    return (f'jCompiledFunction(({temp} = {self.call_site(callee)}).function, {args}, '
                             f'{self.compiled_function(arguments, constructor_kind)}, '
-                            f'construct: {construct}, kind: {quote(constructor_kind)})')
+                            f'construct: {construct}, kind: {quote(constructor_kind)}, receiver: {temp}.receiver)')
             constructor_kind = self.function_constructor_kind(callee)
             if (constructor_kind is not None and callee["type"] == "MemberExpression"
                     and not n.get("optional") and not callee.get("optional")
@@ -694,14 +710,14 @@ class Compiler:
             if callee["type"] == "MemberExpression":
                 callsite = self.member(callee, call=True, optional_call=n.get("optional", False))
             else:
-                callsite = f'JCallSite({self.expr(callee)}, optional: {optional})'
+                callsite = self.call_site(callee, n.get("optional", False))
             if n.get("optional") or callee.get("optional") or callee["type"] == "MemberExpression":
                 temp = self.temp()
                 return f'(({temp} = {callsite}).skipped ? jShortCircuit : {temp}.call({args}))'
-            return f"jCall({self.expr(callee)}, {args}, optional: {optional})"
+            return f"{callsite}.call({args})"
         if t == "UnaryExpression":
             if n["operator"] == "typeof" and n["argument"]["type"] == "Identifier":
-                return f'jUnary("typeof", {self.scope}.getForTypeof({quote(n["argument"]["name"])}))'
+                return f'jUnary("typeof", {self.scope}.getForTypeof({quote(n["argument"]["name"])}, strict: {str(self.strict).lower()}))'
             if n["operator"] == "delete" and n["argument"]["type"] == "Identifier":
                 return f'{self.scope}.deleteBinding({quote(n["argument"]["name"])})'
             if n["operator"] == "delete" and n["argument"]["type"] == "MemberExpression":
@@ -953,9 +969,16 @@ class Compiler:
         t = n["type"]
         if (self.eval_completion and not n.get("htgcEvalNoReset") and t in (
                 "IfStatement", "ForStatement", "ForInStatement", "ForOfStatement",
-                "WhileStatement", "DoWhileStatement", "SwitchStatement", "TryStatement")):
+                "WhileStatement", "DoWhileStatement", "SwitchStatement", "TryStatement", "WithStatement")):
             return (f"{{ {self.eval_completion} = jUndefined;\n"
                     + self.stmt({**n, "htgcEvalNoReset": True}) + "\n}")
+        if t == "WithStatement":
+            target = self.expr(n["object"])
+            parent, self.scope = self.scope, self.name("with")
+            try:
+                return f'{{\nfinal {self.scope} = JWithScope({parent}, {target});\n{self.stmt(n["body"])}\n}}'
+            finally:
+                self.scope = parent
         if t == "LabeledStatement":
             labels = [n["label"]["name"]]
             body = n["body"]

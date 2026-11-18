@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from frontend import CompileError
-from js_dart import compile_script, runtime_source
+from js_dart import JavaScriptSyntaxError, compile_script, parse, runtime_source
 
 
 # Selected synchronous exception scripts and asynchronous await scripts.
@@ -258,6 +258,8 @@ def main():
               if name and not name.startswith('#')]
     tests.extend((path, BUILTIN_HARNESS) for path in sorted(
         (args.checkout / "test/built-ins/RegExp/unicodeSets/generated").glob("*.js")))
+    tests.extend((path, BUILTIN_HARNESS) for path in sorted(
+        (args.checkout / "test/language/statements/with").glob("*.js")))
     tests = [(path, harness) for path, harness in tests
              if fnmatch.fnmatch(str(path.relative_to(args.checkout / 'test')), args.filter)]
     if not tests:
@@ -273,9 +275,9 @@ def main():
             try:
                 source = path.read_text(encoding="utf-8")
                 metadata = source.partition("/*---")[2].partition("---*/")[0]
-                if re.search(r"^includes:.*\bpromiseHelper\.js\b", metadata, re.M):
-                    helper = args.checkout / "harness/promiseHelper.js"
-                    source = helper.read_text(encoding="utf-8") + "\n" + source
+                for helper in ('promiseHelper.js', 'proxyTrapsHelper.js'):
+                    if re.search(r"^includes:.*\b" + re.escape(helper) + r"\b", metadata, re.M):
+                        source = (args.checkout / "harness" / helper).read_text(encoding="utf-8") + "\n" + source
                 negative = re.search(r"^negative:\s*\n\s*phase:\s*runtime\s*\n\s*type:\s*(\w+)", metadata, re.M)
                 if negative:
                     expected = negative.group(1)
@@ -287,7 +289,7 @@ def main():
                     )
                 if harness == BUILTIN_HARNESS and re.search(r"^flags:\s*\[[^\]]*\basync\b", metadata, re.M):
                     harness = ASYNC_HARNESS
-                global_script = name.startswith(("language/global-code/decl-", "built-ins/global/", "language/eval-code/", "language/arguments-object/")) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
+                global_script = name.startswith(("language/global-code/decl-", "built-ins/global/", "language/eval-code/", "language/arguments-object/", "language/statements/with/")) or name in ("built-ins/WeakRef/prop-desc.js", "built-ins/FinalizationRegistry/prop-desc.js")
                 if global_script:
                     harness = harness.replace(
                         '  final scope = JScope();\n  installJSBuiltins(scope);',
@@ -295,7 +297,18 @@ def main():
                     )
                 if global_script and re.search(r"^flags:\s*\[[^\]]*\bonlyStrict\b", metadata, re.M):
                     source = '"use strict";\n' + source
-                code = compile_script(source, path, source_type="script" if global_script else "module")
+                source_type = "script" if global_script else "module"
+                if re.search(r"^negative:\s*\n\s*phase:\s*parse\s*\n\s*type:\s*SyntaxError", metadata, re.M):
+                    try:
+                        parse(source, path, source_type=source_type)
+                    except JavaScriptSyntaxError:
+                        status = "PASS"
+                    else:
+                        status = "FAIL"
+                    counts[status] += 1
+                    print(f"{status} {name} (parse phase)")
+                    continue
+                code = compile_script(source, path, source_type=source_type)
             except CompileError as error:
                 status, details = "UNSUPPORTED", str(error)
             else:

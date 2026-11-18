@@ -116,7 +116,7 @@ class GeneratorCompiler(Compiler):
             return self.save(f'{self.generator}.resume()')
         if kind == 'TaggedTemplateExpression':
             tag = node['tag']
-            callee = self.member_value(tag, True) if tag['type'] == 'MemberExpression' else self.save(f'JCallSite({self.expr(tag)})')
+            callee = self.member_value(tag, True) if tag['type'] == 'MemberExpression' else self.save(self.call_site(tag))
             strings = self.save(self.template_object(node))
             substitutions = [self.expr(value) for value in node['quasi']['expressions']]
             return self.save(f'{callee}.call(<dynamic>[{", ".join([strings, *substitutions])}])')
@@ -144,7 +144,7 @@ class GeneratorCompiler(Compiler):
                     argument['type'] == 'Literal' and isinstance(argument.get('value'), str)
                     for argument in arguments))
                 if is_eval or is_function:
-                    target = self.expr(callee)
+                    target = self.save(self.call_site(callee))
                     values = self.arguments(arguments)
                     self.active = False
                     try:
@@ -153,11 +153,12 @@ class GeneratorCompiler(Compiler):
                     finally:
                         self.active = True
                     if is_eval:
-                        return self.save(f'jCompiledEval({target}, {values}, {compiled})')
+                        return self.save(f'jCompiledEval({target}.function, {values}, {compiled}, receiver: {target}.receiver)')
                     construct = str(kind == 'NewExpression').lower()
-                    return self.save(f'jCompiledFunction({target}, {values}, {compiled}, construct: {construct}, kind: {quote(constructor_kind)})')
+                    return self.save(f'jCompiledFunction({target}.function, {values}, {compiled}, construct: {construct}, kind: {quote(constructor_kind)}, receiver: {target}.receiver)')
                 if kind == 'CallExpression' and name == 'eval':
-                    return self.save(self.runtime_eval(self.expr(callee), self.arguments(arguments)))
+                    target = self.save(self.call_site(callee))
+                    return self.save(self.runtime_eval(f'{target}.function', self.arguments(arguments), f'{target}.receiver'))
             constructor_kind = self.function_constructor_kind(callee)
             if (constructor_kind is not None and callee['type'] == 'MemberExpression'
                     and not node.get('optional') and not callee.get('optional')
@@ -180,7 +181,7 @@ class GeneratorCompiler(Compiler):
             if kind == 'NewExpression':
                 target = self.expr(callee)
                 return self.save(f'jNew({target}, {self.arguments(node["arguments"])})')
-            target = self.member_value(callee, True, node.get('optional', False)) if callee['type'] == 'MemberExpression' else self.save(f'JCallSite({self.expr(callee)}, optional: {str(node.get("optional", False)).lower()})')
+            target = self.member_value(callee, True, node.get('optional', False)) if callee['type'] == 'MemberExpression' else self.save(self.call_site(callee, node.get("optional", False)))
             prefix, args = self.capture(lambda: self.arguments(node['arguments']))
             temp = self.name('gcall')
             self.prelude.append(f'dynamic {temp};\nif ({target}.skipped) {{ {temp} = jShortCircuit; }} else {{\n{prefix}\n{temp} = {target}.call({args});\n}}')
