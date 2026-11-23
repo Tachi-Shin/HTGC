@@ -5,15 +5,34 @@ try {
   // Direct eval may inherit a function's new.target binding.
   const newTarget = process.argv.includes('--eval-new-target');
   const superProperty = process.argv.includes('--eval-super');
-  const parser = newTarget || superProperty
+  const superCall = process.argv.includes("--eval-super-call");
+  const privateNames = process.argv.filter(arg => arg.startsWith("--eval-private=")).map(arg => arg.slice("--eval-private=".length));
+  const fieldEval = process.argv.includes('--eval-class-field');
+  const parser = newTarget || superProperty || superCall || fieldEval
     ? acorn.Parser.extend(Base => class extends Base {
         get allowNewDotTarget() { return super.allowNewDotTarget || newTarget; }
+        checkUnreserved(identifier) {
+          if (fieldEval && identifier.name === 'arguments' &&
+              this.currentThisScope() === this.scopeStack[0]) {
+            this.raise(identifier.start, "Cannot use 'arguments' in class field eval");
+          }
+          super.checkUnreserved(identifier);
+        }
+        get allowDirectSuper() {
+          return super.allowDirectSuper || (superCall && this.currentThisScope() === this.scopeStack[0]);
+        }
         get allowSuper() {
           return super.allowSuper || (superProperty && this.currentThisScope() === this.scopeStack[0]);
         }
       })
     : acorn.Parser;
-  const ast = parser.parse(input, {ecmaVersion: 'latest', sourceType: process.argv.includes('--script') ? 'script' : 'module', locations: true});
+  const instance = new parser({ecmaVersion: 'latest', sourceType: process.argv.includes('--script') ? 'script' : 'module', locations: true}, input);
+  if (privateNames.length) {
+    const declared = instance.enterClassBody();
+    for (const name of privateNames) declared[name] = true;
+  }
+  const ast = instance.parse();
+  if (privateNames.length) instance.exitClassBody();
   if (process.argv.includes('--syntax-only')) process.exit(0);
   function rewriteUnicodeSets(pattern, flags) {
     return require('regexpu-core')(pattern, flags, {

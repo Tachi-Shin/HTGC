@@ -329,7 +329,7 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 
 - 配列の派生クラスを生成できます。`map`、`filter`、`slice`、`concat`、`splice`、`flat`、`flatMap` は `Symbol.species` に従います。`Array.from`、`Array.fromAsync`、`Array.of` は呼び出しに使ったコンストラクターから結果を生成します。
 - 配列の穴・数値添字・`length` の記述子と、`Object.freeze`、`Object.seal`、`Object.preventExtensions` を扱います。配列を包むProxyにも記述子と拡張制御を適用します。大きな添字を持つ配列リテラルと `Array(length)` の未設定の要素は省メモリで保持します。
-- クラスの `extends` と計算プロパティ名では、非同期関数やモジュールの `await` とジェネレーターの `yield` を扱います。 実行時の `eval` と `Function` に渡す文字列でも、既定コンストラクターを使うクラス、公開フィールド・メソッド、静的ブロックを使えます。
+- クラスの `extends` と計算プロパティ名では、非同期関数やモジュールの `await` とジェネレーターの `yield` を扱います。実行時の `eval` と `Function` に渡す文字列でも、クラスの明示コンストラクター、`super()`、公開・private要素、静的ブロックを使えます。
 - `Symbol.prototype` の `description`、`toString`、`valueOf`、`Symbol.toPrimitive` を使えます。`Object(symbol)` で生成したラッパーも同じ組み込みメソッドを使います。
 - Annex Bの `Object.prototype.__proto__`、`__defineGetter__`、`__defineSetter__`、`__lookupGetter__`、`__lookupSetter__` に対応します。
 
@@ -361,7 +361,7 @@ HTGC benchmarks/ecmascript/index.html -o ../portfolio-app/lib/main.dart
 
 - 完全な関数・クラス・Realm・厳密モードの差、ラベル付き制御構文、タグ付きテンプレート、動的Function/eval、ループの束縛や非同期ジョブの全ケースは未対応または未検証です。
 - 上表の型では独自の `newTarget` を渡す `Reflect.construct` を扱います。その他の組み込みコンストラクターや、Proxyの内部操作と例外順序の全ケースには検証が残っています。
-- 実行時に解析するクラスの明示コンストラクターとprivate要素、組み込みの継承の全条件、複数エージェント間の共有メモリは未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
+- 動的な非同期・ジェネレーター関数、組み込みの継承の全条件、複数エージェント間の共有メモリは未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
 - 固定の `v` パターンは変換時にregexpu-coreで、動的パターンは実行時にDartで書き換えます。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータや高度なパターンにはDart SDKの対応範囲による差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
 - Dateのタイムゾーン規則は実行環境に依存します。実装依存の旧式日付文字列すべての受理や、Intlによるロケール整形は保証しません。
 

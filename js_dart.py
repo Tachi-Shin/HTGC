@@ -31,7 +31,8 @@ class JavaScriptSyntaxError(CompileError):
     """The JavaScript parser rejected the input grammar."""
 
 
-def parse(source, path, *, source_type="module", allow_new_target=False, allow_super=False, syntax_only=False):
+def parse(source, path, *, source_type="module", allow_new_target=False, allow_super=False,
+          allow_super_call=False, private_names=(), field_eval=False, syntax_only=False):
     node = shutil.which("node")
     parser = Path(__file__).parent / "javascript" / "parse.cjs"
     if not node:
@@ -40,6 +41,9 @@ def parse(source, path, *, source_type="module", allow_new_target=False, allow_s
         [node, str(parser), *(["--script"] if source_type == "script" else []),
          *(["--eval-new-target"] if allow_new_target else []),
          *(["--eval-super"] if allow_super else []),
+         *(["--eval-super-call"] if allow_super_call else []),
+         *(f"--eval-private={name}" for name in private_names),
+         *(["--eval-class-field"] if field_eval else []),
          *(["--syntax-only"] if syntax_only else [])],
         input=source, encoding="utf-8", capture_output=True
     )
@@ -72,6 +76,8 @@ class Compiler:
         self.new_target = "_noNewTarget"
         self.home = None
         self.construction = None
+        self.super_call_allowed = False
+        self.class_field = False
         self.private_names = {}
         self.temps = []
         self.module_owner = None
@@ -309,6 +315,7 @@ class Compiler:
             return self.function_metadata(compile_generator(self, node), node)
         old_scope, old_this, old_target = self.scope, self.receiver, self.new_target
         old_home, old_construction = self.home, self.construction
+        old_super_call, old_class_field = self.super_call_allowed, self.class_field
         old_async, old_temps = self.asynchronous, self.temps
         self.asynchronous, self.temps = node.get("async", False), []
         scope, args, receiver = self.name(), self.name("a"), self.name("this")
@@ -321,6 +328,8 @@ class Compiler:
         self.new_target = old_target if arrow else self.name("newTarget") if constructible else "jUndefined"
         self.home = old_home if arrow else node.get("htgc_home")
         self.construction = old_construction if arrow else None
+        self.super_call_allowed = old_super_call if arrow else node.get("htgc_super_call", False)
+        self.class_field = arrow and old_class_field
         if node.get("htgc_constructor"):
             self.construction = receiver
             self.receiver = f'{receiver}.thisValue'
@@ -349,6 +358,7 @@ class Compiler:
         )
         self.scope, self.receiver, self.new_target = old_scope, old_this, old_target
         self.home, self.construction = old_home, old_construction
+        self.super_call_allowed, self.class_field = old_super_call, old_class_field
         self.asynchronous, self.temps = old_async, old_temps
         return self.function_metadata(self.capture_callee(result, callee), node)
 
@@ -437,14 +447,27 @@ class Compiler:
         return f'JCallSite({self.expr(callee)}, optional: {str(optional).lower()})'
 
     def runtime_eval(self, target, arguments, receiver="jUndefined"):
-        return (f'jDirectRuntimeEval({target}, {arguments}, {self.scope}, {self.receiver}, '
-                f'strict: {str(self.strict).lower()}, newTarget: {self.new_target}, home: {self.home or "null"}, receiver: {receiver})')
+        construction = self.construction
+        current_this = "jUndefined" if construction else self.receiver
+        options = (f", construction: {construction}, allowSuperCall: {construction}.owner.derived"
+                   if construction else "")
+        if self.class_field:
+            options += ", forbidArguments: true"
+        if self.private_names:
+            entries = ", ".join(f"{quote(name)}: {slot}" for name, slot in self.private_names.items())
+            options += f", privateBindings: {{{entries}}}"
+        return (f'jDirectRuntimeEval({target}, {arguments}, {self.scope}, {current_this}, '
+                f'strict: {str(self.strict).lower()}, newTarget: {self.new_target}, '
+                f'home: {self.home or "null"}, receiver: {receiver}{options})')
 
     def compiled_eval(self, source, *, indirect=False):
         try:
             ast = parse(source, f"{self.path}:eval", source_type="script" if indirect or not self.strict else "module",
                         allow_new_target=not indirect and self.new_target != "_noNewTarget",
-                        allow_super=not indirect and self.home is not None)
+                        allow_super=not indirect and self.home is not None,
+                        allow_super_call=not indirect and self.super_call_allowed,
+                        private_names=() if indirect else self.private_names,
+                        field_eval=not indirect and self.class_field)
         except CompileError:
             return '() { throw JThrown(JError("SyntaxError", "Invalid eval source")); }'
         self.collect_constructor_aliases(ast)
@@ -458,9 +481,14 @@ class Compiler:
         scope = self.scope
         previous, self.eval_completion = self.eval_completion, self.name("completion")
         old_receiver, old_target, old_home = self.receiver, self.new_target, self.home
+        old_construction, old_private = self.construction, self.private_names
+        old_super_call, old_class_field = self.super_call_allowed, self.class_field
         if indirect:
             self.receiver = f'{scope}.globalScope.globalThisValue'
             self.new_target, self.home = '_noNewTarget', None
+            self.construction, self.private_names = None, {}
+            self.super_call_allowed = False
+            self.class_field = False
         completion = self.eval_completion
         previous_strict = self.strict
         self.strict = (self.strict and not indirect) or self.strict_directive(nodes)
@@ -474,6 +502,8 @@ class Compiler:
         finally:
             self.scope, self.eval_completion, self.receiver = parent, previous, old_receiver
             self.new_target, self.home = old_target, old_home
+            self.construction, self.private_names = old_construction, old_private
+            self.super_call_allowed, self.class_field = old_super_call, old_class_field
             self.strict = previous_strict
         environment = f'{parent}.scriptGlobalScope' if indirect else parent
         return (f'() {{\n// ignore: unused_local_variable\nfinal {scope} = JScope({environment});\n{prepare}\n'
@@ -646,7 +676,7 @@ class Compiler:
             if callee["type"] == "Super":
                 if self.construction is None:
                     self.fail(n, "super() outside a class constructor")
-                return f'{self.construction}.callSuper({args})'
+                return f'{self.construction}.superCall()({args})'
             optional = str(n.get("optional", False)).lower()
             arguments = n["arguments"]
             literal_eval = (t == "CallExpression" and arguments
@@ -1216,6 +1246,7 @@ class Compiler:
                     function = self.function({
                         **item["value"], "htgc_method": True, "htgc_home": home,
                         "htgc_constructor": explicit,
+                        "htgc_super_call": explicit and superclass is not None,
                     })
                     if explicit:
                         code.append(f'jSetClassConstructor({constructor}, {function});')
@@ -1237,6 +1268,9 @@ class Compiler:
                     expression = self.class_value(code, lambda: self.property_key(item))
                     code.append(f'final {key} = jPropertyKey({expression});')
                 old_this, old_home, old_context, old_target = self.receiver, self.home, self.construction, self.new_target
+                old_super_call, old_class_field = self.super_call_allowed, self.class_field
+                self.super_call_allowed = False
+                self.class_field = item["type"] == "PropertyDefinition"
                 self.receiver = constructor if static else self.name("instance")
                 self.home, self.construction, self.new_target = home, None, "jUndefined"
                 try:
@@ -1258,6 +1292,7 @@ class Compiler:
                 finally:
                     self.scope = inner
                     self.receiver, self.home, self.construction, self.new_target = old_this, old_home, old_context, old_target
+                    self.super_call_allowed, self.class_field = old_super_call, old_class_field
             if binding:
                 code.append(f"{inner}.define({quote(binding)}, {constructor}, constant: true);")
             code.extend(static_methods)

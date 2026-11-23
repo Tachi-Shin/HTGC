@@ -1653,11 +1653,12 @@ JAsyncClassEvaluation jEvaluateAsyncClass(void Function(JAsyncClassEvaluation) r
 }
 
 class JClass extends JFunction {
+  final bool derived;
   JFunction? body;
   final privateMethods = <JPrivateName>[];
   final fields = <void Function(dynamic)>[];
 
-  JClass(dynamic Function(List<dynamic>, dynamic) construct)
+  JClass(dynamic Function(List<dynamic>, dynamic) construct, {required this.derived})
     : super(
         (args, receiver) => throw JThrown(
           JError('TypeError', 'Class constructor requires new'),
@@ -1700,7 +1701,7 @@ JClass jDefaultClass(
     }
     final body = classFunction.body;
     if (body == null)
-      return derived ? context.callSuper(args) : context.thisValue;
+      return derived ? context.superCall()(args) : context.thisValue;
     final result = jCall(body, args, receiver: context);
     if (jIsObject(result)) return result;
     if (derived && !identical(result, jUndefined)) {
@@ -1712,7 +1713,7 @@ JClass jDefaultClass(
       );
     }
     return context.thisValue;
-  });
+  }, derived: derived);
   if (constructor != null) classFunction.prototype = constructor;
   classFunction.properties['prototype'] = prototype;
   classFunction.flags['prototype'] = JPropertyFlags(

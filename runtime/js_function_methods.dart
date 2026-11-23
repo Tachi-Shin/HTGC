@@ -540,8 +540,13 @@ class JConstruction {
     return receiver;
   }
 
-  dynamic callSuper(List<dynamic> args) =>
-      initialize(jNew(owner.prototype, args, newTarget: newTarget));
+  dynamic Function(List<dynamic>) superCall() {
+    if (!owner.derived) {
+      throw JThrown(JError('SyntaxError', 'Super call outside a derived constructor'));
+    }
+    final target = owner.prototype;
+    return (args) => initialize(jNew(target, args, newTarget: newTarget));
+  }
 }
 
 JObject jClassHome(JClass owner, bool isStatic) =>
@@ -553,9 +558,9 @@ void jSetClassConstructor(JClass owner, JFunction body) {
 }
 
 void jDefineClassField(dynamic receiver, Object key, dynamic value) {
-  if (receiver is! JObject ||
+  if (!jIsObject(receiver) ||
       !jDefineProperty(
-        receiver,
+        jRequireObject(receiver),
         key,
         JObject({
           'value': value,

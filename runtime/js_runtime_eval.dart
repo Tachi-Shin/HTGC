@@ -40,6 +40,18 @@ class _NoNewTarget {
 
 typedef _EvalRead = dynamic Function();
 
+final _runtimeIdentifier = RegExp(
+  r'^[$_\p{ID_Start}][$_\p{ID_Continue}\u200c\u200d]*$',
+  unicode: true,
+);
+final _runtimePrivateEscape = RegExp(
+  r'\\u(?:([a-fA-F0-9]{4})|\{([a-fA-F0-9]+)\})',
+);
+final _runtimeIdentifierPart = RegExp(
+  r'^[$_\p{ID_Continue}\u200c\u200d]$',
+  unicode: true,
+);
+
 class _EvalExpr {
   final _EvalRead read;
   final dynamic Function(dynamic)? write;
@@ -48,6 +60,7 @@ class _EvalExpr {
   final String? identifier;
   final bool anonymous;
   final bool Function()? remove;
+  final bool privateMember;
   bool get directEval => identifier == "eval";
   _EvalExpr(
     this.read, [
@@ -57,6 +70,7 @@ class _EvalExpr {
     this.identifier,
     this.anonymous = false,
     this.remove,
+    this.privateMember = false,
   ]);
   dynamic readNamed(dynamic key) {
     final value = read();
@@ -93,12 +107,87 @@ class _RuntimeLexicalScope {
   _RuntimeLexicalScope(this.current);
 }
 
+// Parsing collects declarations and references before running the class body.
+// Every evaluation allocates fresh private names, even for the same source.
+class _RuntimePrivateScope {
+  final _RuntimePrivateScope? parent;
+  final _declarations = <String, (bool, Set<String>)>{};
+  final _references = <String>{};
+  final _slots = <String, JPrivateName>{};
+  bool _sealed = false;
+  _RuntimePrivateScope? _active;
+
+  _RuntimePrivateScope(this.parent);
+  _RuntimePrivateScope get runtime => _active ?? this;
+
+  T bind<T>(_RuntimePrivateScope privateScope, T Function() evaluate) {
+    final previous = _active;
+    _active = privateScope;
+    try {
+      return evaluate();
+    } finally {
+      _active = previous;
+    }
+  }
+
+  factory _RuntimePrivateScope.fromSlots(Map<String, JPrivateName> slots) =>
+      _RuntimePrivateScope(null)
+        .._sealed = true
+        .._slots.addAll(slots);
+
+  bool declare(String name, bool isStatic, String kind) {
+    if (name == 'constructor') return false;
+    final previous = _declarations[name];
+    if (previous == null) {
+      _declarations[name] = (isStatic, {kind});
+      return true;
+    }
+    final (wasStatic, kinds) = previous;
+    return wasStatic == isStatic &&
+        (kind == 'get' && kinds.contains('set') ||
+            kind == 'set' && kinds.contains('get')) &&
+        kinds.add(kind);
+  }
+
+  bool reference(String name) {
+    if (!_sealed) {
+      _references.add(name);
+      return true;
+    }
+    return _declarations.containsKey(name) ||
+        _slots.containsKey(name) ||
+        (parent?.reference(name) ?? false);
+  }
+
+  bool seal() {
+    _sealed = true;
+    return _references.every(reference);
+  }
+
+  _RuntimePrivateScope instantiate(_RuntimePrivateScope? outer) {
+    final runtime = _RuntimePrivateScope(outer).._sealed = true;
+    runtime._declarations.addAll(_declarations);
+    for (final name in _declarations.keys) {
+      runtime._slots[name] = JPrivateName();
+    }
+    return runtime;
+  }
+
+  JPrivateName slot(String name) =>
+      runtime._slots[name] ?? runtime.parent!.slot(name);
+}
+
 class _RuntimeEvalParser {
   final String source;
   _RuntimeLexicalScope scope;
   int loopDepth = 0, switchDepth = 0;
   final activeLabels = <String, bool>{};
-  final dynamic thisValue;
+  final dynamic _thisValue;
+  final JConstruction? construction;
+  final bool allowSuperCall, forbidArguments;
+  _RuntimePrivateScope? privateScope;
+  dynamic get thisValue =>
+      construction == null ? _thisValue : construction!.thisValue;
   final bool functionBody;
   final List<String> tokens = [];
   final offsets = <int>[];
@@ -132,8 +221,12 @@ class _RuntimeEvalParser {
   _RuntimeEvalParser(
     this.source,
     JScope scope,
-    this.thisValue, {
+    this._thisValue, {
     this.functionBody = false,
+    this.construction,
+    this.allowSuperCall = false,
+    this.forbidArguments = false,
+    this.privateScope,
     this.newTarget = _noNewTarget,
     this.home,
     JScope? variables,
@@ -141,7 +234,8 @@ class _RuntimeEvalParser {
   }) : variableScope = variables ?? scope,
        scope = _RuntimeLexicalScope(scope) {
     final token = RegExp(
-      r'''\s+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\\n\r])*"|'(?:\\.|[^'\\\n\r])*')|(?:\.\.\.|\?\.(?!\d)|>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[{}()\[\].,:?&|^+\-*/%<>=!~;]''',
+      r'''\s+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/|(?:#(?:[$_\p{ID_Start}]|\\u(?:[a-fA-F0-9]{4}|\{[a-fA-F0-9]+\}))(?:[$_\p{ID_Continue}\u200c\u200d]|\\u(?:[a-fA-F0-9]{4}|\{[a-fA-F0-9]+\}))*|[$_\p{ID_Start}][$_\p{ID_Continue}\u200c\u200d]*)|(?:\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(?:"(?:\\.|[^"\\\n\r])*"|'(?:\\.|[^'\\\n\r])*')|(?:\.\.\.|\?\.(?!\d)|>>>=|<<=|>>=|\*\*=|&&=|\|\|=|\?\?=|%=|&=|\|=|\^=|===|!==|>>>|\*\*|==|!=|<=|>=|&&|\|\||\?\?|<<|>>|\+\+|--|\+=|-=|\*=|/=|=>)|[{}()\[\].,:?&|^+\-*/%<>=!~;]''',
+      unicode: true,
     );
     var pos = 0;
     final parens = <bool>[];
@@ -805,8 +899,7 @@ class _RuntimeEvalParser {
     if (peek == 'break' || peek == 'continue') {
       final isBreak = tokens[at++] == 'break';
       String? label;
-      if (!lineBreaks.contains(at) &&
-          RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek)) {
+      if (!lineBreaks.contains(at) && _runtimeIdentifier.hasMatch(peek)) {
         label = bindingIdentifier();
         if (!activeLabels.containsKey(label) ||
             !isBreak && !activeLabels[label]!)
@@ -840,7 +933,7 @@ class _RuntimeEvalParser {
 
   String bindingIdentifier() {
     final name = peek;
-    if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name) ||
+    if (!_runtimeIdentifier.hasMatch(name) ||
         !_runtimeBindingName(name) ||
         (strictFunction &&
             const {
@@ -979,7 +1072,7 @@ class _RuntimeEvalParser {
         entries.add((key.read, bindingElement(assignment: assignment)));
       } else {
         final token = peek;
-        if (RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)) {
+        if (_runtimeIdentifier.hasMatch(token)) {
           if (tokens[at + 1] == ':') {
             at += 2;
             entries.add((() => token, bindingElement(assignment: assignment)));
@@ -1148,7 +1241,17 @@ class _RuntimeEvalParser {
         });
       }
     }
-    var left = primary();
+    final lexicalPrivate = privateScope;
+    late _EvalExpr left;
+    if (peek.startsWith('#')) {
+      if (noIn || min > precedence['in']!) _unsupported();
+      final name = privateIdentifier();
+      expect('in');
+      final right = expression(precedence['in']! + 1, noIn);
+      left = _EvalExpr(() => lexicalPrivate!.slot(name).has(right.read()));
+    } else {
+      left = primary();
+    }
     while (true) {
       final op = peek;
       final power = precedence[op];
@@ -1208,7 +1311,8 @@ class _RuntimeEvalParser {
   _EvalExpr primary() {
     if (take('delete')) {
       final operand = primary();
-      if (operand.identifier != null && strictFunction) _unsupported();
+      if (operand.privateMember || operand.identifier != null && strictFunction)
+        _unsupported();
       return _EvalExpr(() {
         if (operand.remove != null) return operand.remove!();
         operand.read();
@@ -1236,8 +1340,10 @@ class _RuntimeEvalParser {
       if (identical(newTarget, _noNewTarget)) _unsupported();
       return _EvalExpr(() => newTarget);
     }
-    if (const {'+', '-', '!', '~', 'void', 'typeof', 'delete'}.contains(peek))
+    if (const {'+', '-', '!', '~', 'void', 'typeof', 'delete'}.contains(peek) ||
+        (peek == 'super' && tokens[at + 1] == '(')) {
       _unsupported();
+    }
     final constructor = suffixes(newOrAtom(), memberOnly: true);
     final args = take('(') ? expressionList(')') : <(_EvalExpr?, bool)>[];
     return _EvalExpr(() => jNew(constructor.read(), evaluateList(args)));
@@ -1254,6 +1360,7 @@ class _RuntimeEvalParser {
         at++;
         final args = expressionList(')');
         final lexicalScope = scope;
+        final lexicalPrivate = privateScope;
         value = _EvalExpr(() {
           final call = previous.callSite?.call() ?? JCallSite(previous.read());
           if (call.skipped || optional && jNullish(call.function))
@@ -1264,7 +1371,11 @@ class _RuntimeEvalParser {
               call.function,
               arguments,
               lexicalScope.current,
-              thisValue,
+              _thisValue,
+              construction: construction,
+              allowSuperCall: allowSuperCall,
+              forbidArguments: forbidArguments,
+              privateScope: lexicalPrivate,
               strict: strictFunction,
               newTarget: newTarget,
               home: home,
@@ -1275,29 +1386,39 @@ class _RuntimeEvalParser {
         });
       } else if (optional || peek == '.' || peek == '[') {
         late _EvalExpr key;
+        String? private;
+        final lexicalPrivate = privateScope;
         if (take('[')) {
           key = sequence();
           expect(']');
         } else {
           if (!optional) expect('.');
           final name = peek;
-          if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name))
-            _unsupported();
-          at++;
+          if (name.startsWith('#')) {
+            private = privateIdentifier();
+          } else {
+            if (!_runtimeIdentifier.hasMatch(name)) _unsupported();
+            at++;
+          }
           key = _EvalExpr(() => name);
         }
+        JPrivateName? privateSlot() =>
+            private == null ? null : lexicalPrivate!.slot(private!);
+
         JCallSite site() {
           final object = previous.read();
           if (identical(object, jShortCircuit) ||
               optional && jNullish(object)) {
             return JCallSite(jShortCircuit);
           }
-          return JCallSite.member(object, key.read());
+          return privateSlot()?.callSite(object) ??
+              JCallSite.member(object, key.read());
         }
 
         JRef reference() {
           final object = previous.read();
-          return JRef.member(object, key.read(), strict: strictFunction);
+          return privateSlot()?.reference(object) ??
+              JRef.member(object, key.read(), strict: strictFunction);
         }
 
         value = _EvalExpr(
@@ -1314,6 +1435,7 @@ class _RuntimeEvalParser {
               return true;
             return jDelete(object, key.read(), strict: strictFunction);
           },
+          private != null,
         );
       } else {
         if (!chain) return value;
@@ -1334,6 +1456,7 @@ class _RuntimeEvalParser {
           null,
           false,
           previous.remove,
+          previous.privateMember,
         );
       }
     }
@@ -1390,8 +1513,7 @@ class _RuntimeEvalParser {
       source.substring(offsets[start], offsets[at - 1] + tokens[at - 1].length);
 
   bool startsArrow() {
-    if (peek != '(' && !RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek))
-      return false;
+    if (peek != '(' && !_runtimeIdentifier.hasMatch(peek)) return false;
     final next = peek == '(' ? closingToken(at, ')') + 1 : at + 1;
     return !lineBreaks.contains(next) && tokens[next] == '=>';
   }
@@ -1420,6 +1542,9 @@ class _RuntimeEvalParser {
       inheritedStrict: strictFunction,
       lexicalTarget: newTarget,
       lexicalHome: home,
+      privateScope: privateScope,
+      allowSuperCall: allowSuperCall,
+      forbidArguments: forbidArguments,
     );
     final lexicalScope = scope;
     final text = tokenSource(start);
@@ -1428,7 +1553,8 @@ class _RuntimeEvalParser {
         lexicalScope.current,
         '',
         text,
-        lexicalThis: thisValue,
+        lexicalThis: _thisValue,
+        lexicalConstruction: construction,
         home: home,
       ),
       null,
@@ -1446,6 +1572,7 @@ class _RuntimeEvalParser {
       parameters,
       body,
       scope.current,
+      privateScope: privateScope,
       inheritedStrict: strictFunction,
     );
     final lexicalScope = scope;
@@ -1487,6 +1614,32 @@ class _RuntimeEvalParser {
     return () => _jRuntimeEmpty;
   }
 
+  String decodePrivateName(String token) {
+    final input = token.substring(1);
+    final name = input.replaceAllMapped(_runtimePrivateEscape, (match) {
+      final codePoint = int.tryParse(
+        match.group(1) ?? match.group(2)!,
+        radix: 16,
+      );
+      if (codePoint == null || codePoint > 0x10ffff) _unsupported();
+      final character = String.fromCharCode(codePoint);
+      final pattern = match.start == 0
+          ? _runtimeIdentifier
+          : _runtimeIdentifierPart;
+      if (!pattern.hasMatch(character)) _unsupported();
+      return character;
+    });
+    if (!_runtimeIdentifier.hasMatch(name)) _unsupported();
+    return name;
+  }
+
+  String privateIdentifier() {
+    final name = decodePrivateName(peek);
+    if (!(privateScope?.reference(name) ?? false)) _unsupported();
+    at++;
+    return name;
+  }
+
   _EvalExpr propertyName(bool computed) {
     if (computed) {
       final key = sequence();
@@ -1494,7 +1647,7 @@ class _RuntimeEvalParser {
       return key;
     }
     final token = peek;
-    if (RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)) {
+    if (_runtimeIdentifier.hasMatch(token)) {
       at++;
       return _EvalExpr(() => token);
     }
@@ -1511,13 +1664,17 @@ class _RuntimeEvalParser {
     JScope environment,
     dynamic receiver,
     JObject home,
-  ) => _RuntimeEvalParser(
+    _RuntimePrivateScope? lexicalPrivate, {
+    bool field = true,
+  }) => _RuntimeEvalParser(
     code,
     JScope.function(environment),
     receiver,
     strictFunction: true,
     newTarget: jUndefined,
     home: home,
+    privateScope: lexicalPrivate,
+    forbidArguments: field,
   );
 
   String classFieldInitializer() {
@@ -1528,6 +1685,7 @@ class _RuntimeEvalParser {
       scope.current,
       jUndefined,
       jObjectPrototype,
+      privateScope,
     );
     parser.expression();
     final last = parser.at - 1;
@@ -1546,13 +1704,26 @@ class _RuntimeEvalParser {
     final strict = strictFunction;
     strictFunction = true;
     scope = inner;
+    final outerPrivate = privateScope;
     try {
       final name = !declaration && const {'extends', '{'}.contains(peek)
           ? ''
           : bindingIdentifier();
       final superclass = take('extends') ? primary() : null;
       expect('{');
-      final members = <void Function(JClass, JScope, List<void Function()>)>[];
+      final classPrivate = privateScope = _RuntimePrivateScope(outerPrivate);
+      final members =
+          <
+            void Function(
+              JClass,
+              JScope,
+              _RuntimePrivateScope,
+              List<void Function()>,
+            )
+          >[];
+      final staticMethods = <String>{};
+      final privateMethods = <String>{};
+      var hasConstructor = false;
       while (!take('}')) {
         if (take(';')) continue;
         final methodStart = at;
@@ -1566,14 +1737,18 @@ class _RuntimeEvalParser {
             inner.current,
             jUndefined,
             jObjectPrototype,
+            classPrivate,
+            field: false,
           ).parse();
-          members.add((constructor, environment, staticSteps) {
+          members.add((constructor, environment, runtimePrivate, staticSteps) {
             staticSteps.add(() {
               final parser = classInitializerParser(
                 code,
                 environment,
                 constructor,
                 constructor,
+                runtimePrivate,
+                field: false,
               );
               final statements = parser.parse();
               parser.instantiate();
@@ -1588,20 +1763,34 @@ class _RuntimeEvalParser {
           kind = tokens[at++];
         }
         final computed = take('[');
-        final key = propertyName(computed);
-        if (!computed &&
-            (isStatic
-                ? key.read() == 'prototype'
-                : key.read() == 'constructor')) {
+        final private = !computed && peek.startsWith('#')
+            ? decodePrivateName(tokens[at++])
+            : null;
+        final key = private == null ? propertyName(computed) : null;
+        final name = computed || private != null ? null : key!.read();
+        if (private != null) {
+          final elementKind = peek == '('
+              ? (kind == 'init' ? 'method' : kind)
+              : 'field';
+          if (!classPrivate.declare(private, isStatic, elementKind))
+            _unsupported();
+        }
+        final explicitConstructor = !isStatic && name == 'constructor';
+        if ((isStatic && name == 'prototype') ||
+            (explicitConstructor &&
+                (kind != 'init' || hasConstructor || peek != '('))) {
           _unsupported();
         }
+        hasConstructor |= explicitConstructor;
         if (peek != '(') {
           if (kind != 'init') _unsupported();
           final initializer = classFieldInitializer();
           if (!take(';') && peek != '}' && !lineBreaks.contains(at))
             _unsupported();
-          members.add((constructor, environment, staticSteps) {
-            final property = jPropertyKey(key.read());
+          members.add((constructor, environment, runtimePrivate, staticSteps) {
+            final property = private == null
+                ? jPropertyKey(key!.read())
+                : '#$private';
             final home = jClassHome(constructor, isStatic);
             void init(dynamic receiver) {
               final value = initializer.isEmpty
@@ -1611,8 +1800,13 @@ class _RuntimeEvalParser {
                       environment,
                       receiver,
                       home,
+                      runtimePrivate,
                     ).expression().readNamed(property);
-              jDefineClassField(receiver, property, value);
+              if (private == null) {
+                jDefineClassField(receiver, property, value);
+              } else {
+                runtimePrivate.slot(private).install(receiver, value);
+              }
             }
 
             if (isStatic) {
@@ -1630,6 +1824,9 @@ class _RuntimeEvalParser {
           body,
           inner.current,
           method: true,
+          privateScope: classPrivate,
+          classConstructor: explicitConstructor,
+          allowSuperCall: explicitConstructor && superclass != null,
           inheritedStrict: true,
         );
         if ((kind == 'get' && code.parameterCount != 0) ||
@@ -1639,17 +1836,36 @@ class _RuntimeEvalParser {
         }
         final text = tokenSource(methodStart);
         final methodKind = kind;
-        members.add((constructor, environment, _) {
-          final property = jPropertyKey(key.read());
+        if (private != null) {
+          (isStatic ? staticMethods : privateMethods).add(private);
+        }
+        members.add((constructor, environment, runtimePrivate, _) {
+          final property = private == null
+              ? jPropertyKey(key!.read())
+              : '#$private';
           final fn = code.create(
             environment,
             '',
             text,
             home: jClassHome(constructor, isStatic),
+            runtimePrivate: runtimePrivate,
           );
-          jDefineClassMethod(constructor, isStatic, methodKind, property, fn);
+          if (private != null) {
+            runtimePrivate
+                .slot(private)
+                .define(
+                  methodKind == 'init' ? 'method' : methodKind,
+                  private,
+                  fn,
+                );
+          } else if (explicitConstructor) {
+            jSetClassConstructor(constructor, fn);
+          } else {
+            jDefineClassMethod(constructor, isStatic, methodKind, property, fn);
+          }
         });
       }
+      if (!classPrivate.seal()) _unsupported();
       final text = tokenSource(start);
       return (
         name,
@@ -1664,12 +1880,23 @@ class _RuntimeEvalParser {
               derived: superclass != null,
               source: text,
             );
+            final runtimePrivate = classPrivate.instantiate(
+              outerPrivate?.runtime,
+            );
             final staticSteps = <void Function()>[];
-            for (final define in members) {
-              define(constructor, environment, staticSteps);
-            }
+            classPrivate.bind(runtimePrivate, () {
+              for (final define in members) {
+                define(constructor, environment, runtimePrivate, staticSteps);
+              }
+            });
+            constructor.privateMethods.addAll(
+              privateMethods.map(runtimePrivate.slot),
+            );
             if (name.isNotEmpty)
               environment.define(name, constructor, constant: true);
+            for (final name in staticMethods) {
+              runtimePrivate.slot(name).install(constructor);
+            }
             for (final initialize in staticSteps) {
               initialize();
             }
@@ -1684,6 +1911,7 @@ class _RuntimeEvalParser {
       );
     } finally {
       scope = outer;
+      privateScope = outerPrivate;
       strictFunction = strict;
     }
   }
@@ -1718,6 +1946,7 @@ class _RuntimeEvalParser {
             body,
             scope.current,
             method: true,
+            privateScope: privateScope,
             inheritedStrict: strictFunction,
           );
           if ((kind == 'get' && code.parameterCount != 0) ||
@@ -1739,10 +1968,12 @@ class _RuntimeEvalParser {
         } else {
           if (kind != 'init') _unsupported();
           final hasValue = take(':');
+          if (!hasValue && token == 'arguments' && forbidArguments)
+            _unsupported();
           if (!hasValue &&
               (computed ||
                   !_runtimeBindingName(token) ||
-                  !RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)))
+                  !_runtimeIdentifier.hasMatch(token)))
             _unsupported();
           final value = hasValue
               ? expression()
@@ -1781,7 +2012,8 @@ class _RuntimeEvalParser {
       return _EvalExpr(() => JRegex(pattern, flags));
     }
     final token = peek;
-    if (token.isEmpty) _unsupported();
+    if (token.isEmpty || token == 'arguments' && forbidArguments)
+      _unsupported();
     if (token == 'class') return classExpression().$2;
     if (take('function')) {
       final start = at - 1;
@@ -1799,6 +2031,11 @@ class _RuntimeEvalParser {
     }
     if (take('{')) return objectLiteral();
     if (take('super')) {
+      if (take('(')) {
+        if (!allowSuperCall) _unsupported();
+        final args = expressionList(')');
+        return _EvalExpr(() => construction!.superCall()(evaluateList(args)));
+      }
       final owner = home;
       if (owner == null) _unsupported();
       late final _EvalExpr key;
@@ -1808,8 +2045,7 @@ class _RuntimeEvalParser {
       } else {
         expect('.');
         final name = peek;
-        if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(name))
-          _unsupported();
+        if (!_runtimeIdentifier.hasMatch(name)) _unsupported();
         at++;
         key = _EvalExpr(() => name);
       }
@@ -1839,9 +2075,10 @@ class _RuntimeEvalParser {
             'function',
             'new',
           }.contains(peek) &&
-          RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(peek) &&
+          _runtimeIdentifier.hasMatch(peek) &&
           !const {'.', '[', '(', '?.'}.contains(tokens[at + 1])) {
         final name = tokens[at++];
+        if (name == 'arguments' && forbidArguments) _unsupported();
         final lexicalScope = scope;
         return _EvalExpr(
           () => jUnary(
@@ -1890,7 +2127,7 @@ class _RuntimeEvalParser {
     if (token == 'false') return _EvalExpr(() => false);
     if (token == 'null') return _EvalExpr(() => null);
     if (token == 'this') return _EvalExpr(() => thisValue);
-    if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(token)) _unsupported();
+    if (!_runtimeIdentifier.hasMatch(token)) _unsupported();
     const reserved = {
       'let',
       'const',
@@ -1930,6 +2167,10 @@ dynamic jRuntimeEval(
   bool strict = false,
   dynamic newTarget = _noNewTarget,
   JObject? home,
+  JConstruction? construction,
+  bool allowSuperCall = false,
+  bool forbidArguments = false,
+  _RuntimePrivateScope? privateScope,
 }) {
   if (value is! String) return value;
   final parser = _RuntimeEvalParser(
@@ -1939,6 +2180,10 @@ dynamic jRuntimeEval(
     strictFunction: strict,
     newTarget: newTarget,
     home: home,
+    construction: construction,
+    allowSuperCall: allowSuperCall,
+    forbidArguments: forbidArguments,
+    privateScope: privateScope,
   );
   final statements = parser.parse();
   parser.variableScope.prepareEval(
@@ -1975,6 +2220,11 @@ dynamic jDirectRuntimeEval(
   bool strict = false,
   dynamic newTarget = _noNewTarget,
   JObject? home,
+  JConstruction? construction,
+  bool allowSuperCall = false,
+  bool forbidArguments = false,
+  _RuntimePrivateScope? privateScope,
+  Map<String, JPrivateName>? privateBindings,
   dynamic receiver = jUndefined,
 }) => callee is JEvalFunction && identical(callee.realm, JRealm.current)
     ? jRuntimeEval(
@@ -1984,6 +2234,14 @@ dynamic jDirectRuntimeEval(
         strict: strict,
         newTarget: newTarget,
         home: home,
+        construction: construction,
+        allowSuperCall: allowSuperCall,
+        forbidArguments: forbidArguments,
+        privateScope:
+            privateScope ??
+            (privateBindings == null
+                ? null
+                : _RuntimePrivateScope.fromSlots(privateBindings)),
       )
     : jCall(callee, args, receiver: receiver);
 
@@ -2061,9 +2319,15 @@ JFunction jRuntimeFunction(JScope root, List<dynamic> args, String kind) {
 
 class _RuntimeFunctionCode {
   final String parameters, body;
-  final bool arrow, concise, method;
+  final bool arrow,
+      concise,
+      method,
+      classConstructor,
+      allowSuperCall,
+      forbidArguments;
   final dynamic lexicalTarget;
   final JObject? lexicalHome;
+  final _RuntimePrivateScope? privateScope;
   late final int parameterCount;
   late final bool restParameter;
   late final bool strict, simple;
@@ -2076,8 +2340,12 @@ class _RuntimeFunctionCode {
     this.arrow = false,
     this.concise = false,
     this.method = false,
+    this.classConstructor = false,
+    this.allowSuperCall = false,
+    this.forbidArguments = false,
     this.lexicalTarget = _noNewTarget,
     this.lexicalHome,
+    this.privateScope,
     bool inheritedStrict = false,
   }) {
     final validation = _RuntimeEvalParser(
@@ -2088,6 +2356,9 @@ class _RuntimeFunctionCode {
       strictFunction: inheritedStrict,
       newTarget: arrow ? lexicalTarget : jUndefined,
       home: method ? jObjectPrototype : lexicalHome,
+      allowSuperCall: allowSuperCall,
+      forbidArguments: forbidArguments,
+      privateScope: privateScope,
     );
     if (!concise) parseBody(validation);
     strict = validation.strictFunction;
@@ -2098,6 +2369,9 @@ class _RuntimeFunctionCode {
       strictFunction: strict,
       newTarget: arrow ? lexicalTarget : jUndefined,
       home: method ? jObjectPrototype : lexicalHome,
+      allowSuperCall: allowSuperCall,
+      forbidArguments: forbidArguments,
+      privateScope: privateScope,
     ).parameters();
     parameterCount = signature.length;
     restParameter = signature.isNotEmpty && signature.last.$2;
@@ -2128,12 +2402,22 @@ class _RuntimeFunctionCode {
     String name,
     String source, {
     dynamic lexicalThis,
+    JConstruction? lexicalConstruction,
     JObject? home,
+    _RuntimePrivateScope? runtimePrivate,
   }) {
+    final lexicalPrivate = runtimePrivate ?? privateScope?.runtime;
     late final JFunction function;
     dynamic invoke(List<dynamic> actual, dynamic receiver, dynamic target) {
       final parametersScope = JScope.function(outer);
-      final newTarget = arrow ? lexicalTarget : target;
+      final context = classConstructor
+          ? receiver as JConstruction
+          : lexicalConstruction;
+      final newTarget = arrow
+          ? lexicalTarget
+          : context == null
+          ? target
+          : context.newTarget;
       final thisValue = arrow
           ? lexicalThis
           : strict
@@ -2171,6 +2455,10 @@ class _RuntimeFunctionCode {
         strictFunction: strict,
         newTarget: newTarget,
         home: home,
+        construction: context,
+        allowSuperCall: allowSuperCall,
+        forbidArguments: forbidArguments,
+        privateScope: lexicalPrivate,
       );
       if (!simple) {
         final bindings = _RuntimeEvalParser(
@@ -2180,6 +2468,10 @@ class _RuntimeFunctionCode {
           strictFunction: strict,
           newTarget: newTarget,
           home: home,
+          construction: context,
+          allowSuperCall: allowSuperCall,
+          forbidArguments: forbidArguments,
+          privateScope: lexicalPrivate,
         ).parameters();
         for (var index = 0; index < bindings.length; index++) {
           final (pattern, rest) = bindings[index];
