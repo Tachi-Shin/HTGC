@@ -1,0 +1,213 @@
+globalThis.globalNumber = 9;
+function test() {
+  let value = 2;
+  let source = 'value = value + 3; value * 2';
+  console.log(eval(source), value);
+  source = 'typeof missing';
+  console.log(eval(source));
+  source = '(value > 2) && (value + 1)';
+  console.log(eval(source));
+  const indirect = eval;
+  source = 'globalNumber + 1';
+  console.log(indirect(source));
+  source = 'value = 100; let = ;';
+  try { eval(source); } catch (error) { console.log(error.name, value); }
+  const obj = { value: 4, add(n) { return this.value + n; } };
+  source = 'obj.add(value)';
+  console.log(eval(source));
+  source = "obj['value'] = value + 1; obj.value";
+  console.log(eval(source), obj.value);
+  source = 'typeof obj.add';
+  console.log(eval(source));
+  let order = '';
+  function base() { order += 'b'; return obj; }
+  function key() { order += 'k'; return 'value'; }
+  function rhs() { order += 'r'; return 12; }
+  source = 'base()[key()] = rhs()';
+  console.log(eval(source), order);
+  source = 'base().add(rhs())';
+  order = '';
+  console.log(eval(source), order);
+  for (const expression of [
+    'value += 2', 'value *= 3', 'value -= 1', 'value /= 2',
+    'value %= 4', 'value **= 2', 'value <<= 1', 'value >>= 1',
+    'value >>>= 0', 'value |= 8', 'value &= 15', 'value ^= 2',
+    'value &&= 0', 'value ||= 4', 'value ??= 99',
+    'value > 0 ? value : missing', 'false ? missing : true ? 7 : 8',
+    '1 | 2 & 4 ^ 8',
+  ]) console.log(eval(expression));
+  source = 'base()[key()] += rhs()';
+  order = '';
+  console.log(eval(source), order);
+  source = 'obj.value ||= rhs()';
+  order = '';
+  console.log(eval(source), order);
+  let closed = 0;
+  function* numbers() {
+    try { yield 1; yield 2; }
+    finally { closed++; }
+  }
+  const object = { a: 1, b: 2 };
+  const entries = [[1, 2], [3, 4]];
+  const nested = { list: [undefined, 6], other: 8 };
+  const objKey = 'list';
+  const getterSource = { get entry() { order += 'g'; return 9; } };
+  const distinctIterable = {
+    [Symbol.iterator]() {
+      return {
+        next() { order += 'n'; return {done: false, value: 5}; },
+        return() { order += 'c'; return {}; },
+      };
+    },
+  };
+  for (const expression of [
+    '[base()[key()]] = distinctIterable; obj.value',
+    '({entry: base()[key()]} = getterSource).entry',
+    'let x = 0, y = 0; for ([x, y] of entries) {}; x + y',
+    'let a, tail; [a = 4, ...tail] = nested.list; a + tail[0]',
+    'let a, tail; ({a, ...tail} = object); a + tail.b',
+    'let a, b; [a, [b]] = [1, [2]]; a + b',
+    'let a; [a] = [3]; a',
+  ]) {
+    order = '';
+    console.log(eval(expression), order);
+  }
+  function* uninitialized() {
+    try { yield undefined; yield 2; }
+    finally { closed++; }
+  }
+  function compiledStrict(source) {
+    'use strict';
+    return eval(source);
+  }
+  console.log(compiledStrict('var outer = 2; outer'), typeof outer);
+  class StrictContext {
+    method(source) { return eval(source); }
+  }
+  console.log(new StrictContext().method('var inside = 7; inside'));
+  function* strictGenerator(source) {
+    'use strict';
+    yield eval(source);
+  }
+  console.log(strictGenerator('var inside = 6; inside').next().value);
+  function forward(...items) { return items.join(''); }
+  for (const expression of [
+    'let total = 0; for (let i = 0, end = 4; i < end; i++) { if (i === 1) continue; total += i }; total',
+    'for (const i = 1; ; ) { i; break }',
+    'let total = 0; for (const item of numbers()) { total += item; break }; total',
+    'let value; for (value of numbers()) { if (value === 1) continue; value }; value',
+    'for (object.a of numbers()) { break }; object.a',
+    'let names = ""; for (let key in object) { names += key }; names',
+    'let source = object; for (const source in source) {}',
+    'try { for (const item of numbers()) { throw item } } catch (error) { error }',
+    'let temp = value + 1; temp * 2',
+    'const temp = 3, other = temp + 1; other',
+    '"use strict"; var local = 3; local',
+    '"use strict"; var local = 3; 7; var local',
+    '"use strict"; value = 99; { var local; let local; }',
+    '"use strict"; var local = 2; { let local = 3; local }; local',
+    '"use strict"; { let local = 3; local }; var local = 2; local',
+    'var local = 7; local',
+    'const [first, , ...tail] = "abcd"; first + tail.join("")',
+    'const [first, ...tail] = [1, ...[2, 3],]; first + tail[0] + tail[1]',
+    'const { [objKey]: [a = 4, b], ...remaining } = { ...nested }; a + b + remaining.other',
+    'const [first] = [1,,3]; first',
+    'forward(...["a", "b"], "c")',
+    'let i = 1; (i++, i *= 3, i)',
+    '({__proto__: object, a: 9}).b',
+    '({__proto__: object, "__proto__": object})',
+    'typeof eval("var inner = 2; inner") + ":" + typeof inner',
+    'let [first = missing] = uninitialized(); first',
+    'let [first, second = first + 2] = numbers(); first + second',
+    'let [first] = numbers(); first',
+    'let [first = missing] = entries[99]; first',
+    'let [first] = numbers(); let [second = missing] = numbers(); first + second',
+    'let [first] = "a"; for (const [left, right] of entries) first += left + right; first',
+    'const { [objKey]: [a = 4, b], ...remaining } = nested; a + b + remaining.other',
+    'try { throw nested } catch ({ list: [, score] }) { score }',
+    'try { throw numbers() } catch ([first]) { first }',
+    'try { throw numbers() } catch ([item]) { let item }',
+    'value = 99; let [local, local] = numbers()',
+    'const [local = local] = nested.list; local',
+    '1; let temp;',
+    'let i = 0, sum = 0; while (i < 4) { let n = ++i; if (n === 2) continue; sum += n }; sum',
+    'let i = 0; do { i++ } while (i < 3); i',
+    'let i, sum = 0; for (i = 0; i < 5; i++) { if (i === 1) continue; if (i === 4) break; sum += i }; sum',
+    'while (true) { 42; break; }',
+    'while (true) { 42; try { 5 } finally { break; } }',
+    'try { throw 8 } catch (error) { let result = error + 1; result } finally { 99 }',
+    'try { throw 8 } catch { 6 }',
+    'try { missing } catch (error) { error.name }',
+    'let i = 0; while (i < 3) { try { i++; continue; } finally { i++ } }; i',
+    'value = 99; break;',
+    'value = 99; try {} catch (error) { let error; }',
+    'let temp = 3; { let temp = 5; temp }; temp',
+    'let temp = 3; { typeof temp; let temp = 5 }',
+    '1; { let temp = 2 }',
+    '1; if (false) { 2 }',
+    'if (true) { null } else { missing }',
+    'if (false) missing; else 9',
+    'value = 99; if (false) { let temp; let temp; }',
+    'let temp = temp',
+    'const temp = 1; temp = 2',
+    'value = 99; let temp; let temp;',
+  ]) {
+    try { console.log(eval(expression)); }
+    catch (error) { console.log(error.name); }
+  }
+  console.log(value, typeof temp, typeof local, closed);
+  const nonString = {};
+  console.log(eval(nonString) === nonString);
+}
+test();
+let params = 'a,b';
+let body = 'return a + b;';
+console.log(Function(params, body)(3, 4));
+body = 'return globalNumber';
+console.log(new Function(body)());
+body = 'return this.value';
+console.log(Function(body).call({value: 15}));
+body = 'return arguments[1]';
+console.log(Function(body)(1, 8));
+body = 'let x = 3; const y = x + 2; x += y; return x; missing()';
+console.log(Function(body)());
+body = 'let x = 1\nx += 2\nreturn x';
+console.log(Function(body)());
+body = 'return\n42';
+console.log(Function(body)());
+body = '"use strict"\nreturn this';
+console.log(Function(body)() === undefined);
+body = 'if (arguments[0]) { let result = 3; return result } else { throw 5 }';
+const branch = Function(body);
+console.log(branch(true));
+try { branch(false); } catch (value) { console.log(value); }
+body = 'try { return 3 } finally { return 4 }';
+console.log(Function(body)());
+body = 'for (const letter of "ab") { return letter }';
+console.log(Function(body)());
+body = 'var first = x; if (false) { var x = 99 }; { var x = 8 }; return typeof first + ":" + x';
+console.log(Function(body)());
+params = 'parameter';
+body = 'var before = parameter; var parameter; parameter += 3; return before + ":" + parameter';
+console.log(Function(params, body)(4));
+body = 'var sum = 0; for (var i = 0; i < 3; i++) sum += i; for (var letter of "ab") sum += letter; return i + ":" + sum + ":" + letter';
+console.log(Function(body)());
+body = 'for (let i = 0; i < 1; i++) { var i; }';
+try { Function(body); } catch (error) { console.log(error.name); }
+params = '{ a: first }, [second = first], ...tail';
+body = 'return first + second + tail[0]';
+const destructured = Function(params, body);
+console.log(destructured.length, destructured({a: 3}, [], 4));
+params = 'first = second, second = 3';
+try { Function(params, body)(); } catch (error) { console.log(error.name); }
+params = '[x]';
+body = 'var x; return x';
+console.log(Function(params, body)([7]));
+body = '"use strict"; return x';
+try { Function(params, body); } catch (error) { console.log(error.name); }
+body = 'throw 17';
+try { Function(body)(); } catch (value) { console.log(value); }
+params = 'a';
+body = 'return 1; let a;';
+try { Function(params, body); } catch (error) { console.log(error.name); }
+$DONE();

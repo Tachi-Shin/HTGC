@@ -2,7 +2,38 @@ const fs = require('node:fs');
 const acorn = require('acorn');
 try {
   const input = fs.readFileSync(0, 'utf8');
-  const ast = acorn.parse(input, {ecmaVersion: 'latest', sourceType: 'module', locations: true});
+  // Direct eval may inherit a function's new.target binding.
+  const newTarget = process.argv.includes('--eval-new-target');
+  const superProperty = process.argv.includes('--eval-super');
+  const superCall = process.argv.includes("--eval-super-call");
+  const privateNames = process.argv.filter(arg => arg.startsWith("--eval-private=")).map(arg => arg.slice("--eval-private=".length));
+  const fieldEval = process.argv.includes('--eval-class-field');
+  const parser = newTarget || superProperty || superCall || fieldEval
+    ? acorn.Parser.extend(Base => class extends Base {
+        get allowNewDotTarget() { return super.allowNewDotTarget || newTarget; }
+        checkUnreserved(identifier) {
+          if (fieldEval && identifier.name === 'arguments' &&
+              this.currentThisScope() === this.scopeStack[0]) {
+            this.raise(identifier.start, "Cannot use 'arguments' in class field eval");
+          }
+          super.checkUnreserved(identifier);
+        }
+        get allowDirectSuper() {
+          return super.allowDirectSuper || (superCall && this.currentThisScope() === this.scopeStack[0]);
+        }
+        get allowSuper() {
+          return super.allowSuper || (superProperty && this.currentThisScope() === this.scopeStack[0]);
+        }
+      })
+    : acorn.Parser;
+  const instance = new parser({ecmaVersion: 'latest', sourceType: process.argv.includes('--script') ? 'script' : 'module', locations: true}, input);
+  if (privateNames.length) {
+    const declared = instance.enterClassBody();
+    for (const name of privateNames) declared[name] = true;
+  }
+  const ast = instance.parse();
+  if (privateNames.length) instance.exitClassBody();
+  if (process.argv.includes('--syntax-only')) process.exit(0);
   function rewriteUnicodeSets(pattern, flags) {
     return require('regexpu-core')(pattern, flags, {
       unicodeSetsFlag: 'transform',
@@ -11,6 +42,19 @@ try {
   }
   function lowerUnicodeSets(node) {
     if (!node || typeof node !== 'object') return;
+    if (['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression', 'ClassDeclaration', 'ClassExpression'].includes(node.type)) {
+      node.htgcSource ??= input.slice(node.start, node.end);
+    } else if (node.type === 'MethodDefinition' ||
+               (node.type === 'Property' && (node.method || node.kind === 'get' || node.kind === 'set'))) {
+      const start = node.type === 'MethodDefinition' && node.static
+        ? node.key.start - (node.computed ? 1 : 0)
+        : node.start;
+      // Static methods exclude the static modifier, including any trivia.
+      const source = input.slice(node.start, node.end);
+      node.value.htgcSource = node.type === 'MethodDefinition' && node.static
+        ? source.replace(/^static(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r\n|\r|\n))*/, '')
+        : input.slice(start, node.end);
+    }
     if (node.regex?.flags.includes('v')) {
       try {
         node.regex.lowered = rewriteUnicodeSets(node.regex.pattern, node.regex.flags);
@@ -41,5 +85,5 @@ try {
   process.stdout.write(JSON.stringify(ast, (_, value) => typeof value === 'bigint' ? null : value));
 } catch (error) {
   process.stderr.write(error.message + '\n');
-  process.exitCode = 1;
+  process.exitCode = error instanceof SyntaxError ? 2 : 1;
 }

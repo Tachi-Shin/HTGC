@@ -40,14 +40,24 @@ HTGCのルートから実行します。Python 3.10以上、Node.js/npm、Dart S
 npm --prefix javascript ci
 git clone https://github.com/tc39/test262.git ../test262
 git -C ../test262 checkout --detach 2e58f87d8350ad51224617a041c6e041d52f8444
-python3 benchmarks/test262_dart.py ../test262
+python3 benchmarks/test262_dart.py ../test262 --jobs 4
 ```
 
-Test262の `test/language/statements/try/` から同期スクリプト6件、`test/language/expressions/await/` から非同期スクリプト8件、Map.prototype.getから8件、Object.definePropertiesから7件、BigIntから71件の100件に、Proxy.get 18件、GeneratorPrototype 59件、Date.toISOString 17件、RegExp.exec 13件、ArrayBuffer.resize 10件を追加し、さらにAtomics.waitAsync 20件、SharedArrayBuffer.grow 14件、RegExpのUnicode集合9件を加えた計260件を、元のテストソースを変更せずHTGCでDartへ変換して実行します。選定ファイルは `test262_dart.py` と `test262_extended.txt` に列挙しています。
+選定ケースは `test262_dart.py` と `test262_extended.txt` で確認できます。RegExp Unicode集合はチェックアウトの `test/built-ins/RegExp/unicodeSets/generated/*.js` を全件収集します。`eval-code` と `arguments-object` はグローバルのScript環境で実行し、`onlyStrict` のケースには厳格モードを適用します。
 
 BigIntの試験では、2〜36進数の文字列化、整数変換と構文エラー、`asIntN/asUintN` の算術・型変換・副作用の順序、プロトタイプと関数の記述子、呼び出し時の例外を検証します。BigIntの全試験ではなく、複数Realm、Functionの継承、スクリプトのグローバル `this`、Dateと組み合わせた変換などは対象外です。
 
-ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue/notSameValue`、`assert.compareArray`、`assert.throws`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。Test262のpropertyHelper全体やProxy/Reflect.constructを使うisConstructor.js自体の実行ではありません。Unicode集合の生成テストにはDartでtestExtendedCharacterClassを提供し、各入力のマッチ可否を検証します。非同期完了は5秒でタイムアウトします。モジュール形式のTest262、構文エラーを期待するテスト、strict/sloppyの両モードでの実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+ハーネスは選定ケースで必要な `Test262Error`、`assert`、`assert.sameValue/notSameValue`、`assert.compareArray`、`assert.throws`、`assert.throwsAsync`、`verifyProperty`、`isConstructor`、`asyncTest`、`$DONE` をDartで提供します。`verifyProperty` はプロパティ記述子を比較し、`isConstructor` は生成ランタイムの構築可能フラグを調べます。Array、Symbol、Annex Bのオブジェクトアクセサーのケースは指定がある場合にTest262のpropertyHelper.jsを読み込みます。Array.fromAsyncの一部はtemporalHelpers.jsのプロパティ観測用関数を使います。isConstructor.jsはハーネスに代替実装があります。Unicode集合の生成テストではリテラルと、実行時にsource・flagsから再構築したRegExpの両方について、各入力のマッチ可否を検証します。Realm試験の `$262.createRealm()` は別のDart上のRealmに組み込みとグローバル環境を初期化します。非同期完了は5秒でタイムアウトします。with文のディレクトリでは全ファイルをScriptとして検証し、parse phaseではパーサーによるSyntaxError、runtime phaseでは実行時の例外名を確認します。クラス定義とトップレベルawaitのモジュール試験はHTGCのモジュールリンカーを使います。全テストのstrict/sloppy両モード実行は対象外です。いずれかのケースが変換または実行に失敗した場合は終了コード1を返します。
+
+## Test262の公式ケースを列挙して実行する
+
+`--discover` はチェックアウトの `test/` 以下からケースを探します。依存ファイルの `_FIXTURE` は単独で実行せず、モジュールから参照されたときに読み込みます。通常のScriptはstrict・sloppyの両方で、`onlyStrict`、`noStrict`、`module`、`raw` のケースは指定されたモードで実行します。`--filter` で試験領域を絞れます。
+
+```sh
+python3 benchmarks/test262_dart.py ../test262 --discover --jobs 4 --filter 'built-ins/Array/prototype/slice/*'
+```
+
+公式のassertとケースが指定した補助ファイルをDartへ変換して実行します。構文エラーはパーサーで、モジュールの解決エラーはリンカーで、実行時の例外は生成コードで確認します。変換に失敗したケースは `UNSUPPORTED`、実行・アサーションに失敗したケースは `FAIL` として出力します。 `--filter` を省略するとチェックアウト全体を対象にできます。ホストAPIのうち `$262.agent` などは実装が残っています。
 
 ## 非同期実行と条件付きCSSの回帰試験
 
@@ -60,7 +70,7 @@ cd ../portfolio-app
 flutter test test/ui_bridge_test.dart test/css_conditions_test.dart
 ```
 
-`js_async_dart.py` は15組のローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。ジェネレーター129、Proxy42、バイナリデータ68、Date63、RegExp70の計372アサーションを追加し、さらにAtomics、派生型・Species、RegExpのUnicode集合の試験を実行します。Node.jsは比較用で、生成アプリには使いません。`Promise.try`、`Promise.withResolvers`、Float16Array、RegExp.escape、RegExpのvフラグとAtomics.pauseに対応したNode.jsが必要です（24.22.1で検証）。
+`js_async_dart.py` はローカルフィクスチャをDartとNode.jsで実行し、終了状態と標準出力を比較します。Promiseの処理順序、thenableの多重呼び出し、getterの例外、`finally`、Promiseの合成、短絡評価、トップレベル `await` を含む循環・共有依存、動的インポートの評価回数と失敗の保持を確認します。Symbol・記述子・継承・列挙の副作用、Map/Setの反復中の変更、WeakMap/WeakSet、イテレーターの後始末、分割代入、JSONの190アサーションに加え、数値系の266アサーションを含みます。数値系ではBigInt、Numberの丸め・符号付きゼロ・NaN・比較・シフト、数値文字列の解析と整形、Math、ユーザー定義コンストラクターを検証します。ジェネレーター129、Proxy42、バイナリデータ68、Date63、RegExp70の計372アサーションを追加し、さらにAtomics、派生型・Species、RegExpのUnicode集合の試験を実行します。Node.jsは比較用で、生成アプリには使いません。`Promise.try`、`Promise.withResolvers`、Float16Array、RegExp.escape、RegExpのvフラグとAtomics.pauseに加え、Base64変換とMapのgetOrInsertに対応したNode.jsが必要です（26.13.1で検証）。
 
 Flutterテストでは、トップレベル `await` の完了後と非同期クリック処理後に表示が更新されることも確認します。CSSテストは幅320・800・1000pxとテーマ・動きの設定を切り替えて、条件付きレイヤー順序とインポート、メディア範囲比較、`@supports` を検証します。
 
@@ -84,7 +94,7 @@ flutter test test/ecmascript_test.dart
 
 追加したケースは、next/throw/returnとfinally、yield*、for await、非同期returnの拒否、Proxyの不変条件・失効・newTarget、バッファ共有・リサイズ・転送、整数変換・Float16の丸め、日時の境界・getter/setter、正規表現のlastIndex・Unicode・キャプチャ位置・置換を検証します。
 
-Dart JITとLinux x64のAOTで15組の比較試験を通過しました。Flutterの7テストには、ポートフォリオ、UI連携、条件付きCSS、WPT由来のレイヤー試験、埋め込み文書、および上記の組み込み機能を使った画面更新が含まれます。macOS実機・Windows実機・PyInstallerの配布ビルドはこの変更では再検証していません。
+Dart JITとLinux x64のAOTで18組の比較試験を通過しました。Flutterの7テストには、ポートフォリオ、UI連携、条件付きCSS、WPT由来のレイヤー試験、埋め込み文書、および上記の組み込み機能を使った画面更新が含まれます。macOS実機・Windows実機・PyInstallerの配布ビルドはこの変更では再検証していません。
 
 ## Dart専用CLIの検証
 
@@ -183,3 +193,19 @@ python3 benchmarks/compare_visual.py ../portfolio-reference/index.png ../actual/
 | Contact | 9.01 |
 
 この条件では4ページすべてで画素差があります。完全一致の判定は全画素の差がゼロになった時点です。
+
+### Unicode正規化とJSONモジュール
+
+Unicode 17.0.0の `NormalizationTest.txt` を用意して、正規化4形式を公式データの全行で検証します。
+
+```sh
+dart benchmarks/normalization.dart /path/to/NormalizationTest.txt
+```
+
+`benchmarks/module_e2e/` をHTGCで `lib/module_e2e.dart` に変換し、`benchmarks/module_e2e_test.dart` をFlutterプロジェクトの `test/` に配置して実行すると、JSON importと非同期解放を含むスクリプトの画面更新を確認できます。
+
+`benchmarks/iterator_zip/` のHTMLを `lib/iterator_zip.dart` に変換し、`benchmarks/iterator_zip_test.dart` をFlutterプロジェクトの `test/` に配置して実行すると、zip・zipKeyedと非同期イテレーターの後始末を確認できます。
+
+`benchmarks/static_eval/` のHTMLを `lib/static_eval.dart` に変換し、`benchmarks/static_eval_test.dart` をFlutterプロジェクトの `test/` に配置すると、固定文字列のeval・Functionからの画面更新を確認できます。
+
+`benchmarks/global_scripts.py` は、複数スクリプトにまたがる宣言、globalThis、宣言の衝突をNode.jsのvmと比較します。`benchmarks/global_scope/` と `benchmarks/global_scope_test.dart` はFlutter画面上のwindow・globalThis・モジュールの連携を確認します。

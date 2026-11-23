@@ -40,5 +40,43 @@ eq(shadow((pattern, flags) => pattern + flags), '[a--b]v');
 let caught = '';
 try { new RegExp('[[', 'v'); } catch (error) { caught = error.name; }
 eq(caught, 'SyntaxError');
+function runtime(pattern, flags = 'v') { return new RegExp(pattern, flags); }
+for (const [source, flags, input, expected] of [
+  ['[\\p{ASCII}&&\\p{Letter}]', 'v', 'Å5x', 'x'],
+  ['[[a-z]--[aeiou]]+', 'v', 'abdc', 'bdc'],
+  ['[a--A]', 'iv', 'a', undefined],
+  ['[\\q{abc|ab|a}]c', 'v', 'abc', 'abc'],
+  ['[\\q{aB|cc}&&\\q{Ab}]', 'iv', 'xab', 'ab'],
+  ['[\\q{abcd|ab|}--\\q{ab}]', 'v', 'ab', ''],
+  ['(?<=[[ab]--a])x', 'v', 'bxx', 'x'],
+  ['[\\q{ab}&&a]', 'v', 'ab', undefined],
+  ['[^\\q{a|b}]', 'v', 'abc', 'c'],
+  ['\\P{Lowercase_Letter}+', 'iv', 'aA-1', '-1'],
+  ['[\\u{1f600}-\\u{1f602}]', 'v', 'x😁', '😁'],
+  ['[\\uD83D\\uDE00-\\uD83D\\uDE02]', 'v', 'x😂', '😂'],
+  ['[\\p{RGI_Emoji_Flag_Sequence}]', 'v', '🇯🇵', '🇯🇵'],
+  ['\\p{RGI_Emoji}', 'v', '👩‍💻', '👩‍💻'],
+  ['[\\p{RGI_Emoji}--\\p{Basic_Emoji}]', 'v', '😀🇯🇵', '🇯🇵'],
+  ['[\\q{\\!\\/|a}]', 'v', '!/', '!/'],
+]) {
+  const regex = runtime(source, flags);
+  eq(regex.exec(input)?.[0], expected);
+  eq(regex.source, source);
+}
+for (const invalid of [
+  '[a&&]', '[a&&&b]', '[a--b&&c]', '[ab&&c]', '[a&&bc]',
+  '[a-z&&x]', '[x&&a-z]', '[^\\q{ab}]', '\\P{RGI_Emoji}',
+  '[z-a]', '[a-\\d]', '[a-]', '[()]', '[!!]', '[\\q{a&&b}]',
+  '[\\p{DefinitelyUnknown}]', '[\\xG0]', '[\\01]', '[\\c1]',
+]) {
+  let name = '';
+  try { runtime(invalid); } catch (error) { name = error.name; }
+  eq(name, 'SyntaxError');
+}
+const dynamicCopy = new RegExp(runtime('[\\q{aB}--\\q{Ab}]', 'v'), 'iv');
+eq(dynamicCopy.test('ab'), false);
+const recompile = /x/;
+recompile.compile('[\\q{abc|ab}]', 'v');
+eq(recompile.exec('abc')[0], 'abc');
 console.log('unicode sets: ' + checks + ' checks');
 $DONE();

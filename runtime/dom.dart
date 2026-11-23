@@ -4,6 +4,7 @@ import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html;
 
 class JDomRuntime {
+  final JRealm realm = JRealm.current;
   final dom.Document document;
   final Map<String, String> storage;
   final void Function()? onMutation;
@@ -37,7 +38,7 @@ class JDomRuntime {
     }
   }
   JDomNode wrap(dom.Node node) =>
-      _nodes.putIfAbsent(node, () => JDomNode(this, node));
+      _nodes.putIfAbsent(node, () => realm.run(() => JDomNode(this, node)));
   void changed() => onMutation?.call();
 
   dom.DocumentFragment templateContent(dom.Element template) =>
@@ -153,7 +154,7 @@ class JDomRuntime {
 
   JScope newScope() {
     final scope = JScope();
-    installJSBuiltins(scope);
+    installJSBuiltins(scope, globalObject: window);
     final localStorage = JObject({
       'getItem': jNative((a) => storage[jString(a[0])]),
       'setItem': jNative((a) {
@@ -219,8 +220,7 @@ class JDomRuntime {
       'innerHeight': viewportHeight,
     };
     for (final entry in globals.entries) {
-      scope.define(entry.key, entry.value);
-      window.set(entry.key, entry.value);
+      scope.defineGlobal(entry.key, entry.value);
     }
     return scope;
   }
@@ -503,16 +503,16 @@ class JDomNode extends JObject {
   }
 
   @override
-  dynamic set(String name, dynamic value) {
+  dynamic set(String name, dynamic value, {bool strict = true}) {
     final el = node is dom.Element ? node as dom.Element : null;
     switch (name) {
       case 'name':
-        if (el?.localName != 'details') return super.set(name, value);
+        if (el?.localName != 'details') return super.set(name, value, strict: strict);
         el!.attributes['name'] = jString(value);
         runtime.updateDetailsGroup(el);
         break;
       case 'open':
-        if (el?.localName != 'details') return super.set(name, value);
+        if (el?.localName != 'details') return super.set(name, value, strict: strict);
         runtime.setDetailsOpen(el!, jTruthy(value));
         return value;
       case 'textContent':
@@ -546,7 +546,7 @@ class JDomNode extends JObject {
         canvas?.commands.clear();
         break;
       default:
-        return super.set(name, value);
+        return super.set(name, value, strict: strict);
     }
     runtime.changed();
     return value;
@@ -563,7 +563,7 @@ class JDataset extends JObject {
   dynamic get(String name) =>
       (node.node as dom.Element).attributes[key(name)] ?? jUndefined;
   @override
-  dynamic set(String name, dynamic value) {
+  dynamic set(String name, dynamic value, {bool strict = true}) {
     (node.node as dom.Element).attributes[key(name)] = jString(value);
     node.runtime.changed();
     return value;
@@ -583,7 +583,7 @@ class JStyle extends JObject {
   }
 
   @override
-  dynamic set(String name, dynamic value) {
+  dynamic set(String name, dynamic value, {bool strict = true}) {
     values[name] = jString(value);
     node.runtime.changed();
     return value;

@@ -272,9 +272,9 @@ export async function save(text) {
 
 指定方法は `HTGC -Dart main.html -o test/lib/main.dart` のままです。JavaScriptは変換時にDartへ収録され、生成アプリの起動時に `.js` を読みません。
 
-- 文字列リテラルで参照したローカルの `import('./memo.js')` は依存ファイルとして収録され、呼び出す時まで評価を遅延します。変数を使う `import(path)` は、同じ生成物に収録済みのモジュールを選択できます。未収録のファイルはPromiseを拒否します。通信で新しいJavaScriptを取得して実行する機能やimport attributesには対応していません。
+- 文字列リテラルで参照したローカルの `import('./memo.js')` は依存ファイルとして収録され、呼び出す時まで評価を遅延します。変数を使う `import(path)` は、同じ生成物に収録済みのモジュールを選択できます。未収録のファイルはPromiseを拒否します。JSONモジュールは `with: {type: "json"}` で読み込めます。実行時に外部から取得したJavaScriptの評価は未対応です。
 - 依存先のトップレベル `await` を待ってから利用側を評価します。循環参照、共有依存、同時インポート、失敗したモジュールの再インポートでも、同じ文書の評価結果を共有します。
-- `Promise` の生成、`resolve/reject`、`then/catch/finally`、`all/allSettled/race/any`、`withResolvers/try` を実装しています。引数には配列など現在対応する反復可能値を使います。Promiseのサブクラス、`Symbol.species`、汎用コンストラクターへの組み込みメソッド転用は未対応です。
+- `Promise` の生成、`resolve/reject`、`then/catch/finally`、`all/allSettled/race/any`、`withResolvers/try` を実装しています。引数には配列など現在対応する反復可能値を使います。`class Task extends Promise {}` の `Task.resolve(1)` はTaskを返し、`.then()` と `.finally()` は `Symbol.species` に従います。静的メソッドを `.call()` で別のコンストラクターにも適用できます。
 - `await` はPromise、thenable、通常値を受け取ります。例外と `finally`、右辺に `await` を含む代入・短絡評価にも対応します。捕捉されなかった拒否はDartのZoneへエラーを通知します。HTMLの `unhandledrejection` / `rejectionhandled` イベントは未実装です。
 
 ### ECMAScriptの数値・BigInt
@@ -315,7 +315,9 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 
 子文書は自身のDOM・CSS計算・スクリプトスコープ・スクロール位置を持ち、メディア条件には埋め込み領域の寸法を使います。子のリンクを押しても親文書は遷移しません。`contentDocument`、`contentWindow.document` と子文書の読み込み後の `load` 通知を実装しています。自分自身・祖先への循環埋め込みは空文書にします。
 
-現在の対象は入力ルート内のHTMLと画像です。外部サイト、sandbox/credentialless、Permissions Policy、完全なWindowProxy/Realm分離、親文書との `postMessage`、実行中に新しい `srcdoc` をコンパイルする機能は未実装です。外部サイトとsandbox/credentiallessの指定は変換エラーにします。
+親ページと各iframeのJavaScriptは個別のRealmで動作します。親でObject.prototypeを書き換えても子のオブジェクトには波及せず、子の関数は親から呼び出しても子のグローバル環境を参照します。
+
+現在の対象は入力ルート内のHTMLと画像です。外部サイト、sandbox/credentialless、Permissions Policy、ナビゲーションをまたいだWindowProxyの同一性、親文書との `postMessage`、実行中に新しい `srcdoc` をコンパイルする機能は未実装です。外部サイトとsandbox/credentiallessの指定は変換エラーにします。
 
 ### FlutterのJavaScript組み込みオブジェクト
 
@@ -325,7 +327,11 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 - `for...of`、spread、`Array.from`、配列の分割代入は `Symbol.iterator` を使います。break・return・例外・分割代入の終了時には、必要に応じてイテレーターの `return()` を呼びます。既定値・rest・computedキーを持つ分割代入の宣言にも対応します。
 - `JSON.parse` のreviver、`JSON.stringify` のreplacer・インデント・`toJSON`・循環参照エラーを実装しています。
 
-これらは組み込みオブジェクト全体の準拠を意味しません。配列の特殊なプロパティ記述子やfreeze/seal、完全な組み込みプロトタイプと関数メタデータ、サブクラス・Species、JSONのreviverのsource contextなどは残っています。Proxy・TypedArray・Date・RegExp・非同期反復の対応範囲は次の表を参照してください。対応する通常オブジェクト向けの操作を配列にもそのまま適用できるとは限りません。
+- 配列の派生クラスを生成できます。`map`、`filter`、`slice`、`concat`、`splice`、`flat`、`flatMap` は `Symbol.species` に従います。`Array.from`、`Array.fromAsync`、`Array.of` は呼び出しに使ったコンストラクターから結果を生成します。
+- 配列の穴・数値添字・`length` の記述子と、`Object.freeze`、`Object.seal`、`Object.preventExtensions` を扱います。配列を包むProxyにも記述子と拡張制御を適用します。大きな添字を持つ配列リテラルと `Array(length)` の未設定の要素は省メモリで保持します。
+- クラスの `extends` と計算プロパティ名では、非同期関数やモジュールの `await` とジェネレーターの `yield` を扱います。実行時の `eval` と `Function` に渡す文字列でも、クラスの明示コンストラクター、`super()`、公開・private要素、静的ブロックを使えます。
+- `Symbol.prototype` の `description`、`toString`、`valueOf`、`Symbol.toPrimitive` を使えます。`Object(symbol)` で生成したラッパーも同じ組み込みメソッドを使います。
+- Annex Bの `Object.prototype.__proto__`、`__defineGetter__`、`__defineSetter__`、`__lookupGetter__`、`__lookupSetter__` に対応します。
 
 ### ジェネレーター・Proxy・バイナリデータ・日時・正規表現
 
@@ -335,13 +341,13 @@ BigIntのべき乗・左シフト・幅指定には、巨大なメモリ確保�
 | --- | --- |
 | ジェネレーター | `function*`、`yield`、`yield*`、`next(value)`、`throw(value)`、`return(value)`、再入の拒否、catch/finally内の中断、条件式・ループ・分割代入の初期値の中断 |
 | 非同期反復 | `async function*`、await、Promise値のyield、要求のキュー処理、同期／非同期イテレーターへの委譲、`for await...of`、break/return/throw時の後始末 |
-| Proxy | 13種類のトラップ、通常オブジェクト・関数への転送、固定プロパティと拡張不可状態に対する不変条件、`Proxy.revocable`、通常のユーザー定義コンストラクターに対する `Reflect.construct` とnewTarget |
+| Proxy | 13種類のトラップ、通常オブジェクト・配列・関数への転送、固定プロパティと拡張不可状態に対する不変条件、`Proxy.revocable`、通常のユーザー定義コンストラクターに対する `Reflect.construct` とnewTarget |
 | ArrayBuffer / DataView | バッファ共有、resize、slice、transfer、transferToFixedLength、デタッチ判定、エンディアンを指定した整数・浮動小数点・BigIntの読み書き |
 | TypedArray | 符号付き／符号なし整数、Uint8Clamped、Float16/32/64、BigInt64/BigUint64、インデックス操作、from/of、反復、set/subarray/slice、検索・集計・map/filter、安定ソート、変更せずコピーを返す操作、可変長バッファ上のビュー |
 | Date | 時刻値、TimeClip、ISO形式と生成したUTC／ローカル形式の解析、UTC／ローカルのget/set、ISO・UTC文字列、JSON変換、無効日時、年0〜99の変換 |
-| RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し、RegExp.escape、compile。`v` はリテラルとパターン・フラグを文字列リテラルで渡す直接の `RegExp(...)` / `new RegExp(...)` を変換。 |
+| RegExp | `d/g/i/m/s/u/y`、lastIndex、名前付きキャプチャ、別の選択肢にある同名グループとindices、exec/test、検索・置換・分割・matchAllとSymbol経由の呼び出し。分割とmatchAllはSymbol.speciesを使用、RegExp.escape、compile。`v` はリテラルと実行時のパターン文字列に対応し、文字集合の積・差、文字列集合、絵文字プロパティを扱います。 |
 | SharedArrayBufferとAtomics | 単一のFlutter isolate内でのバッファ共有、grow、slice、整数・BigIntの原子的な読み書き、waitAsyncのタイムアウトとnotify。FlutterのUIエージェントは同期waitを拒否。 |
-| 組み込み型の派生クラス | 既定コンストラクターのクラス宣言・クラス式。Date、RegExp、ArrayBuffer、SharedArrayBuffer、DataView、TypedArray各型の内部データと派生プロトタイプを保持。`slice` などのバッファ・TypedArray操作でSymbol.speciesを参照。 |
+| 組み込み型の派生クラス | 既定コンストラクターのクラス宣言・クラス式。Array、Promise、Map、Set、WeakMap、WeakSet、Boolean、Number、String、Error各種、Date、RegExp、ArrayBuffer、SharedArrayBuffer、DataView、TypedArray各型の内部データと派生プロトタイプを保持。`slice` などのバッファ・TypedArray操作でSymbol.speciesを参照。 |
 
 5機能を組み合わせて、HTMLのボタンから非同期にバイナリデータを集計するサンプルは [benchmarks/ecmascript/index.html](benchmarks/ecmascript/index.html) にあります。
 
@@ -354,9 +360,9 @@ HTGC benchmarks/ecmascript/index.html -o ../portfolio-app/lib/main.dart
 これらはECMAScript全仕様の実装完了を意味しません。特に次の制限があります。
 
 - 完全な関数・クラス・Realm・厳密モードの差、ラベル付き制御構文、タグ付きテンプレート、動的Function/eval、ループの束縛や非同期ジョブの全ケースは未対応または未検証です。
-- Proxyで配列を包んだときの特殊な記述子・拡張禁止など、通常オブジェクトと異なる内部操作は未完です。上表の型では独自newTargetを渡すReflect.constructも扱います。その他の組み込みコンストラクターは未対応です。
-- 明示的なクラスコンストラクター、super、未対応の組み込み派生型、複数エージェント間の共有メモリ、すべての副作用順序・メタデータの互換性は未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
-- 実行時に組み立てた文字列からの `v` パターンは未対応です。変換対象の `v` はregexpu-coreでDartのRegExpが扱える形に書き換えます。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータ・重複する名前付きグループなど最新仕様との差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
+- 上表の型では独自の `newTarget` を渡す `Reflect.construct` を扱います。その他の組み込みコンストラクターや、Proxyの内部操作と例外順序の全ケースには検証が残っています。
+- 動的な非同期・ジェネレーター関数、組み込みの継承の全条件、複数エージェント間の共有メモリは未完です。1個のArrayBufferは最大256 MiBとし、上限を超える指定はRangeErrorにします。
+- 固定の `v` パターンは変換時にregexpu-coreで、動的パターンは実行時にDartで書き換えます。正規表現のマッチングにはDartのRegExpを使うため、Unicodeデータや高度なパターンにはDart SDKの対応範囲による差が残ります。`d` の位置取得には追加キャプチャを使い、長い入力で追加の処理コストが発生します。
 - Dateのタイムゾーン規則は実行環境に依存します。実装依存の旧式日付文字列すべての受理や、Intlによるロケール整形は保証しません。
 
 検証範囲と再実行手順は [benchmarks/README.md](benchmarks/README.md) に記載しています。Test262全体の合格を示すものではありません。
@@ -426,3 +432,5 @@ $project_root = (Get-Location).Path
 ```
 
 配布するファイルは、macOS・Linuxでは `dist/HTGC`、Windowsでは `dist/HTGC.exe` です。上記では描画ランタイムとAcorn・regexpu-coreを含むJavaScript変換用ファイルも同梱します。JavaScriptを含む入力の変換時には、実行するPCのPATHにNode.jsが必要です。Node.jsは生成アプリの実行時には使いません。生成されたDartをアプリとしてビルドするには、Flutter SDKと対象OSのビルド環境が必要です。
+
+参考実装と利用条件は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。Acorn（MIT）の式解析構造を参考にした実装のライセンス全文は、生成Dartにも保持します。
