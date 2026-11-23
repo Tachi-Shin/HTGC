@@ -1715,6 +1715,8 @@ JClass jDefaultClass(
     return context.thisValue;
   }, derived: derived);
   if (constructor != null) classFunction.prototype = constructor;
+  classFunction.properties['length'] = 0;
+  jNamedFunction(classFunction, name, 0, source: source);
   classFunction.properties['prototype'] = prototype;
   classFunction.flags['prototype'] = JPropertyFlags(
     writable: false,
@@ -1723,7 +1725,6 @@ JClass jDefaultClass(
   );
   prototype.properties['constructor'] = classFunction;
   prototype.flags['constructor'] = JPropertyFlags(enumerable: false);
-  jNamedFunction(classFunction, name, 0, source: source);
   return classFunction;
 }
 

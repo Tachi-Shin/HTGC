@@ -1723,7 +1723,13 @@ class _RuntimeEvalParser {
           >[];
       final staticMethods = <String>{};
       final privateMethods = <String>{};
-      var hasConstructor = false;
+      void Function(
+        JClass,
+        JScope,
+        _RuntimePrivateScope,
+        List<void Function()>,
+      )?
+      initializeConstructor;
       while (!take('}')) {
         if (take(';')) continue;
         final methodStart = at;
@@ -1778,10 +1784,11 @@ class _RuntimeEvalParser {
         final explicitConstructor = !isStatic && name == 'constructor';
         if ((isStatic && name == 'prototype') ||
             (explicitConstructor &&
-                (kind != 'init' || hasConstructor || peek != '('))) {
+                (kind != 'init' ||
+                    initializeConstructor != null ||
+                    peek != '('))) {
           _unsupported();
         }
-        hasConstructor |= explicitConstructor;
         if (peek != '(') {
           if (kind != 'init') _unsupported();
           final initializer = classFieldInitializer();
@@ -1839,7 +1846,12 @@ class _RuntimeEvalParser {
         if (private != null) {
           (isStatic ? staticMethods : privateMethods).add(private);
         }
-        members.add((constructor, environment, runtimePrivate, _) {
+        void defineMethod(
+          JClass constructor,
+          JScope environment,
+          _RuntimePrivateScope runtimePrivate,
+          List<void Function()> _,
+        ) {
           final property = private == null
               ? jPropertyKey(key!.read())
               : '#$private';
@@ -1863,7 +1875,13 @@ class _RuntimeEvalParser {
           } else {
             jDefineClassMethod(constructor, isStatic, methodKind, property, fn);
           }
-        });
+        }
+
+        if (explicitConstructor) {
+          initializeConstructor = defineMethod;
+        } else {
+          members.add(defineMethod);
+        }
       }
       if (!classPrivate.seal()) _unsupported();
       final text = tokenSource(start);
@@ -1885,6 +1903,12 @@ class _RuntimeEvalParser {
             );
             final staticSteps = <void Function()>[];
             classPrivate.bind(runtimePrivate, () {
+              initializeConstructor?.call(
+                constructor,
+                environment,
+                runtimePrivate,
+                staticSteps,
+              );
               for (final define in members) {
                 define(constructor, environment, runtimePrivate, staticSteps);
               }

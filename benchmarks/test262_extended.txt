@@ -1356,3 +1356,5 @@ language/statements/class/elements/privatename-not-valid-eval-earlyerr-5.js
 language/statements/class/elements/privatename-not-valid-eval-earlyerr-6.js
 language/statements/class/elements/privatename-not-valid-eval-earlyerr-7.js
 language/statements/class/elements/privatename-not-valid-eval-earlyerr-8.js
+language/statements/class/definition/fn-length-static-precedence-order.js
+language/statements/class/definition/fn-length-static-precedence.js

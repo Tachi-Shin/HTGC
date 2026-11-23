@@ -1234,6 +1234,7 @@ class Compiler:
             self.private_names = {**previous_private, **private}
             code.extend(f'final {slot} = JPrivateName();' for slot in private.values())
             static_steps, static_methods, installed = [], [], set()
+            constructor_position = len(code)
             for item in body:
                 item_key = item.get("key", {})
                 private_slot = private.get(item_key["name"]) if item_key.get("type") == "PrivateIdentifier" else None
@@ -1249,7 +1250,7 @@ class Compiler:
                         "htgc_super_call": explicit and superclass is not None,
                     })
                     if explicit:
-                        code.append(f'jSetClassConstructor({constructor}, {function});')
+                        code.insert(constructor_position, f'jSetClassConstructor({constructor}, {function});')
                     elif private_slot:
                         code.append(f'{private_slot}.define({quote(item["kind"])}, {quote(item_key["name"])}, {function});')
                         if private_slot not in installed:

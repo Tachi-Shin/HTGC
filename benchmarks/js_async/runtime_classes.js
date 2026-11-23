@@ -153,5 +153,12 @@ let fieldError;
 try { new (FieldEval())(); } catch (error) { fieldError = error.name; }
 same(fieldError, "SyntaxError");
 
+const Length = Function("return class { static length() { return 'method'; } constructor(a, b) {} }" + "")();
+same(Length.length(), "method");
+class ClassLengthOrder {
+  static get length() { return "getter"; }
+  constructor(a, b) {}
+}
+same(ClassLengthOrder.length, "getter");
 console.log("runtime classes: " + checks + " checks");
 $DONE();
